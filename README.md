@@ -10,6 +10,8 @@ Firmware for the **ESP32-2432S024C** touch display board, focused on:
 
 Current firmware version: **`0.1.0`**
 
+![ESP32-2432S024C Remote Render](3D_Models/render1.jpeg)
+
 ## Highlights
 
 - Touch UI with screens for Home, Wi-Fi, Media, Info, Games, and MQTT config/control
