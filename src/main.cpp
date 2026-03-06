@@ -5016,10 +5016,10 @@ void setupWebRoutes()
     server.on("/ota/latest", HTTP_GET, [](AsyncWebServerRequest *request) {
         JsonDocument doc;
         doc["ok"] = false;
-        doc["repo"] = "elik745i/miniexco.v2";
+        doc["repo"] = "elik745i/ESP32-2432S024C-Remote";
 
         int ghStatus = -1;
-        const String body = httpsGetText("https://api.github.com/repos/elik745i/miniexco.v2/releases/latest", &ghStatus);
+        const String body = httpsGetText("https://api.github.com/repos/elik745i/ESP32-2432S024C-Remote/releases/latest", &ghStatus);
         if (body.isEmpty()) {
             doc["error"] = "github_fetch_failed";
             doc["http_status"] = ghStatus;
