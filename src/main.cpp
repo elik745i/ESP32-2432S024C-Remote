@@ -109,7 +109,7 @@ static constexpr float CHARGE_RISE_THRESHOLD_V = 0.003f;
 static constexpr int8_t CHARGE_SCORE_ON = 1;
 static constexpr int8_t CHARGE_SCORE_MAX = 6;
 static constexpr unsigned long CHARGE_HOLD_MS = 120000;
-static constexpr bool CHARGE_LOG_TO_SERIAL = true;
+static constexpr bool CHARGE_LOG_TO_SERIAL = false;
 static constexpr uint8_t CHARGE_ANIM_CYCLES = 2;
 static constexpr int LIGHT_ADC_SAMPLES = 8;
 static constexpr float LIGHT_FILTER_ALPHA = 0.20f;
@@ -117,13 +117,72 @@ static constexpr bool LIGHT_INVERT = true;
 static constexpr int LIGHT_MIN_SPAN_RAW = 80;
 static constexpr uint16_t LIGHT_RAW_CAL_MIN = 0;
 static constexpr uint16_t LIGHT_RAW_CAL_MAX = 600;
-static constexpr bool LIGHT_LOG_RAW_TO_SERIAL = true;
+static constexpr bool LIGHT_LOG_RAW_TO_SERIAL = false;
 
 static constexpr const char *AP_SSID = "ESP32-2432S024C-FM";
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.1.1";
+static constexpr const char *FW_VERSION = "0.1.2";
 static constexpr const char *MDNS_HOST = "esp32-2432s024c";
 static constexpr unsigned long STA_RETRY_INTERVAL_MS = 5000UL;
+static constexpr bool SERIAL_TERMINAL_TRANSFER_ENABLED = false;
+static constexpr size_t SERIAL_LOG_RING_SIZE = 200;
+static constexpr size_t SERIAL_LOG_LINE_MAX = 192;
+static constexpr uint32_t SERIAL_LOG_RATE_MS_DEFAULT = 40;
+static constexpr uint32_t WS_TELEMETRY_MIN_FREE_HEAP = 50000U;
+
+void serialLogPushLine(const char *line, bool sendWs = true);
+void executeSerialCommand(String input);
+HardwareSerial &serialHw = ::Serial;
+
+class MirroredSerialPort {
+public:
+    void begin(unsigned long baud)
+    {
+        serialHw.begin(baud);
+    }
+
+    size_t println()
+    {
+        if (SERIAL_TERMINAL_TRANSFER_ENABLED) serialLogPushLine("", true);
+        return serialHw.println();
+    }
+
+    size_t println(const char *text)
+    {
+        if (SERIAL_TERMINAL_TRANSFER_ENABLED) serialLogPushLine(text ? text : "", true);
+        return serialHw.println(text ? text : "");
+    }
+
+    size_t println(const String &text)
+    {
+        if (SERIAL_TERMINAL_TRANSFER_ENABLED) serialLogPushLine(text.c_str(), true);
+        return serialHw.println(text);
+    }
+
+    size_t printf(const char *fmt, ...)
+    {
+        if (!fmt) return 0;
+        char buf[384];
+        va_list ap;
+        va_start(ap, fmt);
+        const int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+        va_end(ap);
+        if (n <= 0) return 0;
+        buf[sizeof(buf) - 1] = '\0';
+        char logBuf[sizeof(buf)];
+        strncpy(logBuf, buf, sizeof(logBuf));
+        logBuf[sizeof(logBuf) - 1] = '\0';
+        size_t len = strlen(logBuf);
+        while (len && (logBuf[len - 1] == '\n' || logBuf[len - 1] == '\r')) {
+            logBuf[--len] = '\0';
+        }
+        if (SERIAL_TERMINAL_TRANSFER_ENABLED) serialLogPushLine(logBuf, true);
+        return serialHw.print(buf);
+    }
+};
+
+MirroredSerialPort serialMirrorPort;
+#define Serial serialMirrorPort
 
 struct FsUploadCtx {
     String destPath;
@@ -210,6 +269,9 @@ bool mqttConnectNow();
 void mqttPublishDiscovery();
 void loadMqttConfig();
 void saveMqttConfig();
+void appendUiSettings(JsonDocument &doc);
+bool handleUiSettingMessage(const char *msg);
+void loadUiRuntimeConfig();
 void lvglMediaPrevPageEvent(lv_event_t *e);
 void lvglMediaNextPageEvent(lv_event_t *e);
 void lvglQueueMediaRefresh();
@@ -649,6 +711,18 @@ String audioLastError;
 Preferences wifiPrefs;
 Preferences batteryPrefs;
 Preferences mqttPrefs;
+Preferences uiPrefs;
+char *serialLogRing = nullptr;
+size_t serialLogHead = 0;
+size_t serialLogCount = 0;
+uint32_t serialLastWsPushMs = 0;
+uint32_t serialLogWsMinIntervalMs = SERIAL_LOG_RATE_MS_DEFAULT;
+size_t serialLogKeepLines = SERIAL_LOG_RING_SIZE;
+unsigned long serialTerminalStreamUntilMs = 0;
+bool recordTelemetryEnabled = false;
+bool systemSoundsEnabled = true;
+bool wsRebootOnDisconnectEnabled = false;
+uint32_t telemetryMaxKB = 512;
 String savedStaSsid;
 String savedStaPass;
 String pendingSaveSsid;
@@ -3958,6 +4032,314 @@ void saveStaCreds(const String &ssid, const String &pass)
     savedStaPass = pass;
 }
 
+static bool parseIntMessageValue(const char *value, int &out)
+{
+    if (!value || !*value) return false;
+    char *end = nullptr;
+    const long parsed = strtol(value, &end, 10);
+    if (!end || *end != '\0') return false;
+    if (parsed < INT32_MIN || parsed > INT32_MAX) return false;
+    out = static_cast<int>(parsed);
+    return true;
+}
+
+static void appendUiWidgetPositionIfPresent(JsonDocument &doc,
+                                            Preferences &prefs,
+                                            const char *jsonX,
+                                            const char *jsonY,
+                                            const char *prefX,
+                                            const char *prefY)
+{
+    if (!prefs.isKey(prefX) || !prefs.isKey(prefY)) return;
+    doc[jsonX] = prefs.getInt(prefX, 0);
+    doc[jsonY] = prefs.getInt(prefY, 0);
+}
+
+void appendUiSettings(JsonDocument &doc)
+{
+    uiPrefs.begin("ui", true);
+
+    doc["RecordTelemetry"] = uiPrefs.getBool("record_tel", recordTelemetryEnabled) ? 1 : 0;
+    doc["SystemSounds"] = uiPrefs.getBool("sys_snd", systemSoundsEnabled) ? 1 : 0;
+    doc["SystemVolume"] = uiPrefs.getUChar("sys_vol", mediaVolumePercent);
+    doc["WsRebootOnDisconnect"] = uiPrefs.getBool("ws_reboot", wsRebootOnDisconnectEnabled) ? 1 : 0;
+    doc["TelemetryMaxKB"] = uiPrefs.getUInt("tele_kb", telemetryMaxKB);
+    doc["IndicatorsVisible"] = uiPrefs.getBool("ind_v", true) ? 1 : 0;
+    doc["ImuVisible"] = uiPrefs.getBool("imu_v", true) ? 1 : 0;
+    doc["MediaVisible"] = uiPrefs.getBool("med_v", true) ? 1 : 0;
+    doc["PathVisible"] = uiPrefs.getBool("path_v", true) ? 1 : 0;
+    doc["Model3DVisible"] = uiPrefs.getBool("mod_v", true) ? 1 : 0;
+    doc["SerialVisible"] = uiPrefs.getBool("ser_v", true) ? 1 : 0;
+
+    appendUiWidgetPositionIfPresent(doc, uiPrefs, "IndicatorsX", "IndicatorsY", "ind_x", "ind_y");
+    appendUiWidgetPositionIfPresent(doc, uiPrefs, "ImuX", "ImuY", "imu_x", "imu_y");
+    appendUiWidgetPositionIfPresent(doc, uiPrefs, "MediaX", "MediaY", "med_x", "med_y");
+    appendUiWidgetPositionIfPresent(doc, uiPrefs, "PathX", "PathY", "path_x", "path_y");
+    appendUiWidgetPositionIfPresent(doc, uiPrefs, "Model3DX", "Model3DY", "mod_x", "mod_y");
+    appendUiWidgetPositionIfPresent(doc, uiPrefs, "SerialX", "SerialY", "ser_x", "ser_y");
+
+    doc["ViewOverlapFx"] = uiPrefs.getBool("ovl_fx", true) ? 1 : 0;
+    doc["ViewSnapFx"] = uiPrefs.getBool("snap_fx", true) ? 1 : 0;
+    doc["ViewGravityFx"] = uiPrefs.getBool("grav_fx", true) ? 1 : 0;
+    doc["ViewGravityStr"] = uiPrefs.getInt("grav_str", 55);
+    doc["SerialLogRateMs"] = uiPrefs.getUInt("ser_rate", SERIAL_LOG_RATE_MS_DEFAULT);
+    doc["SerialLogKeepLines"] = uiPrefs.getUInt("ser_keep", SERIAL_LOG_RING_SIZE);
+
+    uiPrefs.end();
+}
+
+void loadUiRuntimeConfig()
+{
+    uiPrefs.begin("ui", true);
+    recordTelemetryEnabled = uiPrefs.getBool("record_tel", false);
+    systemSoundsEnabled = uiPrefs.getBool("sys_snd", true);
+    mediaVolumePercent = uiPrefs.getUChar("sys_vol", mediaVolumePercent);
+    wsRebootOnDisconnectEnabled = uiPrefs.getBool("ws_reboot", false);
+    telemetryMaxKB = uiPrefs.getUInt("tele_kb", 512);
+    serialLogWsMinIntervalMs = uiPrefs.getUInt("ser_rate", SERIAL_LOG_RATE_MS_DEFAULT);
+    serialLogKeepLines = static_cast<size_t>(uiPrefs.getUInt("ser_keep", SERIAL_LOG_RING_SIZE));
+    uiPrefs.end();
+    audioSetVolumeImmediate(mediaVolumePercent);
+}
+
+bool handleUiSettingMessage(const char *msg)
+{
+    if (!msg || !*msg) return false;
+    const char *comma = strchr(msg, ',');
+    if (!comma || comma == msg || !comma[1]) return false;
+
+    const size_t keyLen = static_cast<size_t>(comma - msg);
+    if (keyLen == 0 || keyLen >= 32) return false;
+
+    char key[32];
+    memcpy(key, msg, keyLen);
+    key[keyLen] = '\0';
+
+    const char *value = comma + 1;
+    int parsed = 0;
+
+    uiPrefs.begin("ui", false);
+    bool handled = true;
+
+    if (strcmp(key, "RecordTelemetry") == 0) {
+        recordTelemetryEnabled = atoi(value) != 0;
+        uiPrefs.putBool("record_tel", recordTelemetryEnabled);
+    }
+    else if (strcmp(key, "SystemSounds") == 0) {
+        systemSoundsEnabled = atoi(value) != 0;
+        uiPrefs.putBool("sys_snd", systemSoundsEnabled);
+    }
+    else if (strcmp(key, "SystemVolume") == 0 && parseIntMessageValue(value, parsed)) {
+        mediaVolumePercent = static_cast<uint8_t>(max(0, min(100, parsed)));
+        uiPrefs.putUChar("sys_vol", mediaVolumePercent);
+        audioSetVolumeImmediate(mediaVolumePercent);
+    }
+    else if (strcmp(key, "WsRebootOnDisconnect") == 0) {
+        wsRebootOnDisconnectEnabled = atoi(value) != 0;
+        uiPrefs.putBool("ws_reboot", wsRebootOnDisconnectEnabled);
+    }
+    else if (strcmp(key, "TelemetryMaxKB") == 0 && parseIntMessageValue(value, parsed)) {
+        telemetryMaxKB = static_cast<uint32_t>(max(32, min(8192, parsed)));
+        uiPrefs.putUInt("tele_kb", telemetryMaxKB);
+    }
+    else if (strcmp(key, "IndicatorsVisible") == 0) uiPrefs.putBool("ind_v", atoi(value) != 0);
+    else if (strcmp(key, "IndicatorsX") == 0 && parseIntMessageValue(value, parsed)) uiPrefs.putInt("ind_x", parsed);
+    else if (strcmp(key, "IndicatorsY") == 0 && parseIntMessageValue(value, parsed)) uiPrefs.putInt("ind_y", parsed);
+    else if (strcmp(key, "ImuVisible") == 0) uiPrefs.putBool("imu_v", atoi(value) != 0);
+    else if (strcmp(key, "ImuX") == 0 && parseIntMessageValue(value, parsed)) uiPrefs.putInt("imu_x", parsed);
+    else if (strcmp(key, "ImuY") == 0 && parseIntMessageValue(value, parsed)) uiPrefs.putInt("imu_y", parsed);
+    else if (strcmp(key, "MediaVisible") == 0) uiPrefs.putBool("med_v", atoi(value) != 0);
+    else if (strcmp(key, "MediaX") == 0 && parseIntMessageValue(value, parsed)) uiPrefs.putInt("med_x", parsed);
+    else if (strcmp(key, "MediaY") == 0 && parseIntMessageValue(value, parsed)) uiPrefs.putInt("med_y", parsed);
+    else if (strcmp(key, "PathVisible") == 0) uiPrefs.putBool("path_v", atoi(value) != 0);
+    else if (strcmp(key, "PathX") == 0 && parseIntMessageValue(value, parsed)) uiPrefs.putInt("path_x", parsed);
+    else if (strcmp(key, "PathY") == 0 && parseIntMessageValue(value, parsed)) uiPrefs.putInt("path_y", parsed);
+    else if (strcmp(key, "Model3DVisible") == 0) uiPrefs.putBool("mod_v", atoi(value) != 0);
+    else if (strcmp(key, "Model3DX") == 0 && parseIntMessageValue(value, parsed)) uiPrefs.putInt("mod_x", parsed);
+    else if (strcmp(key, "Model3DY") == 0 && parseIntMessageValue(value, parsed)) uiPrefs.putInt("mod_y", parsed);
+    else if (strcmp(key, "SerialVisible") == 0) uiPrefs.putBool("ser_v", atoi(value) != 0);
+    else if (strcmp(key, "SerialX") == 0 && parseIntMessageValue(value, parsed)) uiPrefs.putInt("ser_x", parsed);
+    else if (strcmp(key, "SerialY") == 0 && parseIntMessageValue(value, parsed)) uiPrefs.putInt("ser_y", parsed);
+    else if (strcmp(key, "ViewOverlapFx") == 0) uiPrefs.putBool("ovl_fx", atoi(value) != 0);
+    else if (strcmp(key, "ViewSnapFx") == 0) uiPrefs.putBool("snap_fx", atoi(value) != 0);
+    else if (strcmp(key, "ViewGravityFx") == 0) uiPrefs.putBool("grav_fx", atoi(value) != 0);
+    else if (strcmp(key, "ViewGravityStr") == 0 && parseIntMessageValue(value, parsed)) uiPrefs.putInt("grav_str", max(0, min(100, parsed)));
+    else if (strcmp(key, "SerialLogRateMs") == 0 && parseIntMessageValue(value, parsed)) {
+        serialLogWsMinIntervalMs = static_cast<uint32_t>(max(0, min(1000, parsed)));
+        uiPrefs.putUInt("ser_rate", serialLogWsMinIntervalMs);
+    }
+    else if (strcmp(key, "SerialLogKeepLines") == 0 && parseIntMessageValue(value, parsed)) {
+        serialLogKeepLines = static_cast<size_t>(max(20, min(static_cast<int>(SERIAL_LOG_RING_SIZE), parsed)));
+        uiPrefs.putUInt("ser_keep", static_cast<uint32_t>(serialLogKeepLines));
+    }
+    else handled = false;
+
+    uiPrefs.end();
+    return handled;
+}
+
+static bool initSerialLogStorage()
+{
+    if (serialLogRing) return true;
+    const size_t bytes = SERIAL_LOG_RING_SIZE * (SERIAL_LOG_LINE_MAX + 1);
+    serialLogRing = static_cast<char *>(heap_caps_malloc(bytes, MALLOC_CAP_8BIT));
+    if (!serialLogRing) return false;
+    memset(serialLogRing, 0, bytes);
+    serialLogHead = 0;
+    serialLogCount = 0;
+    return true;
+}
+
+static inline char *serialLogSlot(size_t idx)
+{
+    return serialLogRing + (idx * (SERIAL_LOG_LINE_MAX + 1));
+}
+
+static size_t serialLogActiveCapacity()
+{
+    return max<size_t>(20, min<size_t>(SERIAL_LOG_RING_SIZE, serialLogKeepLines));
+}
+
+static bool serialTerminalStreamingActive()
+{
+    if (!SERIAL_TERMINAL_TRANSFER_ENABLED) return false;
+    if (serialTerminalStreamUntilMs == 0) return false;
+    return static_cast<long>(serialTerminalStreamUntilMs - millis()) > 0;
+}
+
+static void markSerialTerminalStreamingActive(unsigned long durationMs = 180000UL)
+{
+    if (!SERIAL_TERMINAL_TRANSFER_ENABLED) return;
+    serialTerminalStreamUntilMs = millis() + durationMs;
+}
+
+static void clearSerialLogBuffer()
+{
+    serialLogHead = 0;
+    serialLogCount = 0;
+    if (serialLogRing) {
+        const size_t bytes = SERIAL_LOG_RING_SIZE * (SERIAL_LOG_LINE_MAX + 1);
+        memset(serialLogRing, 0, bytes);
+    }
+}
+
+static String serialLogUrlEncode(const char *text)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    if (!text) return "";
+    String out;
+    const size_t len = strlen(text);
+    out.reserve(len * 3U + 1U);
+    for (const uint8_t *p = reinterpret_cast<const uint8_t *>(text); *p; ++p) {
+        const uint8_t c = *p;
+        if ((c >= 'A' && c <= 'Z') ||
+            (c >= 'a' && c <= 'z') ||
+            (c >= '0' && c <= '9') ||
+            c == '-' || c == '_' || c == '.' || c == '~') {
+            out += static_cast<char>(c);
+        } else {
+            out += '%';
+            out += hex[(c >> 4) & 0x0F];
+            out += hex[c & 0x0F];
+        }
+    }
+    return out;
+}
+
+void serialLogPushLine(const char *line, bool sendWs)
+{
+    if (!SERIAL_TERMINAL_TRANSFER_ENABLED) return;
+    if (!line) return;
+    if (!initSerialLogStorage()) return;
+
+    char tmp[SERIAL_LOG_LINE_MAX + 1];
+    size_t out = 0;
+    for (const char *p = line; *p && out < SERIAL_LOG_LINE_MAX; ++p) {
+        if (*p == '\r') continue;
+        tmp[out++] = *p;
+    }
+    while (out && (tmp[out - 1] == '\n' || tmp[out - 1] == '\r')) out--;
+    tmp[out] = '\0';
+
+    const size_t cap = serialLogActiveCapacity();
+    char *slot = serialLogSlot(serialLogHead);
+    memcpy(slot, tmp, out + 1U);
+    serialLogHead = (serialLogHead + 1U) % cap;
+    if (serialLogCount < cap) serialLogCount++;
+
+    if (!sendWs || wsCarInput.count() == 0 || serialLogWsMinIntervalMs == 0 || !serialTerminalStreamingActive()) return;
+    const uint32_t now = millis();
+    if (static_cast<uint32_t>(now - serialLastWsPushMs) < serialLogWsMinIntervalMs) return;
+    serialLastWsPushMs = now;
+    wsCarInput.textAll(String("SERLOG,") + serialLogUrlEncode(tmp));
+}
+
+static void printSerialHelp()
+{
+    Serial.println("Commands: help, heap, wifi, sd, version, reboot, clear");
+}
+
+void executeSerialCommand(String input)
+{
+    input.trim();
+    if (!input.length()) return;
+
+    String cmd = input;
+    cmd.toLowerCase();
+
+    if (cmd == "help") {
+        printSerialHelp();
+        return;
+    }
+    if (cmd == "heap" || cmd == "debug") {
+        Serial.printf("Free heap: %u bytes\n", static_cast<unsigned int>(ESP.getFreeHeap()));
+        Serial.printf("Min free heap: %u bytes\n", static_cast<unsigned int>(ESP.getMinFreeHeap()));
+        Serial.printf("Heap size: %u bytes\n", static_cast<unsigned int>(ESP.getHeapSize()));
+        Serial.printf("Largest 8-bit block: %u bytes\n",
+                      static_cast<unsigned int>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+        return;
+    }
+    if (cmd == "wifi") {
+        const wl_status_t st = wifiStatusSafe();
+        Serial.printf("WiFi.status(): %d\n", static_cast<int>(st));
+        Serial.printf("STA connected: %s\n", wifiConnectedSafe() ? "yes" : "no");
+        Serial.printf("STA SSID: %s\n", wifiSsidSafe().c_str());
+        Serial.printf("STA IP: %s\n", wifiIpSafe().c_str());
+        Serial.printf("STA RSSI: %d\n", static_cast<int>(wifiRssiSafe()));
+        Serial.printf("AP active: %s\n", apModeActive ? "yes" : "no");
+        if (apModeActive) Serial.printf("AP IP: %s\n", WiFi.softAPIP().toString().c_str());
+        return;
+    }
+    if (cmd == "sd") {
+        const bool mounted = sdEnsureMounted();
+        Serial.printf("SD mounted: %s\n", mounted ? "yes" : "no");
+        if (mounted) {
+            const uint64_t total = SD.totalBytes();
+            const uint64_t used = SD.usedBytes();
+            Serial.printf("SD total: %llu bytes\n", static_cast<unsigned long long>(total));
+            Serial.printf("SD used: %llu bytes\n", static_cast<unsigned long long>(used));
+        }
+        return;
+    }
+    if (cmd == "version") {
+        Serial.printf("Firmware: %s\n", FW_VERSION);
+        return;
+    }
+    if (cmd == "clear") {
+        clearSerialLogBuffer();
+        Serial.println("[SERIAL] log cleared");
+        return;
+    }
+    if (cmd == "reboot" || cmd == "reset") {
+        Serial.println("[SERIAL] reboot requested");
+        rebootRequested = true;
+        rebootRequestedAtMs = millis();
+        return;
+    }
+
+    Serial.printf("[UNKNOWN COMMAND] %s\n", input.c_str());
+}
+
 static String wifiDesiredStaSsid()
 {
     return pendingSaveCreds ? pendingSaveSsid : savedStaSsid;
@@ -4623,6 +5005,8 @@ void sendCarInputTelemetrySnapshot(AsyncWebSocketClient *client)
 {
     sampleTopIndicators();
 
+    if (ESP.getFreeHeap() < WS_TELEMETRY_MIN_FREE_HEAP) return;
+
     const bool staConnected = wifiConnectedSafe();
     const int wifiQuality = staConnected ? static_cast<int>(wifiQualityPercentFromRssi(wifiRssiSafe())) : 0;
     const unsigned long uptimeSecs = millis() / 1000UL;
@@ -4685,6 +5069,11 @@ void handleCarInputSocketEvent(AsyncWebSocket *serverRef,
 
     if (strcmp(msg, "PING") == 0 || strcmp(msg, "ping") == 0) {
         client->text("PONG");
+        return;
+    }
+
+    if (handleUiSettingMessage(msg)) {
+        return;
     }
 }
 
@@ -4944,6 +5333,69 @@ void setupWebRoutes()
     server.on("/version", HTTP_GET, [](AsyncWebServerRequest *request) {
         JsonDocument doc;
         doc["current"] = FW_VERSION;
+        String payload;
+        serializeJson(doc, payload);
+        request->send(200, "application/json", payload);
+    });
+
+    server.on("/set_ws_reboot_watchdog", HTTP_GET, [](AsyncWebServerRequest *request) {
+        const bool enabled = request->hasParam("value") && request->getParam("value")->value().toInt() != 0;
+        wsRebootOnDisconnectEnabled = enabled;
+        uiPrefs.begin("ui", false);
+        uiPrefs.putBool("ws_reboot", enabled);
+        uiPrefs.end();
+        JsonDocument doc;
+        doc["ok"] = true;
+        doc["value"] = enabled ? 1 : 0;
+        String payload;
+        serializeJson(doc, payload);
+        request->send(200, "application/json", payload);
+    });
+
+    server.on("/serial/logs", HTTP_GET, [](AsyncWebServerRequest *request) {
+        JsonDocument doc;
+        JsonArray lines = doc["lines"].to<JsonArray>();
+        size_t count = 0;
+        if (SERIAL_TERMINAL_TRANSFER_ENABLED) {
+            markSerialTerminalStreamingActive();
+            const size_t cap = serialLogActiveCapacity();
+            count = min(serialLogCount, cap);
+            const size_t start = (serialLogHead + cap - count) % cap;
+            for (size_t i = 0; i < count; ++i) {
+                const size_t idx = (start + i) % cap;
+                if (serialLogRing) lines.add(serialLogSlot(idx));
+            }
+        }
+        doc["count"] = static_cast<uint32_t>(count);
+        doc["ok"] = true;
+        doc["enabled"] = SERIAL_TERMINAL_TRANSFER_ENABLED ? 1 : 0;
+        String payload;
+        serializeJson(doc, payload);
+        request->send(200, "application/json", payload);
+    });
+
+    server.on("/serial/command", HTTP_ANY, [](AsyncWebServerRequest *request) {
+        String cmd;
+        if (request->hasParam("cmd", true)) cmd = request->getParam("cmd", true)->value();
+        else if (request->hasParam("cmd")) cmd = request->getParam("cmd")->value();
+
+        JsonDocument doc;
+        if (!cmd.length()) {
+            doc["ok"] = false;
+            doc["error"] = "missing_cmd";
+            String payload;
+            serializeJson(doc, payload);
+            request->send(400, "application/json", payload);
+            return;
+        }
+
+        if (SERIAL_TERMINAL_TRANSFER_ENABLED) {
+            markSerialTerminalStreamingActive();
+            serialLogPushLine((String("> ") + cmd).c_str(), true);
+            executeSerialCommand(cmd);
+        }
+        doc["ok"] = true;
+        doc["enabled"] = SERIAL_TERMINAL_TRANSFER_ENABLED ? 1 : 0;
         String payload;
         serializeJson(doc, payload);
         request->send(200, "application/json", payload);
@@ -5743,20 +6195,8 @@ void setupWebRoutes()
         doc["horizontalScreen"] = 0;
         doc["holdBucket"] = 0;
         doc["holdAux"] = 0;
-        doc["RecordTelemetry"] = 0;
-        doc["SystemSounds"] = 1;
         doc["BluepadEnabled"] = 0;
         doc["GamepadEnabled"] = 0;
-        doc["SystemVolume"] = mediaVolumePercent;
-        doc["WsRebootOnDisconnect"] = 0;
-        doc["SerialLogRateMs"] = 40;
-        doc["SerialLogKeepLines"] = 200;
-        doc["IndicatorsVisible"] = 1;
-        doc["ImuVisible"] = 1;
-        doc["MediaVisible"] = 1;
-        doc["PathVisible"] = 1;
-        doc["Model3DVisible"] = 1;
-        doc["SerialVisible"] = 1;
         doc["ModelRotX"] = 0;
         doc["ModelRotY"] = 0;
         doc["ModelRotZ"] = 0;
@@ -5766,10 +6206,7 @@ void setupWebRoutes()
         doc["ModelAxisX"] = "x";
         doc["ModelAxisY"] = "y";
         doc["ModelAxisZ"] = "z";
-        doc["ViewOverlapFx"] = 1;
-        doc["ViewSnapFx"] = 1;
-        doc["ViewGravityFx"] = 1;
-        doc["ViewGravityStr"] = 55;
+        appendUiSettings(doc);
 
         String payload;
         serializeJson(doc, payload);
@@ -6511,6 +6948,7 @@ void setup()
     analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);
     analogSetPinAttenuation(LIGHT_ADC_PIN, ADC_11db);
     randomSeed(static_cast<unsigned long>(esp_random()));
+    loadUiRuntimeConfig();
     mqttBuildIdentity();
     loadMqttConfig();
     if (mqttCfg.enabled) mqttStatusLine = "Enabled";
