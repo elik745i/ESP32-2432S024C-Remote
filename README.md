@@ -35,10 +35,13 @@ Currently supported boards:
 - Wake touch handling now consumes the wake gesture fully before allowing normal menu taps
 - Added encrypted peer-to-peer chat over LAN using UDP and public-key cryptography
 - Added encrypted global chat relay over MQTT using per-peer inbox topics
-- Added peer discovery, pairing, enable/disable, and remove flow
+- Added automatic peer discovery plus a manual `Scan` action in `Chat -> Peers`
+- Added peer pairing, enable/disable, and unpair flow directly in the on-device `Peers` screen
 - Chat history is now stored on the SD card in `/Conversations`
 - Each contact uses its own conversation text file, with friendlier filenames
-- Chat now opens in contacts-first mode; selecting a contact opens its conversation
+- Chat now opens in contacts-first mode; all enabled paired peers stay in the contacts list even if history is cleared
+- Selecting a contact opens its conversation, and conversation actions are available from a 3-dot menu
+- Conversation menu supports `Clear` and `Clear for All`
 - Swipe-back inside Chat now returns from a conversation to contacts before leaving Chat
 - Added persistent device rename in `Config`
 - Renamed devices are used in chat/discovery UI and old conversation display is normalized to current names
@@ -185,6 +188,10 @@ Board-specific defaults:
 - `Chat` now opens as a contacts list first, then switches to a single conversation after contact selection
 - In conversation view, the contact name is shown in the top bar and swipe-back returns to the contacts list
 - Chat message bubbles are left/right aligned by sender and capped to roughly `75%` width
+- The conversation menu is opened from the 3-dot button; tapping away dismisses it
+- `Chat -> Peers` shows paired devices and discovered devices in separate sections
+- The `Scan` button forces an immediate discovery broadcast; devices are still discovered automatically in the background
+- The `Scan` button shows inline state feedback: `Scanning...`, then `Done`, then back to `Scan`
 
 ### Future UI reference
 
@@ -279,10 +286,53 @@ Media browser/player accepts:
 
 - LAN chat uses encrypted UDP peer-to-peer transport
 - Global chat uses MQTT as a relay, but payloads are still encrypted per trusted peer
-- Peer onboarding can be done on-device from `Chat -> Peers`
+- MQTT chat is not a public room chat; devices must still be paired first
+- Peer onboarding and management can be done on-device from `Chat -> Peers`
 - Trusted peers are stored in preferences
 - Recent chat history is reloaded from SD when a conversation is opened
 - Only the recent in-memory window is kept in RAM; older history remains on SD
+- Conversation history is stored per contact under `/Conversations`
+
+## Chat Usage
+
+### LAN chat
+
+1. Connect both devices to the same Wi-Fi network.
+2. Open `Chat -> Peers` on both devices.
+3. Wait for auto discovery or tap `Scan` to force a discovery broadcast.
+4. In the `Discovered` section, tap `Pair` for the other device.
+5. Return to `Chat`, select the paired contact, and start messaging.
+
+Notes:
+- LAN chat uses encrypted UDP directly between paired devices.
+- Paired devices remain available in the contacts list even after clearing conversation history.
+
+### MQTT chat
+
+1. Pair the devices first using the LAN flow above.
+2. On both devices, open `Config -> MQTT Config`.
+3. Enable MQTT.
+4. Enter the same broker and `Chat room` on both devices.
+5. Save the settings and wait for MQTT to connect.
+6. When MQTT is connected, the top bar shows an MQTT icon next to the Wi-Fi indicator.
+7. Open `Chat`, select the paired contact, and send messages normally.
+
+Notes:
+- MQTT is used as a global relay when direct LAN delivery is not enough.
+- MQTT payloads are end-to-end encrypted per trusted peer using the same peer keys.
+- The broker can relay messages but cannot read chat contents.
+- The `Chat room` is a namespace for routing, not the trust boundary. Trust still comes from pairing.
+
+### Peer management
+
+- `Paired Devices` section:
+  - `Enable` / `Disable` temporarily controls whether that peer can be used
+  - `Unpair` removes the trusted peer entry
+- `Discovered` section:
+  - `Pair` trusts that discovered device and adds it to saved peers
+- Conversation menu in an open chat:
+  - `Clear` removes only local history for that conversation
+  - `Clear for All` removes local history and sends an encrypted delete request to the paired peer
 
 ## Build and Flash
 

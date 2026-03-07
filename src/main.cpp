@@ -318,6 +318,7 @@ void mqttService();
 bool mqttConnectNow();
 void mqttPublishDiscovery();
 bool mqttPublishChatMessage(const String &text);
+bool mqttPublishConversationDelete();
 void loadMqttConfig();
 void saveMqttConfig();
 void appendUiSettings(JsonDocument &doc);
@@ -333,6 +334,7 @@ void saveP2pConfig();
 void p2pEnsureUdp();
 void p2pService();
 bool p2pSendChatMessage(const String &text);
+bool p2pSendConversationDelete();
 String p2pPublicKeyHex();
 static int p2pFindPeerByPubKeyHex(const String &pubKeyHex);
 void p2pBroadcastDiscover();
@@ -341,10 +343,16 @@ void setupWifiAndServer();
 void lvglRefreshChatUi();
 void lvglRefreshChatPeerUi();
 void lvglSetChatKeyboardVisible(bool visible);
+void lvglSyncStatusLine();
 void chatReloadRecentMessagesFromSd(const String &peerKey);
 void lvglRefreshChatContactsUi();
 static String chatDisplayNameForPeerKey(const String &peerKey);
+static void chatClearCache();
 void lvglRefreshChatLayout();
+void lvglSetChatPeerScanButtonStatus(const char *text, uint32_t revertDelayMs = 0);
+void lvglToggleChatMenuEvent(lv_event_t *e);
+void lvglDeleteChatConversationEvent(lv_event_t *e);
+void lvglDeleteChatConversationForAllEvent(lv_event_t *e);
 void lvglMediaPrevPageEvent(lv_event_t *e);
 void lvglMediaNextPageEvent(lv_event_t *e);
 void lvglQueueMediaRefresh();
@@ -471,8 +479,12 @@ static lv_obj_t *lvglChatComposer = nullptr;
 static lv_obj_t *lvglChatContacts = nullptr;
 static lv_obj_t *lvglChatContactLabel = nullptr;
 static lv_obj_t *lvglChatPeersBtn = nullptr;
+static lv_obj_t *lvglChatMenuBtn = nullptr;
+static lv_obj_t *lvglChatMenuBackdrop = nullptr;
+static lv_obj_t *lvglChatMenuPanel = nullptr;
 static lv_obj_t *lvglChatPeerList = nullptr;
 static lv_obj_t *lvglChatPeerIdentityLabel = nullptr;
+static lv_obj_t *lvglChatPeerScanBtn = nullptr;
 static lv_obj_t *lvglAirplaneBtn = nullptr;
 static lv_obj_t *lvglAirplaneBtnLabel = nullptr;
 static lv_obj_t *lvglConfigWrap = nullptr;
@@ -487,6 +499,8 @@ static lv_obj_t *lvglTetrisBoardObj = nullptr;
 static lv_obj_t *lvglTopBarRoot = nullptr;
 static constexpr uint8_t LVGL_MAX_TOP_INDICATORS = 16;
 static lv_obj_t *lvglTopIndicators[LVGL_MAX_TOP_INDICATORS] = {};
+static bool lvglKeyboardShiftOneShot = false;
+static unsigned long lvglKeyboardShiftLastPressMs = 0;
 static uint8_t lvglTopIndicatorCount = 0;
 static int lvglMqttEditIndex = 0;
 static String lvglWifiPendingSsid;
@@ -808,6 +822,17 @@ static const String &deviceShortNameValue()
     return deviceShortName;
 }
 
+static String chatSafeFileToken(const String &raw);
+static String chatFriendlyLogFilenameForPeer(const String &peerKey);
+static String chatLegacyLogPathForPeer(const String &peerKey);
+static String chatLogPathForPeer(const String &peerKey);
+
+static void lvglHideChatMenu()
+{
+    if (lvglChatMenuBackdrop) lv_obj_add_flag(lvglChatMenuBackdrop, LV_OBJ_FLAG_HIDDEN);
+    if (lvglChatMenuPanel) lv_obj_add_flag(lvglChatMenuPanel, LV_OBJ_FLAG_HIDDEN);
+}
+
 static String chatDisplayAuthorForMessage(const ChatMessage &msg)
 {
     if (msg.outgoing) return deviceShortNameValue();
@@ -816,6 +841,72 @@ static String chatDisplayAuthorForMessage(const ChatMessage &msg)
         if (!peerName.isEmpty()) return peerName;
     }
     return msg.author;
+}
+
+static bool chatDeleteHistoryForPeer(const String &peerKey)
+{
+    if (peerKey.isEmpty()) return false;
+    if (!sdEnsureMounted(true)) return false;
+
+    const String safeKey = chatSafeFileToken(peerKey);
+    String shortKey = safeKey;
+    if (shortKey.length() > 8) shortKey = shortKey.substring(0, 8);
+    const String keySuffix = "_" + shortKey + ".txt";
+    const String resolvedPath = chatLogPathForPeer(peerKey);
+    const String friendlyPath = String(CHAT_LOG_DIR) + "/" + chatFriendlyLogFilenameForPeer(peerKey);
+    const String legacyPath = chatLegacyLogPathForPeer(peerKey);
+
+    fsWriteBegin();
+    bool removedAny = false;
+    if (sdLock()) {
+        auto tryRemove = [&](const String &path) {
+            if (!path.isEmpty() && SD.exists(path) && SD.remove(path)) removedAny = true;
+        };
+
+        tryRemove(resolvedPath);
+        if (friendlyPath != resolvedPath) tryRemove(friendlyPath);
+        if (legacyPath != resolvedPath && legacyPath != friendlyPath) tryRemove(legacyPath);
+
+        File dir = SD.open(CHAT_LOG_DIR, FILE_READ);
+        if (dir) {
+            File entry = dir.openNextFile();
+            while (entry) {
+                if (!entry.isDirectory()) {
+                    String name = String(entry.name());
+                    if (name.endsWith(keySuffix)) {
+                        const String fullPath = String(CHAT_LOG_DIR) + "/" + name;
+                        if (fullPath != resolvedPath && fullPath != friendlyPath && fullPath != legacyPath && SD.exists(fullPath) && SD.remove(fullPath)) {
+                            removedAny = true;
+                        }
+                    }
+                }
+                entry.close();
+                entry = dir.openNextFile();
+            }
+            dir.close();
+        }
+        sdUnlock();
+    }
+    fsWriteEnd();
+    return removedAny;
+}
+
+static bool chatApplyConversationDeletion(const String &peerKey, const String &status)
+{
+    if (peerKey.isEmpty()) return false;
+    const bool removed = chatDeleteHistoryForPeer(peerKey);
+    if (currentChatPeerKey == peerKey) {
+        currentChatPeerKey = "";
+        chatClearCache();
+    }
+    if (lvglReady) {
+        lvglRefreshChatLayout();
+        lvglRefreshChatContactsUi();
+        lvglRefreshChatUi();
+    }
+    uiStatusLine = status;
+    if (lvglReady) lvglSyncStatusLine();
+    return removed;
 }
 
 struct P2PPeer {
@@ -1696,6 +1787,7 @@ void lvglTopIndicatorsDrawEvent(lv_event_t *e)
 
     const bool connected = wifiConnectedSafe();
     const int rssi = connected ? wifiRssiSafe() : -127;
+    const bool mqttConnected = mqttCfg.enabled && mqttClient.connected();
     int bars = 0;
     if (connected) {
         if (rssi >= -55) bars = 4;
@@ -1714,14 +1806,6 @@ void lvglTopIndicatorsDrawEvent(lv_event_t *e)
     if (batt < 25) battCol = lv_color_hex(0xE45B5B);
     else if (batt < 55) battCol = lv_color_hex(0xF2C35E);
     if (batteryCharging) battCol = lv_color_hex(battPulse ? 0x81E8FF : 0x4FC3F7);
-
-    uint8_t light = lightPercent;
-    if (light > 100) light = 100;
-    int lightFillW = (static_cast<int>(light) * 32) / 100;
-    if (light > 0 && lightFillW < 1) lightFillW = 1;
-    lv_color_t lightCol = lv_color_hex(0x8D7A3A);
-    if (light >= 33) lightCol = lv_color_hex(0xF4B942);
-    if (light >= 66) lightCol = lv_color_hex(0xFFD166);
 
     static const int antHeights[4] = {6, 10, 16, 22};
     const int antX = ox + 10;
@@ -1765,13 +1849,25 @@ void lvglTopIndicatorsDrawEvent(lv_event_t *e)
         }
     }
 
+    if (mqttConnected) {
+        const lv_color_t mqttCol = lv_color_hex(0x7FDBCA);
+        const int mx = antX + 38;
+        const int my = topY + 4;
+        lvglDrawLineSeg(drawCtx, mx + 5, my + 4, mx + 12, my + 1, mqttCol, 2);
+        lvglDrawLineSeg(drawCtx, mx + 5, my + 4, mx + 12, my + 15, mqttCol, 2);
+        lvglDrawRectSolid(drawCtx, mx + 1, my + 1, 8, 8, mqttCol);
+        lvglDrawRectSolid(drawCtx, mx + 9, my + 0, 8, 8, mqttCol, LV_OPA_90);
+        lvglDrawRectSolid(drawCtx, mx + 9, my + 12, 8, 8, mqttCol, LV_OPA_90);
+    }
+
+    const int battX = ox + ow - 54;
+
     lv_draw_rect_dsc_t frame;
     lv_draw_rect_dsc_init(&frame);
     frame.bg_opa = LV_OPA_TRANSP;
     frame.border_width = 1;
     frame.border_color = lv_color_hex(0x8A97A4);
     frame.radius = 2;
-    const int battX = ox + ow - 54;
     lv_area_t batA;
     batA.x1 = static_cast<lv_coord_t>(battX);
     batA.y1 = static_cast<lv_coord_t>(topY + 2);
@@ -1781,10 +1877,23 @@ void lvglTopIndicatorsDrawEvent(lv_event_t *e)
     lvglDrawRectSolid(drawCtx, battX + 36, topY + 8, 6, 8, batteryCharging ? battCol : lv_color_hex(0x8A97A4));
     if (battFillW > 0) lvglDrawRectSolid(drawCtx, battX + 3, topY + 5, battFillW, 14, battCol);
 
-    const int lightX = ox + (ow / 2) - 16;
-    lvglDrawRectSolid(drawCtx, lightX + 10, topY + 0, 12, 12, lightCol);
-    lvglDrawRectSolid(drawCtx, lightX + 0, topY + 18, 32, 8, lv_color_hex(0x2D3843));
-    if (lightFillW > 0) lvglDrawRectSolid(drawCtx, lightX + 0, topY + 18, lightFillW, 8, lightCol);
+    String topName = deviceShortNameValue();
+    if (topName.length() > 8) topName.remove(8);
+    lv_draw_label_dsc_t labelDsc;
+    lv_draw_label_dsc_init(&labelDsc);
+    labelDsc.color = lv_color_hex(0xC8D3DD);
+    labelDsc.opa = LV_OPA_COVER;
+    labelDsc.align = LV_TEXT_ALIGN_CENTER;
+    lv_area_t nameA;
+    nameA.x1 = static_cast<lv_coord_t>(ox + 56);
+    nameA.y1 = static_cast<lv_coord_t>(topY + 1);
+    nameA.x2 = static_cast<lv_coord_t>(battX - 8);
+    nameA.y2 = static_cast<lv_coord_t>(topY + 24);
+    lv_draw_label(drawCtx, &labelDsc, &nameA, topName.c_str(), nullptr);
+    lv_area_t nameABold = nameA;
+    nameABold.x1 += 1;
+    nameABold.x2 += 1;
+    lv_draw_label(drawCtx, &labelDsc, &nameABold, topName.c_str(), nullptr);
 }
 
 void lvglCreateTopIndicators(lv_obj_t *header, bool backToHome)
@@ -2226,6 +2335,38 @@ static void p2pTouchPeerSeen(int idx, const IPAddress &ip, uint16_t port)
     p2pPeers[idx].lastSeenMs = millis();
 }
 
+static void p2pRefreshTrustedPeerIdentity(const String &pubKeyHex, const String &name, const IPAddress &ip, uint16_t port)
+{
+    const int idx = p2pFindPeerByPubKeyHex(pubKeyHex);
+    if (idx < 0) return;
+
+    bool changed = false;
+    const String nextName = sanitizeDeviceShortName(name);
+    if (!nextName.isEmpty() && p2pPeers[idx].name != nextName) {
+        p2pPeers[idx].name = nextName;
+        changed = true;
+    }
+    if (ip != IPAddress((uint32_t)0) && p2pPeers[idx].ip != ip) {
+        p2pPeers[idx].ip = ip;
+        changed = true;
+    }
+    const uint16_t nextPort = port ? port : P2P_UDP_PORT;
+    if (p2pPeers[idx].port != nextPort) {
+        p2pPeers[idx].port = nextPort;
+        changed = true;
+    }
+    p2pPeers[idx].lastSeenMs = millis();
+
+    if (changed) {
+        saveP2pConfig();
+        if (lvglReady) {
+            if (uiScreen == UI_CHAT || uiScreen == UI_CHAT_PEERS) lvglRefreshChatContactsUi();
+            if (uiScreen == UI_CHAT) lvglRefreshChatUi();
+            if (uiScreen == UI_CHAT_PEERS) lvglRefreshChatPeerUi();
+        }
+    }
+}
+
 static void p2pTouchDiscoveredSeen(const String &name, const String &pubKeyHex, const IPAddress &ip, uint16_t port)
 {
     if (pubKeyHex.isEmpty()) return;
@@ -2243,6 +2384,7 @@ static void p2pTouchDiscoveredSeen(const String &name, const String &pubKeyHex, 
     p2pDiscoveredPeers[idx].port = port;
     p2pDiscoveredPeers[idx].trusted = p2pFindPeerByPubKeyHex(pubKeyHex) >= 0;
     p2pDiscoveredPeers[idx].lastSeenMs = millis();
+    if (p2pDiscoveredPeers[idx].trusted) p2pRefreshTrustedPeerIdentity(pubKeyHex, name, ip, port);
     if (lvglReady && uiScreen == UI_CHAT_PEERS) lvglRefreshChatPeerUi();
 }
 
@@ -2474,6 +2616,43 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_style_text_color(lvglChatContactLabel, lv_color_hex(0xC8D3DD), 0);
             lv_label_set_long_mode(lvglChatContactLabel, LV_LABEL_LONG_DOT);
 
+            lvglChatMenuBtn = makeSmallBtn(chatOps, LV_SYMBOL_LIST, 34, 28, lv_color_hex(0x2F6D86), lvglToggleChatMenuEvent, nullptr);
+
+            lvglChatMenuBackdrop = lv_obj_create(lvglScrChat);
+            lv_obj_set_size(lvglChatMenuBackdrop, lv_pct(100), UI_CONTENT_H);
+            lv_obj_align(lvglChatMenuBackdrop, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
+            lv_obj_set_style_bg_opa(lvglChatMenuBackdrop, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(lvglChatMenuBackdrop, 0, 0);
+            lv_obj_set_style_pad_all(lvglChatMenuBackdrop, 0, 0);
+            lv_obj_add_flag(lvglChatMenuBackdrop, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(lvglChatMenuBackdrop, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_add_event_cb(
+                lvglChatMenuBackdrop,
+                [](lv_event_t *e) {
+                    (void)e;
+                    lvglHideChatMenu();
+                },
+                LV_EVENT_CLICKED,
+                nullptr);
+
+            lvglChatMenuPanel = lv_obj_create(lvglScrChat);
+            lv_obj_set_size(lvglChatMenuPanel, lv_pct(50), LV_SIZE_CONTENT);
+            lv_obj_align(lvglChatMenuPanel, LV_ALIGN_TOP_RIGHT, -8, UI_CONTENT_TOP_Y + 40);
+            lv_obj_set_style_bg_color(lvglChatMenuPanel, lv_color_hex(0x18222D), 0);
+            lv_obj_set_style_border_color(lvglChatMenuPanel, lv_color_hex(0x536274), 0);
+            lv_obj_set_style_border_width(lvglChatMenuPanel, 1, 0);
+            lv_obj_set_style_radius(lvglChatMenuPanel, 12, 0);
+            lv_obj_set_style_pad_all(lvglChatMenuPanel, 8, 0);
+            lv_obj_set_style_pad_row(lvglChatMenuPanel, 6, 0);
+            lv_obj_set_flex_flow(lvglChatMenuPanel, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_flex_align(lvglChatMenuPanel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+            lv_obj_add_flag(lvglChatMenuPanel, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(lvglChatMenuPanel, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_t *chatClearBtn = makeSmallBtn(lvglChatMenuPanel, "Clear", lv_pct(100), 32, lv_color_hex(0x8A3A3A), lvglDeleteChatConversationEvent, nullptr);
+            if (chatClearBtn) lv_obj_set_width(chatClearBtn, lv_pct(100));
+            lv_obj_t *chatClearAllBtn = makeSmallBtn(lvglChatMenuPanel, "Clear for All", lv_pct(100), 32, lv_color_hex(0x944E2B), lvglDeleteChatConversationForAllEvent, nullptr);
+            if (chatClearAllBtn) lv_obj_set_width(chatClearAllBtn, lv_pct(100));
+
             lvglChatContacts = lv_obj_create(lvglScrChat);
             lv_obj_set_size(lvglChatContacts, lv_pct(100), UI_CONTENT_H - 44);
             lv_obj_align(lvglChatContacts, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y + 44);
@@ -2561,11 +2740,6 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_flex_flow(peerTop, LV_FLEX_FLOW_COLUMN);
             lv_obj_clear_flag(peerTop, LV_OBJ_FLAG_SCROLLABLE);
 
-            lvglChatPeerIdentityLabel = lv_label_create(peerTop);
-            lv_obj_set_width(lvglChatPeerIdentityLabel, lv_pct(100));
-            lv_label_set_long_mode(lvglChatPeerIdentityLabel, LV_LABEL_LONG_WRAP);
-            lv_obj_set_style_text_color(lvglChatPeerIdentityLabel, lv_color_hex(0xC8D3DD), 0);
-
             lv_obj_t *peerOps = lv_obj_create(peerTop);
             lv_obj_set_size(peerOps, lv_pct(100), 30);
             lv_obj_set_style_bg_opa(peerOps, LV_OPA_TRANSP, 0);
@@ -2574,7 +2748,12 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_style_pad_column(peerOps, 6, 0);
             lv_obj_set_flex_flow(peerOps, LV_FLEX_FLOW_ROW);
             lv_obj_clear_flag(peerOps, LV_OBJ_FLAG_SCROLLABLE);
-            makeSmallBtn(peerOps, "Scan", 54, 26, lv_color_hex(0x2F6D86), lvglChatPeerActionEvent, reinterpret_cast<void *>(static_cast<intptr_t>(0)));
+            lvglChatPeerScanBtn = makeSmallBtn(peerOps, "Scan", 54, 26, lv_color_hex(0x2F6D86), lvglChatPeerActionEvent, reinterpret_cast<void *>(static_cast<intptr_t>(0)));
+
+            lvglChatPeerIdentityLabel = lv_label_create(peerTop);
+            lv_obj_set_width(lvglChatPeerIdentityLabel, lv_pct(100));
+            lv_label_set_long_mode(lvglChatPeerIdentityLabel, LV_LABEL_LONG_WRAP);
+            lv_obj_set_style_text_color(lvglChatPeerIdentityLabel, lv_color_hex(0xC8D3DD), 0);
 
             lvglChatPeerList = lv_obj_create(lvglScrChatPeers);
             lv_obj_set_size(lvglChatPeerList, lv_pct(100), UI_CONTENT_H - 74);
@@ -3389,13 +3568,52 @@ void lvglRefreshChatUi()
     lv_obj_scroll_to_view_recursive(lv_obj_get_child(lvglChatList, lv_obj_get_child_cnt(lvglChatList) - 1), LV_ANIM_OFF);
 }
 
+void lvglToggleChatMenuEvent(lv_event_t *e)
+{
+    (void)e;
+    if (!lvglChatMenuPanel || currentChatPeerKey.isEmpty()) return;
+    if (lv_obj_has_flag(lvglChatMenuPanel, LV_OBJ_FLAG_HIDDEN)) {
+        if (lvglChatMenuBackdrop) {
+            lv_obj_clear_flag(lvglChatMenuBackdrop, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_move_foreground(lvglChatMenuBackdrop);
+        }
+        lv_obj_clear_flag(lvglChatMenuPanel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(lvglChatMenuPanel);
+    } else {
+        lvglHideChatMenu();
+    }
+}
+
+void lvglDeleteChatConversationEvent(lv_event_t *e)
+{
+    (void)e;
+    if (currentChatPeerKey.isEmpty()) return;
+    lvglHideChatMenu();
+    chatApplyConversationDeletion(currentChatPeerKey, "Conversation deleted");
+}
+
+void lvglDeleteChatConversationForAllEvent(lv_event_t *e)
+{
+    (void)e;
+    if (currentChatPeerKey.isEmpty()) return;
+    const String peerKey = currentChatPeerKey;
+    lvglHideChatMenu();
+    const bool sentLan = p2pSendConversationDelete();
+    const bool sentGlobal = mqttPublishConversationDelete();
+    chatApplyConversationDeletion(peerKey, "Conversation deleted");
+    uiStatusLine = sentGlobal ? "Conversation deleted for all" : (sentLan ? "Conversation delete sent" : "Deleted locally only");
+    lvglSyncStatusLine();
+}
+
 void lvglRefreshChatLayout()
 {
-    if (!lvglChatContactLabel || !lvglChatContacts || !lvglChatList || !lvglChatComposer || !lvglChatPeersBtn) return;
+    if (!lvglChatContactLabel || !lvglChatContacts || !lvglChatList || !lvglChatComposer || !lvglChatPeersBtn || !lvglChatMenuBtn || !lvglChatMenuPanel || !lvglChatMenuBackdrop) return;
     const bool showingConversation = !currentChatPeerKey.isEmpty();
     if (!showingConversation) {
         lv_label_set_text(lvglChatContactLabel, "");
         lv_obj_clear_flag(lvglChatPeersBtn, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(lvglChatMenuBtn, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(lvglChatMenuPanel, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_size(lvglChatContacts, lv_pct(100), UI_CONTENT_H - 44);
         lv_obj_align(lvglChatContacts, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y + 44);
         lv_obj_set_flex_flow(lvglChatContacts, LV_FLEX_FLOW_COLUMN);
@@ -3408,12 +3626,18 @@ void lvglRefreshChatLayout()
     } else {
         lv_label_set_text_fmt(lvglChatContactLabel, "%s", chatDisplayNameForPeerKey(currentChatPeerKey).c_str());
         lv_obj_add_flag(lvglChatPeersBtn, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(lvglChatMenuBtn, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(lvglChatContacts, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(lvglChatList, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(lvglChatComposer, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_size(lvglChatList, lv_pct(100), UI_CONTENT_H - 98);
         lv_obj_align(lvglChatList, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y + 44);
         lv_obj_align(lvglChatComposer, LV_ALIGN_BOTTOM_MID, 0, 0);
+        lv_obj_set_size(lvglChatMenuBackdrop, lv_pct(100), UI_CONTENT_H);
+        lv_obj_align(lvglChatMenuBackdrop, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
+        lv_obj_align(lvglChatMenuPanel, LV_ALIGN_TOP_RIGHT, -8, UI_CONTENT_TOP_Y + 40);
+        if (!lv_obj_has_flag(lvglChatMenuBackdrop, LV_OBJ_FLAG_HIDDEN)) lv_obj_move_foreground(lvglChatMenuBackdrop);
+        if (!lv_obj_has_flag(lvglChatMenuPanel, LV_OBJ_FLAG_HIDDEN)) lv_obj_move_foreground(lvglChatMenuPanel);
     }
 }
 
@@ -3443,10 +3667,8 @@ void lvglRefreshChatContactsUi()
     bool hasContacts = false;
     for (int i = 0; i < p2pPeerCount; ++i) {
         if (!p2pPeers[i].enabled) continue;
-        if (p2pPeers[i].pubKeyHex == currentChatPeerKey || chatPeerHasHistory(p2pPeers[i].pubKeyHex)) {
-            hasContacts = true;
-            break;
-        }
+        hasContacts = true;
+        break;
     }
 
     if (!hasContacts) {
@@ -3478,7 +3700,6 @@ void lvglRefreshChatContactsUi()
 
     for (int i = 0; i < p2pPeerCount; ++i) {
         if (!p2pPeers[i].enabled) continue;
-        if (p2pPeers[i].pubKeyHex != currentChatPeerKey && !chatPeerHasHistory(p2pPeers[i].pubKeyHex)) continue;
         lv_color_t col = p2pPeers[i].pubKeyHex == currentChatPeerKey ? lv_color_hex(0x3A7A3A) : lv_color_hex(0x2F6D86);
         makeContactBtn(
             lvglChatContacts,
@@ -3497,15 +3718,74 @@ void lvglRefreshChatContactsUi()
     }
 }
 
+void lvglSetChatPeerScanButtonStatus(const char *text, uint32_t revertDelayMs)
+{
+    if (!lvglChatPeerScanBtn) return;
+    lv_obj_t *label = lv_obj_get_child(lvglChatPeerScanBtn, 0);
+    if (!label) return;
+    lv_label_set_text(label, text ? text : "Scan");
+    if (revertDelayMs == 0) return;
+    lv_timer_t *timer = lv_timer_create(
+        [](lv_timer_t *timer) {
+            lv_obj_t *btn = static_cast<lv_obj_t *>(timer ? timer->user_data : nullptr);
+            if (btn) {
+                lv_obj_t *lbl = lv_obj_get_child(btn, 0);
+                if (lbl) lv_label_set_text(lbl, "Scan");
+            }
+            if (timer) lv_timer_del(timer);
+        },
+        revertDelayMs,
+        lvglChatPeerScanBtn);
+    if (timer) lv_timer_set_repeat_count(timer, 1);
+}
+
 void lvglChatPeerActionEvent(lv_event_t *e)
 {
     const int action = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
     if (action == 0) {
+        lvglSetChatPeerScanButtonStatus("Scanning...");
         p2pLastDiscoverAnnounceMs = 0;
         p2pBroadcastDiscover();
         uiStatusLine = "Peer scan started";
         lvglSyncStatusLine();
         lvglRefreshChatPeerUi();
+        lvglSetChatPeerScanButtonStatus("Done", 1500);
+        return;
+    }
+
+    if (action >= 1000) {
+        const int idx = (action / 10) - 100;
+        const int sub = action % 10;
+        if (idx < 0 || idx >= p2pPeerCount) return;
+
+        if (sub == 2) {
+            p2pPeers[idx].enabled = !p2pPeers[idx].enabled;
+            saveP2pConfig();
+            const int didx = p2pFindDiscoveredByPubKeyHex(p2pPeers[idx].pubKeyHex);
+            if (didx >= 0) p2pDiscoveredPeers[didx].trusted = p2pPeers[idx].enabled;
+            if (!p2pPeers[idx].enabled && currentChatPeerKey == p2pPeers[idx].pubKeyHex) {
+                chatSelectFirstEnabledPeer();
+                chatReloadRecentMessagesFromSd(currentChatPeerKey);
+            }
+            uiStatusLine = p2pPeers[idx].enabled ? "Peer enabled" : "Peer disabled";
+        } else if (sub == 3) {
+            const String removedKey = p2pPeers[idx].pubKeyHex;
+            for (int i = idx + 1; i < p2pPeerCount; ++i) p2pPeers[i - 1] = p2pPeers[i];
+            p2pPeerCount--;
+            saveP2pConfig();
+            const int didx = p2pFindDiscoveredByPubKeyHex(removedKey);
+            if (didx >= 0) p2pDiscoveredPeers[didx].trusted = false;
+            if (currentChatPeerKey == removedKey) {
+                chatSelectFirstEnabledPeer();
+                chatReloadRecentMessagesFromSd(currentChatPeerKey);
+            }
+            uiStatusLine = "Peer unpaired";
+        }
+
+        lvglSyncStatusLine();
+        lvglRefreshChatPeerUi();
+        lvglRefreshChatContactsUi();
+        if (uiScreen == UI_CHAT) lvglRefreshChatUi();
         return;
     }
 
@@ -3566,15 +3846,6 @@ void lvglRefreshChatPeerUi()
     if (!lvglChatPeerList) return;
     lv_obj_clean(lvglChatPeerList);
 
-    if (p2pDiscoveredCount == 0) {
-        lv_obj_t *lbl = lv_label_create(lvglChatPeerList);
-        lv_obj_set_width(lbl, lv_pct(100));
-        lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
-        lv_label_set_text(lbl, "No peers discovered yet.\nOpen this screen on another device on the same WiFi, then tap Scan.");
-        lv_obj_set_style_text_color(lbl, lv_color_hex(0xC8CED6), 0);
-        return;
-    }
-
     auto makeSmallBtnLocal = [](lv_obj_t *parent, const char *txt, int w, int h, lv_color_t col, lv_event_cb_t cb, void *ud = nullptr) -> lv_obj_t * {
         lv_obj_t *b = lv_btn_create(parent);
         if (!b) return nullptr;
@@ -3592,10 +3863,76 @@ void lvglRefreshChatPeerUi()
         return b;
     };
 
+    bool anyEntries = false;
+
+    if (p2pPeerCount > 0) {
+        lv_obj_t *section = lv_label_create(lvglChatPeerList);
+        lv_obj_set_width(section, lv_pct(100));
+        lv_label_set_text(section, "Paired Devices");
+        lv_obj_set_style_text_color(section, lv_color_hex(0xE5ECF3), 0);
+
+        for (int i = 0; i < p2pPeerCount; ++i) {
+            const bool enabled = p2pPeers[i].enabled;
+            anyEntries = true;
+
+            lv_obj_t *card = lv_obj_create(lvglChatPeerList);
+            lv_obj_set_width(card, lv_pct(100));
+            lv_obj_set_height(card, LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_color(card, lv_color_hex(0x16212C), 0);
+            lv_obj_set_style_border_width(card, 0, 0);
+            lv_obj_set_style_radius(card, 12, 0);
+            lv_obj_set_style_pad_all(card, 8, 0);
+            lv_obj_set_style_pad_row(card, 4, 0);
+            lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+            lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *title = lv_label_create(card);
+            lv_label_set_text_fmt(title, "%s  [%s]", p2pPeers[i].name.isEmpty() ? "Peer" : p2pPeers[i].name.c_str(), enabled ? "paired" : "disabled");
+            lv_obj_set_style_text_color(title, lv_color_hex(0xE5ECF3), 0);
+
+            lv_obj_t *info = lv_label_create(card);
+            lv_obj_set_width(info, lv_pct(100));
+            lv_label_set_long_mode(info, LV_LABEL_LONG_WRAP);
+            String key = p2pPeers[i].pubKeyHex;
+            if (key.length() > 16) key = key.substring(0, 16) + "...";
+            lv_label_set_text_fmt(info, "%s:%u\n%s", p2pPeers[i].ip.toString().c_str(),
+                                  static_cast<unsigned int>(p2pPeers[i].port), key.c_str());
+            lv_obj_set_style_text_color(info, lv_color_hex(0xB7C4D1), 0);
+
+            lv_obj_t *row = lv_obj_create(card);
+            lv_obj_set_size(row, lv_pct(100), 30);
+            lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(row, 0, 0);
+            lv_obj_set_style_pad_all(row, 0, 0);
+            lv_obj_set_style_pad_column(row, 6, 0);
+            lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+            makeSmallBtnLocal(row, enabled ? "Disable" : "Enable", 64, 26, lv_color_hex(0x2F6D86), lvglChatPeerActionEvent,
+                              reinterpret_cast<void *>(static_cast<intptr_t>(((i + 100) * 10) + 2)));
+            makeSmallBtnLocal(row, "Unpair", 58, 26, lv_color_hex(0x8A3A3A), lvglChatPeerActionEvent,
+                              reinterpret_cast<void *>(static_cast<intptr_t>(((i + 100) * 10) + 3)));
+        }
+    }
+
+    bool anyDiscovered = false;
+    for (int i = 0; i < p2pDiscoveredCount; ++i) {
+        if (p2pFindPeerByPubKeyHex(p2pDiscoveredPeers[i].pubKeyHex) >= 0) continue;
+        anyDiscovered = true;
+        break;
+    }
+
+    if (anyDiscovered) {
+        lv_obj_t *section = lv_label_create(lvglChatPeerList);
+        lv_obj_set_width(section, lv_pct(100));
+        lv_label_set_text(section, "Discovered");
+        lv_obj_set_style_text_color(section, lv_color_hex(0xE5ECF3), 0);
+    }
+
     for (int i = 0; i < p2pDiscoveredCount; ++i) {
         const int pidx = p2pFindPeerByPubKeyHex(p2pDiscoveredPeers[i].pubKeyHex);
-        const bool trusted = pidx >= 0;
-        const bool enabled = trusted ? p2pPeers[pidx].enabled : false;
+        if (pidx >= 0) continue;
+        anyEntries = true;
 
         lv_obj_t *card = lv_obj_create(lvglChatPeerList);
         lv_obj_set_width(card, lv_pct(100));
@@ -3609,7 +3946,7 @@ void lvglRefreshChatPeerUi()
         lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 
         lv_obj_t *title = lv_label_create(card);
-        lv_label_set_text_fmt(title, "%s  [%s]", p2pDiscoveredPeers[i].name.c_str(), trusted ? (enabled ? "trusted" : "disabled") : "discovered");
+        lv_label_set_text_fmt(title, "%s  [discovered]", p2pDiscoveredPeers[i].name.c_str());
         lv_obj_set_style_text_color(title, lv_color_hex(0xE5ECF3), 0);
 
         lv_obj_t *info = lv_label_create(card);
@@ -3630,15 +3967,16 @@ void lvglRefreshChatPeerUi()
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
-        if (!trusted) {
-            makeSmallBtnLocal(row, "Pair", 54, 26, lv_color_hex(0x3A7A3A), lvglChatPeerActionEvent,
-                              reinterpret_cast<void *>(static_cast<intptr_t>(((i + 1) * 10) + 1)));
-        } else {
-            makeSmallBtnLocal(row, enabled ? "Disable" : "Enable", 64, 26, lv_color_hex(0x2F6D86), lvglChatPeerActionEvent,
-                              reinterpret_cast<void *>(static_cast<intptr_t>(((i + 1) * 10) + 2)));
-            makeSmallBtnLocal(row, "Remove", 58, 26, lv_color_hex(0x8A3A3A), lvglChatPeerActionEvent,
-                              reinterpret_cast<void *>(static_cast<intptr_t>(((i + 1) * 10) + 3)));
-        }
+        makeSmallBtnLocal(row, "Pair", 54, 26, lv_color_hex(0x2F6D86), lvglChatPeerActionEvent,
+                          reinterpret_cast<void *>(static_cast<intptr_t>(((i + 1) * 10) + 1)));
+    }
+
+    if (!anyEntries) {
+        lv_obj_t *lbl = lv_label_create(lvglChatPeerList);
+        lv_obj_set_width(lbl, lv_pct(100));
+        lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(lbl, "No paired or discovered peers yet.\nOpen this screen on another device on the same WiFi, then tap Scan.");
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0xC8CED6), 0);
     }
 }
 
@@ -3698,6 +4036,22 @@ bool p2pSendChatMessage(const String &text)
     doc["kind"] = "chat";
     doc["author"] = deviceShortNameValue();
     doc["text"] = text.substring(0, P2P_MAX_CHAT_TEXT);
+    char plain[P2P_MAX_PACKET] = {0};
+    const size_t plainLen = serializeJson(doc, plain, sizeof(plain));
+    if (plainLen == 0) return false;
+
+    return p2pSendPacketToPeer(p2pPeers[peerIdx], P2P_PKT_TYPE_CHAT, reinterpret_cast<const uint8_t *>(plain), plainLen);
+}
+
+bool p2pSendConversationDelete()
+{
+    if (!p2pReady || currentChatPeerKey.isEmpty()) return false;
+    const int peerIdx = p2pFindPeerByPubKeyHex(currentChatPeerKey);
+    if (peerIdx < 0 || !p2pPeers[peerIdx].enabled || p2pPeers[peerIdx].ip == IPAddress((uint32_t)0)) return false;
+
+    JsonDocument doc;
+    doc["kind"] = "delete_conversation";
+    doc["author"] = deviceShortNameValue();
     char plain[P2P_MAX_PACKET] = {0};
     const size_t plainLen = serializeJson(doc, plain, sizeof(plain));
     if (plainLen == 0) return false;
@@ -3808,10 +4162,11 @@ void p2pService()
                                 JsonDocument doc;
                                 if (deserializeJson(doc, plain, cipherLen - P2P_MAC_BYTES) == DeserializationError::Ok) {
                                     const String kind = String(static_cast<const char *>(doc["kind"] | ""));
+                                    const String author = String(static_cast<const char *>(doc["author"] | p2pPeers[peerIdx].name.c_str()));
                                     if (kind == "chat") {
-                                        const String author = String(static_cast<const char *>(doc["author"] | p2pPeers[peerIdx].name.c_str()));
                                         const String text = String(static_cast<const char *>(doc["text"] | ""));
                                         if (!text.isEmpty()) {
+                                            p2pRefreshTrustedPeerIdentity(p2pPeers[peerIdx].pubKeyHex, author, p2pUdp.remoteIP(), p2pUdp.remotePort());
                                             p2pTouchPeerSeen(peerIdx, p2pUdp.remoteIP(), p2pUdp.remotePort());
                                             chatStoreMessage(p2pPeers[peerIdx].pubKeyHex, author, text, false, CHAT_TRANSPORT_WIFI);
                                             uiStatusLine = "Chat received from " + author;
@@ -3820,6 +4175,10 @@ void p2pService()
                                                 if (uiScreen == UI_CHAT) lvglRefreshChatUi();
                                             }
                                         }
+                                    } else if (kind == "delete_conversation") {
+                                        p2pRefreshTrustedPeerIdentity(p2pPeers[peerIdx].pubKeyHex, author, p2pUdp.remoteIP(), p2pUdp.remotePort());
+                                        p2pTouchPeerSeen(peerIdx, p2pUdp.remoteIP(), p2pUdp.remotePort());
+                                        chatApplyConversationDeletion(p2pPeers[peerIdx].pubKeyHex, "Conversation deleted by " + author);
                                     }
                                 }
                             }
@@ -4039,6 +4398,33 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
             lvglKb,
             [](lv_event_t *ke) {
                 lv_event_code_t code = lv_event_get_code(ke);
+                if (code == LV_EVENT_VALUE_CHANGED && lvglKb) {
+                    const uint16_t btn = lv_btnmatrix_get_selected_btn(lvglKb);
+                    const char *txt = lv_btnmatrix_get_btn_text(lvglKb, btn);
+                    const lv_keyboard_mode_t mode = lv_keyboard_get_mode(lvglKb);
+                    const bool isShiftKey = txt && ((strcmp(txt, "ABC") == 0) || (strcmp(txt, "Abc") == 0) || (strcmp(txt, "abc") == 0));
+                    if (isShiftKey && mode == LV_KEYBOARD_MODE_TEXT_LOWER) {
+                        const unsigned long now = millis();
+                        const bool doubleTap = (now - lvglKeyboardShiftLastPressMs) <= 450UL;
+                        lvglKeyboardShiftLastPressMs = now;
+                        lvglKeyboardShiftOneShot = !doubleTap;
+                        lv_keyboard_set_mode(lvglKb, LV_KEYBOARD_MODE_TEXT_UPPER);
+                        return;
+                    }
+                    if (isShiftKey && mode == LV_KEYBOARD_MODE_TEXT_UPPER) {
+                        lvglKeyboardShiftOneShot = false;
+                        lv_keyboard_set_mode(lvglKb, LV_KEYBOARD_MODE_TEXT_LOWER);
+                        return;
+                    }
+                    if (lvglKeyboardShiftOneShot && txt && strlen(txt) == 1) {
+                        const char c = txt[0];
+                        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+                            lvglKeyboardShiftOneShot = false;
+                            lv_keyboard_set_mode(lvglKb, LV_KEYBOARD_MODE_TEXT_LOWER);
+                        }
+                    }
+                    return;
+                }
                 if (code != LV_EVENT_READY && code != LV_EVENT_CANCEL) return;
                 if (code == LV_EVENT_READY && lvglWifiPwdModal && !lv_obj_has_flag(lvglWifiPwdModal, LV_OBJ_FLAG_HIDDEN) &&
                     lvglWifiPwdTa && lv_keyboard_get_textarea(lvglKb) == lvglWifiPwdTa) {
@@ -4069,6 +4455,7 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
                     lv_keyboard_set_textarea(lvglKb, nullptr);
                     lv_obj_add_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
                 }
+                lvglKeyboardShiftOneShot = false;
                 lvglSetChatKeyboardVisible(false);
                 lvglSetConfigKeyboardVisible(false);
             },
@@ -4076,6 +4463,7 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
             nullptr
         );
     }
+    lvglKeyboardShiftOneShot = false;
     lv_keyboard_set_textarea(lvglKb, ta);
     lv_obj_clear_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
     if (ta == lvglChatInputTa) lvglSetChatKeyboardVisible(true);
@@ -4639,6 +5027,8 @@ void lvglSaveDeviceNameEvent(lv_event_t *e)
     lvglRefreshConfigUi();
     lvglRefreshChatPeerUi();
     if (uiScreen == UI_INFO) lvglRefreshInfoPanel();
+    p2pLastDiscoverAnnounceMs = 0;
+    p2pBroadcastDiscover();
     uiStatusLine = "Device name saved";
     lvglSyncStatusLine();
 }
@@ -6637,10 +7027,12 @@ bool mqttConnectNow()
 {
     if (!mqttCfg.enabled) {
         mqttStatusLine = "Disabled";
+        if (lvglReady) lvglRefreshTopIndicators();
         return false;
     }
     if (networkSuspendedForAudio || !wifiConnectedSafe()) {
         mqttStatusLine = "No WiFi";
+        if (lvglReady) lvglRefreshTopIndicators();
         return false;
     }
     mqttClient.setServer(mqttCfg.broker.c_str(), mqttCfg.port);
@@ -6666,10 +7058,16 @@ bool mqttConnectNow()
         if (crypto_box_curve25519xchacha20poly1305_open_easy(plain, cipher, cipherLen, nonce, senderPk, p2pSecretKey) != 0) return;
         JsonDocument plainDoc;
         if (deserializeJson(plainDoc, plain, cipherLen - P2P_MAC_BYTES) != DeserializationError::Ok) return;
+        const String kind = String(static_cast<const char *>(plainDoc["kind"] | "chat"));
         const String author = String(static_cast<const char *>(plainDoc["author"] | "Remote"));
+        p2pRefreshTrustedPeerIdentity(senderPubHex, author, p2pPeers[peerIdx].ip, p2pPeers[peerIdx].port);
+        p2pTouchPeerSeen(peerIdx, p2pPeers[peerIdx].ip, p2pPeers[peerIdx].port);
+        if (kind == "delete_conversation") {
+            chatApplyConversationDeletion(senderPubHex, "Conversation deleted by " + author);
+            return;
+        }
         const String text = String(static_cast<const char *>(plainDoc["text"] | ""));
         if (text.isEmpty()) return;
-        p2pTouchPeerSeen(peerIdx, p2pPeers[peerIdx].ip, p2pPeers[peerIdx].port);
         chatStoreMessage(senderPubHex, author, text, false, CHAT_TRANSPORT_MQTT);
         uiStatusLine = "Global chat from " + author;
         if (lvglReady) {
@@ -6687,6 +7085,7 @@ bool mqttConnectNow()
 
     if (!ok) {
         mqttStatusLine = "Connect failed rc=" + String(mqttClient.state());
+        if (lvglReady) lvglRefreshTopIndicators();
         return false;
     }
 
@@ -6694,6 +7093,7 @@ bool mqttConnectNow()
     mqttClient.subscribe(mqttChatInboxTopic.c_str());
     mqttDiscoveryPublished = false;
     mqttStatusLine = "Connected";
+    if (lvglReady) lvglRefreshTopIndicators();
     return true;
 }
 
@@ -6782,6 +7182,51 @@ bool mqttPublishChatMessage(const String &text)
     return mqttClient.publish(peerTopic.c_str(), payload.c_str(), false);
 }
 
+bool mqttPublishConversationDelete()
+{
+    if (!mqttCfg.enabled || !mqttClient.connected() || currentChatPeerKey.isEmpty()) return false;
+    const int peerIdx = p2pFindPeerByPubKeyHex(currentChatPeerKey);
+    if (peerIdx < 0 || !p2pPeers[peerIdx].enabled) return false;
+
+    JsonDocument plainDoc;
+    plainDoc["kind"] = "delete_conversation";
+    plainDoc["author"] = deviceShortNameValue();
+    char plain[P2P_MAX_PACKET] = {0};
+    const size_t plainLen = serializeJson(plainDoc, plain, sizeof(plain));
+    if (plainLen == 0) return false;
+
+    const String senderPubHex = p2pPublicKeyHex();
+    unsigned char peerPk[P2P_PUBLIC_KEY_BYTES] = {0};
+    if (!p2pHexToBytes(p2pPeers[peerIdx].pubKeyHex, peerPk, sizeof(peerPk))) return false;
+
+    unsigned char nonce[P2P_NONCE_BYTES] = {0};
+    unsigned char cipher[P2P_MAX_PACKET] = {0};
+    randombytes_buf(nonce, sizeof(nonce));
+    if (crypto_box_curve25519xchacha20poly1305_easy(cipher, reinterpret_cast<const unsigned char *>(plain), plainLen,
+                                                    nonce, peerPk, p2pSecretKey) != 0) {
+        return false;
+    }
+    const size_t cipherLen = plainLen + P2P_MAC_BYTES;
+    String nonceHex = p2pBytesToHex(nonce, sizeof(nonce));
+    const size_t hexLen = (cipherLen * 2U) + 1U;
+    char *buf = static_cast<char *>(malloc(hexLen));
+    if (!buf) return false;
+    sodium_bin2hex(buf, hexLen, cipher, cipherLen);
+    String cipherHex(buf);
+    free(buf);
+    if (cipherHex.isEmpty()) return false;
+
+    JsonDocument doc;
+    doc["sender_pub"] = senderPubHex;
+    doc["nonce"] = nonceHex;
+    doc["cipher"] = cipherHex;
+    String payload;
+    serializeJson(doc, payload);
+
+    const String peerTopic = "esp32/remote/chat/" + mqttCfg.chatRoom + "/inbox/" + p2pPeers[peerIdx].pubKeyHex;
+    return mqttClient.publish(peerTopic.c_str(), payload.c_str(), false);
+}
+
 void mqttPublishButtonAction(int index)
 {
     if (index < 0 || index >= mqttButtonCount) return;
@@ -6792,17 +7237,23 @@ void mqttPublishButtonAction(int index)
 void mqttService()
 {
     if (networkSuspendedForAudio || airplaneModeEnabled) {
-        if (mqttClient.connected()) mqttClient.disconnect();
+        const bool wasConnected = mqttClient.connected();
+        if (wasConnected) mqttClient.disconnect();
         mqttStatusLine = "No WiFi";
+        if (wasConnected && lvglReady) lvglRefreshTopIndicators();
         return;
     }
     if (!mqttCfg.enabled) {
-        if (mqttClient.connected()) mqttClient.disconnect();
+        const bool wasConnected = mqttClient.connected();
+        if (wasConnected) mqttClient.disconnect();
+        if (wasConnected && lvglReady) lvglRefreshTopIndicators();
         return;
     }
     if (!wifiConnectedSafe()) {
-        if (mqttClient.connected()) mqttClient.disconnect();
+        const bool wasConnected = mqttClient.connected();
+        if (wasConnected) mqttClient.disconnect();
         mqttStatusLine = "No WiFi";
+        if (wasConnected && lvglReady) lvglRefreshTopIndicators();
         return;
     }
     if (!mqttClient.connected()) {
