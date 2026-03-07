@@ -33,6 +33,16 @@ Currently supported boards:
 - The last `20%` of the brightness bar is highlighted red
 - Boot now renders the first screen before enabling the backlight, then fades the backlight in
 - Wake touch handling now consumes the wake gesture fully before allowing normal menu taps
+- Added encrypted peer-to-peer chat over LAN using UDP and public-key cryptography
+- Added encrypted global chat relay over MQTT using per-peer inbox topics
+- Added peer discovery, pairing, enable/disable, and remove flow
+- Chat history is now stored on the SD card in `/Conversations`
+- Each contact uses its own conversation text file, with friendlier filenames
+- Chat now opens in contacts-first mode; selecting a contact opens its conversation
+- Swipe-back inside Chat now returns from a conversation to contacts before leaving Chat
+- Added persistent device rename in `Config`
+- Renamed devices are used in chat/discovery UI and old conversation display is normalized to current names
+- Recovery browser access is no longer limited to fixed folders; it can browse all SD folders
 
 ## Supported Hardware
 
@@ -170,6 +180,11 @@ Board-specific defaults:
 - Tapping the keyboard `OK`/tick button in the Wi-Fi password popup acts the same as `Save`
 - The first touch while the display is asleep only wakes the screen; the next separate touch performs the menu action
 - `Config` includes a brightness slider for screen backlight control, and its value is persisted across reboots
+- `Config` also includes a device-name field; the saved name persists across reboots
+- When editing the device name, the Config page scrolls the field above the on-screen keyboard
+- `Chat` now opens as a contacts list first, then switches to a single conversation after contact selection
+- In conversation view, the contact name is shown in the top bar and swipe-back returns to the contacts list
+- Chat message bubbles are left/right aligned by sender and capped to roughly `75%` width
 
 ### Future UI reference
 
@@ -180,8 +195,9 @@ For future UI experiments, widgets, and layout ideas, keep the upstream LVGL pro
 
 - `/web` for the primary static UI
 - `/Screenshots` for JPEG screenshots and diagnostics
+- `/Conversations` for per-contact chat history logs
 
-Recovery file APIs are intentionally restricted to `/web` and `/Screenshots`.
+Recovery file APIs can browse and manage any rooted SD path.
 
 ## HTTP Endpoints
 
@@ -204,6 +220,20 @@ Recovery file APIs are intentionally restricted to `/web` and `/Screenshots`.
 | `GET` | `/api/wifi/scan` | Returns scanned networks |
 | `POST` | `/api/wifi/connect` | Params: `ssid`, `pass` |
 | `GET` | `/api/telemetry` | Battery, light, and Wi-Fi snapshot |
+
+### Chat / peer APIs
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/chat/messages` | Returns the currently loaded conversation window |
+| `POST` | `/api/chat/send` | Sends chat text to the selected peer |
+| `GET` | `/api/chat/identity` | Returns device name, UDP port, and public key |
+| `GET` | `/api/chat/peers` | Returns trusted peers |
+| `GET` | `/api/chat/discovery` | Returns discovered peers |
+| `POST` | `/api/chat/discovery/pair` | Trusts a discovered peer |
+| `POST` | `/api/chat/peers/add` | Adds a peer manually |
+| `POST` | `/api/chat/peers/toggle` | Enables/disables a peer |
+| `POST` | `/api/chat/peers/remove` | Removes a peer |
 
 ### SD / file manager APIs
 
@@ -244,6 +274,15 @@ Serial logs also report SD recovery events:
 Media browser/player accepts:
 
 `.mp3`, `.wav`, `.flac`, `.aac`, `.m4a`, `.raw`, `.mpga`, `.mpeg`, `.wave`, `.adts`, `.m4b`, `.f4a`
+
+## Chat Overview
+
+- LAN chat uses encrypted UDP peer-to-peer transport
+- Global chat uses MQTT as a relay, but payloads are still encrypted per trusted peer
+- Peer onboarding can be done on-device from `Chat -> Peers`
+- Trusted peers are stored in preferences
+- Recent chat history is reloaded from SD when a conversation is opened
+- Only the recent in-memory window is kept in RAM; older history remains on SD
 
 ## Build and Flash
 
