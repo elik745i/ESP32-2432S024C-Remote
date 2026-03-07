@@ -25,6 +25,14 @@ Currently supported boards:
 - Changed button touch feedback so buttons no longer flash on initial touch during swipe gestures
 - Buttons now visually react only after a confirmed tap/click is released
 - Edge-swipe back navigation remains enabled on menu-style screens
+- Added asynchronous Wi-Fi scanning with a visible `Searching for access points...` loading state
+- Added in-device Wi-Fi password entry with on-screen keyboard for secured access points
+- Updated Wi-Fi submenu back navigation so it returns to `Config`
+- Added a `Config` brightness slider that controls real TFT backlight PWM
+- Brightness is saved in preferences and restored on the next boot
+- The last `20%` of the brightness bar is highlighted red
+- Boot now renders the first screen before enabling the backlight, then fades the backlight in
+- Wake touch handling now consumes the wake gesture fully before allowing normal menu taps
 
 ## Supported Hardware
 
@@ -157,6 +165,11 @@ Board-specific defaults:
 - Swipe right from the left screen edge navigates back on supported sub-screens
 - Screenshot capture is available from the `Config` screen
 - Button color feedback is intentionally delayed until a click is confirmed on release, to avoid false visual tap feedback during swipes
+- `Config -> WiFi` now scans in the background and shows a loading message while APs are discovered
+- Tapping a secured AP opens an on-device password popup with keyboard support and password visibility toggle
+- Tapping the keyboard `OK`/tick button in the Wi-Fi password popup acts the same as `Save`
+- The first touch while the display is asleep only wakes the screen; the next separate touch performs the menu action
+- `Config` includes a brightness slider for screen backlight control, and its value is persisted across reboots
 
 ## SD Layout Used by Firmware
 
