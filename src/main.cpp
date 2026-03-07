@@ -325,6 +325,8 @@ bool handleUiSettingMessage(const char *msg);
 void loadUiRuntimeConfig();
 void applyAirplaneMode(bool enabled, const char *reason);
 void lvglRefreshConfigUi();
+void lvglSaveDeviceNameEvent(lv_event_t *e);
+void lvglSetConfigKeyboardVisible(bool visible);
 void cpuLoadService(uint32_t loopStartUs);
 void loadP2pConfig();
 void saveP2pConfig();
@@ -468,10 +470,13 @@ static lv_obj_t *lvglChatEmptyLabel = nullptr;
 static lv_obj_t *lvglChatComposer = nullptr;
 static lv_obj_t *lvglChatContacts = nullptr;
 static lv_obj_t *lvglChatContactLabel = nullptr;
+static lv_obj_t *lvglChatPeersBtn = nullptr;
 static lv_obj_t *lvglChatPeerList = nullptr;
 static lv_obj_t *lvglChatPeerIdentityLabel = nullptr;
 static lv_obj_t *lvglAirplaneBtn = nullptr;
 static lv_obj_t *lvglAirplaneBtnLabel = nullptr;
+static lv_obj_t *lvglConfigWrap = nullptr;
+static lv_obj_t *lvglConfigDeviceNameTa = nullptr;
 static lv_obj_t *lvglBrightnessSlider = nullptr;
 static lv_obj_t *lvglBrightnessValueLabel = nullptr;
 static lv_obj_t *lvglKb = nullptr;
@@ -717,6 +722,7 @@ unsigned long lastChargeEvalMs = 0;
 unsigned long lastChargeSeenMs = 0;
 bool displayAwake = true;
 uint8_t displayBrightnessPercent = 100;
+String deviceShortName = DEVICE_SHORT_NAME;
 uint8_t cpuLoadPercent = 0;
 bool batteryFilterInitialized = false;
 bool lightFilterInitialized = false;
@@ -782,6 +788,35 @@ static constexpr int MAX_CHAT_MESSAGES = CHAT_PAGE_MESSAGES * 2;
 ChatMessage chatMessages[MAX_CHAT_MESSAGES];
 int chatMessageCount = 0;
 String currentChatPeerKey;
+
+static String sanitizeDeviceShortName(String name)
+{
+    name.trim();
+    String out;
+    out.reserve(name.length());
+    for (size_t i = 0; i < name.length(); ++i) {
+        const char c = name[i];
+        if (c >= 32 && c <= 126) out += c;
+    }
+    out.trim();
+    if (out.length() > 24) out.remove(24);
+    return out;
+}
+
+static const String &deviceShortNameValue()
+{
+    return deviceShortName;
+}
+
+static String chatDisplayAuthorForMessage(const ChatMessage &msg)
+{
+    if (msg.outgoing) return deviceShortNameValue();
+    if (!currentChatPeerKey.isEmpty()) {
+        const String peerName = chatDisplayNameForPeerKey(currentChatPeerKey);
+        if (!peerName.isEmpty()) return peerName;
+    }
+    return msg.author;
+}
 
 struct P2PPeer {
     String name;
@@ -2430,16 +2465,18 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_style_pad_column(chatOps, 6, 0);
             lv_obj_set_flex_flow(chatOps, LV_FLEX_FLOW_ROW);
             lv_obj_clear_flag(chatOps, LV_OBJ_FLAG_SCROLLABLE);
-            makeSmallBtn(chatOps, "Peers", 62, 28, lv_color_hex(0x2F6D86), lvglOpenChatPeersEvent);
+            lvglChatPeersBtn = makeSmallBtn(chatOps, "Peers", 62, 28, lv_color_hex(0x2F6D86), lvglOpenChatPeersEvent);
 
-            lvglChatContactLabel = lv_label_create(lvglScrChat);
+            lvglChatContactLabel = lv_label_create(chatOps);
             lv_obj_set_width(lvglChatContactLabel, lv_pct(100));
-            lv_obj_align(lvglChatContactLabel, LV_ALIGN_TOP_LEFT, 8, UI_CONTENT_TOP_Y + 42);
+            lv_obj_set_flex_grow(lvglChatContactLabel, 1);
+            lv_obj_set_style_text_align(lvglChatContactLabel, LV_TEXT_ALIGN_CENTER, 0);
             lv_obj_set_style_text_color(lvglChatContactLabel, lv_color_hex(0xC8D3DD), 0);
+            lv_label_set_long_mode(lvglChatContactLabel, LV_LABEL_LONG_DOT);
 
             lvglChatContacts = lv_obj_create(lvglScrChat);
             lv_obj_set_size(lvglChatContacts, lv_pct(100), UI_CONTENT_H - 44);
-            lv_obj_align(lvglChatContacts, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y + 60);
+            lv_obj_align(lvglChatContacts, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y + 44);
             lv_obj_set_style_bg_opa(lvglChatContacts, LV_OPA_TRANSP, 0);
             lv_obj_set_style_border_width(lvglChatContacts, 0, 0);
             lv_obj_set_style_pad_all(lvglChatContacts, 6, 0);
@@ -2450,8 +2487,8 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_scrollbar_mode(lvglChatContacts, LV_SCROLLBAR_MODE_OFF);
 
             lvglChatList = lv_obj_create(lvglScrChat);
-            lv_obj_set_size(lvglChatList, lv_pct(100), UI_CONTENT_H - 156);
-            lv_obj_align(lvglChatList, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y + 102);
+            lv_obj_set_size(lvglChatList, lv_pct(100), UI_CONTENT_H - 98);
+            lv_obj_align(lvglChatList, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y + 44);
             lv_obj_set_style_bg_color(lvglChatList, lv_color_hex(0x111922), 0);
             lv_obj_set_style_border_width(lvglChatList, 0, 0);
             lv_obj_set_style_pad_all(lvglChatList, 8, 0);
@@ -2710,24 +2747,58 @@ void lvglEnsureScreenBuilt(UiScreen screen)
         }
         case UI_CONFIG: {
             lvglScrConfig = lvglCreateScreenBase("Config", true);
-            lv_obj_t *cfgWrap = lv_obj_create(lvglScrConfig);
-            lv_obj_set_size(cfgWrap, lv_pct(100), UI_CONTENT_H);
-            lv_obj_align(cfgWrap, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
-            lv_obj_set_style_bg_opa(cfgWrap, LV_OPA_TRANSP, 0);
-            lv_obj_set_style_border_width(cfgWrap, 0, 0);
-            lv_obj_set_style_pad_all(cfgWrap, 10, 0);
-            lv_obj_set_style_pad_row(cfgWrap, 10, 0);
-            lv_obj_set_flex_flow(cfgWrap, LV_FLEX_FLOW_COLUMN);
-            lv_obj_set_scrollbar_mode(cfgWrap, LV_SCROLLBAR_MODE_OFF);
-            lvglCreateMenuButton(cfgWrap, "WiFi", lv_color_hex(0x3A8F4B), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_WIFI_LIST)));
-            lvglAirplaneBtn = lvglCreateMenuButton(cfgWrap, "Airplane: OFF", lv_color_hex(0x8A5A25), lvglAirplaneToggleEvent, nullptr);
+            lvglConfigWrap = lv_obj_create(lvglScrConfig);
+            lv_obj_set_size(lvglConfigWrap, lv_pct(100), UI_CONTENT_H);
+            lv_obj_align(lvglConfigWrap, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
+            lv_obj_set_style_bg_opa(lvglConfigWrap, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(lvglConfigWrap, 0, 0);
+            lv_obj_set_style_pad_all(lvglConfigWrap, 10, 0);
+            lv_obj_set_style_pad_row(lvglConfigWrap, 10, 0);
+            lv_obj_set_flex_flow(lvglConfigWrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_scrollbar_mode(lvglConfigWrap, LV_SCROLLBAR_MODE_OFF);
+            lvglCreateMenuButton(lvglConfigWrap, "WiFi", lv_color_hex(0x3A8F4B), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_WIFI_LIST)));
+            lvglAirplaneBtn = lvglCreateMenuButton(lvglConfigWrap, "Airplane: OFF", lv_color_hex(0x8A5A25), lvglAirplaneToggleEvent, nullptr);
             if (lvglAirplaneBtn) lvglAirplaneBtnLabel = lv_obj_get_child(lvglAirplaneBtn, 0);
-            lvglCreateMenuButton(cfgWrap, "Style", lv_color_hex(0x2D6D8E), lvglStyleHintEvent, nullptr);
-            lvglCreateMenuButton(cfgWrap, "MQTT Config", lv_color_hex(0x6D4B9A), lvglOpenMqttCfgEvent, nullptr);
-            lvglCreateMenuButton(cfgWrap, "MQTT Controls", lv_color_hex(0x2D6D8E), lvglOpenMqttCtrlEvent, nullptr);
-            lvglCreateMenuButton(cfgWrap, "Screenshot", lv_color_hex(0x6B5B2A), lvglScreenshotEvent, nullptr);
+            lvglCreateMenuButton(lvglConfigWrap, "Style", lv_color_hex(0x2D6D8E), lvglStyleHintEvent, nullptr);
+            lvglCreateMenuButton(lvglConfigWrap, "MQTT Config", lv_color_hex(0x6D4B9A), lvglOpenMqttCfgEvent, nullptr);
+            lvglCreateMenuButton(lvglConfigWrap, "MQTT Controls", lv_color_hex(0x2D6D8E), lvglOpenMqttCtrlEvent, nullptr);
+            lvglCreateMenuButton(lvglConfigWrap, "Screenshot", lv_color_hex(0x6B5B2A), lvglScreenshotEvent, nullptr);
 
-            lv_obj_t *brightWrap = lv_obj_create(cfgWrap);
+            lv_obj_t *nameWrap = lv_obj_create(lvglConfigWrap);
+            lv_obj_set_size(nameWrap, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_color(nameWrap, lv_color_hex(0x18222D), 0);
+            lv_obj_set_style_border_width(nameWrap, 0, 0);
+            lv_obj_set_style_radius(nameWrap, 12, 0);
+            lv_obj_set_style_pad_all(nameWrap, 10, 0);
+            lv_obj_set_style_pad_row(nameWrap, 6, 0);
+            lv_obj_set_flex_flow(nameWrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_clear_flag(nameWrap, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *nameHdr = lv_label_create(nameWrap);
+            lv_label_set_text(nameHdr, "Device Name");
+            lv_obj_set_style_text_color(nameHdr, lv_color_hex(0xE5ECF3), 0);
+
+            lv_obj_t *nameRow = lv_obj_create(nameWrap);
+            lv_obj_set_size(nameRow, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(nameRow, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(nameRow, 0, 0);
+            lv_obj_set_style_pad_all(nameRow, 0, 0);
+            lv_obj_set_style_pad_column(nameRow, 8, 0);
+            lv_obj_set_flex_flow(nameRow, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(nameRow, LV_OBJ_FLAG_SCROLLABLE);
+
+            lvglConfigDeviceNameTa = lv_textarea_create(nameRow);
+            lv_obj_set_height(lvglConfigDeviceNameTa, 38);
+            lv_obj_set_width(lvglConfigDeviceNameTa, DISPLAY_WIDTH - 110);
+            lv_obj_set_flex_grow(lvglConfigDeviceNameTa, 1);
+            lv_textarea_set_one_line(lvglConfigDeviceNameTa, true);
+            lv_textarea_set_placeholder_text(lvglConfigDeviceNameTa, "Device name");
+            lv_textarea_set_max_length(lvglConfigDeviceNameTa, 24);
+            lv_obj_add_event_cb(lvglConfigDeviceNameTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
+
+            makeSmallBtn(nameRow, "Save", 64, 38, lv_color_hex(0x3A7A3A), lvglSaveDeviceNameEvent, nullptr);
+
+            lv_obj_t *brightWrap = lv_obj_create(lvglConfigWrap);
             lv_obj_set_size(brightWrap, lv_pct(100), LV_SIZE_CONTENT);
             lv_obj_set_style_bg_color(brightWrap, lv_color_hex(0x18222D), 0);
             lv_obj_set_style_border_width(brightWrap, 0, 0);
@@ -3276,6 +3347,7 @@ void lvglRefreshChatUi()
     }
 
     for (int i = 0; i < chatMessageCount; ++i) {
+        const String authorLabel = chatDisplayAuthorForMessage(chatMessages[i]);
         lv_obj_t *row = lv_obj_create(lvglChatList);
         lv_obj_set_width(row, lv_pct(100));
         lv_obj_set_height(row, LV_SIZE_CONTENT);
@@ -3304,7 +3376,7 @@ void lvglRefreshChatUi()
         lv_obj_clear_flag(bubble, LV_OBJ_FLAG_SCROLLABLE);
 
         lv_obj_t *hdr = lv_label_create(bubble);
-        lv_label_set_text_fmt(hdr, "%s", chatMessages[i].author.c_str());
+        lv_label_set_text_fmt(hdr, "%s", authorLabel.c_str());
         lv_obj_set_style_text_color(hdr, chatMessages[i].outgoing ? lv_color_hex(0xB6E3C6) : lv_color_hex(0xA9C8E8), 0);
 
         lv_obj_t *body = lv_label_create(bubble);
@@ -3319,12 +3391,13 @@ void lvglRefreshChatUi()
 
 void lvglRefreshChatLayout()
 {
-    if (!lvglChatContactLabel || !lvglChatContacts || !lvglChatList || !lvglChatComposer) return;
+    if (!lvglChatContactLabel || !lvglChatContacts || !lvglChatList || !lvglChatComposer || !lvglChatPeersBtn) return;
     const bool showingConversation = !currentChatPeerKey.isEmpty();
     if (!showingConversation) {
-        lv_label_set_text(lvglChatContactLabel, "Contacts");
+        lv_label_set_text(lvglChatContactLabel, "");
+        lv_obj_clear_flag(lvglChatPeersBtn, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_size(lvglChatContacts, lv_pct(100), UI_CONTENT_H - 44);
-        lv_obj_align(lvglChatContacts, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y + 60);
+        lv_obj_align(lvglChatContacts, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y + 44);
         lv_obj_set_flex_flow(lvglChatContacts, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_scroll_dir(lvglChatContacts, LV_DIR_VER);
         lv_obj_set_style_pad_all(lvglChatContacts, 6, 0);
@@ -3334,11 +3407,12 @@ void lvglRefreshChatLayout()
         lv_obj_add_flag(lvglChatComposer, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_label_set_text_fmt(lvglChatContactLabel, "%s", chatDisplayNameForPeerKey(currentChatPeerKey).c_str());
+        lv_obj_add_flag(lvglChatPeersBtn, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(lvglChatContacts, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(lvglChatList, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(lvglChatComposer, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_size(lvglChatList, lv_pct(100), UI_CONTENT_H - 156);
-        lv_obj_align(lvglChatList, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y + 102);
+        lv_obj_set_size(lvglChatList, lv_pct(100), UI_CONTENT_H - 98);
+        lv_obj_align(lvglChatList, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y + 44);
         lv_obj_align(lvglChatComposer, LV_ALIGN_BOTTOM_MID, 0, 0);
     }
 }
@@ -3349,7 +3423,7 @@ void lvglSetChatKeyboardVisible(bool visible)
     if (currentChatPeerKey.isEmpty()) return;
     const lv_coord_t keyboardH = 120;
     const lv_coord_t composerH = 56;
-    const lv_coord_t topSectionH = 102;
+    const lv_coord_t topSectionH = 44;
 
     if (visible) {
         lv_obj_align(lvglChatComposer, LV_ALIGN_BOTTOM_MID, 0, -keyboardH);
@@ -3487,7 +3561,7 @@ void lvglRefreshChatPeerUi()
         const String pub = p2pPublicKeyHex();
         String shortPub = pub;
         if (shortPub.length() > 20) shortPub = shortPub.substring(0, 20) + "...";
-        lv_label_set_text_fmt(lvglChatPeerIdentityLabel, "Device: %s\nKey: %s", DEVICE_SHORT_NAME, shortPub.c_str());
+        lv_label_set_text_fmt(lvglChatPeerIdentityLabel, "Device: %s\nKey: %s", deviceShortNameValue().c_str(), shortPub.c_str());
     }
     if (!lvglChatPeerList) return;
     lv_obj_clean(lvglChatPeerList);
@@ -3622,7 +3696,7 @@ bool p2pSendChatMessage(const String &text)
 
     JsonDocument doc;
     doc["kind"] = "chat";
-    doc["author"] = DEVICE_SHORT_NAME;
+    doc["author"] = deviceShortNameValue();
     doc["text"] = text.substring(0, P2P_MAX_CHAT_TEXT);
     char plain[P2P_MAX_PACKET] = {0};
     const size_t plainLen = serializeJson(doc, plain, sizeof(plain));
@@ -3639,7 +3713,7 @@ void p2pBroadcastDiscover()
 
     JsonDocument doc;
     doc["kind"] = "discover";
-    doc["device"] = DEVICE_SHORT_NAME;
+    doc["device"] = deviceShortNameValue();
     doc["public_key"] = p2pPublicKeyHex();
     doc["port"] = P2P_UDP_PORT;
     char payload[256] = {0};
@@ -3841,7 +3915,7 @@ void lvglRefreshInfoPanel()
         lv_label_set_text_fmt(
             lvglInfoSystemLabel,
             "Model: %s\nFirmware: %s\nSoftAP: %s\nLargest 8-bit block: %lu KB\nSD: %s\nMedia: %s",
-            DEVICE_SHORT_NAME,
+            deviceShortNameValue().c_str(),
             FW_VERSION,
             AP_SSID,
             static_cast<unsigned long>(largest8 / 1024U),
@@ -3969,6 +4043,8 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
                 if (code == LV_EVENT_READY && lvglWifiPwdModal && !lv_obj_has_flag(lvglWifiPwdModal, LV_OBJ_FLAG_HIDDEN) &&
                     lvglWifiPwdTa && lv_keyboard_get_textarea(lvglKb) == lvglWifiPwdTa) {
                     lvglWifiPwdConnectEvent(nullptr);
+                } else if (code == LV_EVENT_READY && lvglConfigDeviceNameTa && lv_keyboard_get_textarea(lvglKb) == lvglConfigDeviceNameTa) {
+                    lvglSaveDeviceNameEvent(nullptr);
                 } else if (code == LV_EVENT_READY && lvglChatInputTa && lv_keyboard_get_textarea(lvglKb) == lvglChatInputTa) {
                     const char *raw = lv_textarea_get_text(lvglChatInputTa);
                     String text = raw ? String(raw) : String("");
@@ -3994,6 +4070,7 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
                     lv_obj_add_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
                 }
                 lvglSetChatKeyboardVisible(false);
+                lvglSetConfigKeyboardVisible(false);
             },
             LV_EVENT_ALL,
             nullptr
@@ -4002,6 +4079,7 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
     lv_keyboard_set_textarea(lvglKb, ta);
     lv_obj_clear_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
     if (ta == lvglChatInputTa) lvglSetChatKeyboardVisible(true);
+    if (ta == lvglConfigDeviceNameTa) lvglSetConfigKeyboardVisible(true);
 }
 
 void lvglWifiPwdCancelEvent(lv_event_t *e)
@@ -4542,9 +4620,36 @@ void lvglBrightnessEvent(lv_event_t *e)
     lvglRefreshConfigUi();
 }
 
+void lvglSaveDeviceNameEvent(lv_event_t *e)
+{
+    (void)e;
+    if (!lvglConfigDeviceNameTa) return;
+    String nextName = lv_textarea_get_text(lvglConfigDeviceNameTa);
+    nextName = sanitizeDeviceShortName(nextName);
+    if (nextName.isEmpty()) nextName = DEVICE_SHORT_NAME;
+    deviceShortName = nextName;
+    uiPrefs.begin("ui", false);
+    uiPrefs.putString("dev_name", deviceShortName);
+    uiPrefs.end();
+    if (lvglKb) {
+        lv_keyboard_set_textarea(lvglKb, nullptr);
+        lv_obj_add_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
+    }
+    lvglSetConfigKeyboardVisible(false);
+    lvglRefreshConfigUi();
+    lvglRefreshChatPeerUi();
+    if (uiScreen == UI_INFO) lvglRefreshInfoPanel();
+    uiStatusLine = "Device name saved";
+    lvglSyncStatusLine();
+}
+
 void lvglRefreshConfigUi()
 {
     if (lvglAirplaneBtnLabel) lv_label_set_text(lvglAirplaneBtnLabel, airplaneModeEnabled ? "Airplane: ON" : "Airplane: OFF");
+    if (lvglConfigDeviceNameTa) {
+        String current = lv_textarea_get_text(lvglConfigDeviceNameTa);
+        if (current != deviceShortNameValue()) lv_textarea_set_text(lvglConfigDeviceNameTa, deviceShortNameValue().c_str());
+    }
     if (lvglBrightnessSlider && lv_slider_get_value(lvglBrightnessSlider) != displayBrightnessPercent) {
         lv_slider_set_value(lvglBrightnessSlider, displayBrightnessPercent, LV_ANIM_OFF);
     }
@@ -4560,6 +4665,13 @@ void lvglRefreshConfigUi()
         lv_obj_set_style_bg_grad_stop(lvglBrightnessSlider, 255, LV_PART_INDICATOR);
         lv_obj_set_style_bg_color(lvglBrightnessSlider, lv_color_hex(0xE5ECF3), LV_PART_KNOB);
     }
+}
+
+void lvglSetConfigKeyboardVisible(bool visible)
+{
+    if (!lvglConfigWrap || !lvglConfigDeviceNameTa) return;
+    lv_obj_set_style_pad_bottom(lvglConfigWrap, visible ? 132 : 10, 0);
+    if (visible) lv_obj_scroll_to_view_recursive(lvglConfigDeviceNameTa, LV_ANIM_ON);
 }
 
 void lvglBuildUi()
@@ -5986,6 +6098,7 @@ void appendUiSettings(JsonDocument &doc)
     doc["SystemSounds"] = uiPrefs.getBool("sys_snd", systemSoundsEnabled) ? 1 : 0;
     doc["SystemVolume"] = uiPrefs.getUChar("sys_vol", mediaVolumePercent);
     doc["DisplayBrightness"] = uiPrefs.getUChar("disp_bri", displayBrightnessPercent);
+    doc["DeviceName"] = uiPrefs.getString("dev_name", deviceShortNameValue());
     doc["WsRebootOnDisconnect"] = uiPrefs.getBool("ws_reboot", wsRebootOnDisconnectEnabled) ? 1 : 0;
     doc["AirplaneMode"] = uiPrefs.getBool("airplane", airplaneModeEnabled) ? 1 : 0;
     doc["TelemetryMaxKB"] = uiPrefs.getUInt("tele_kb", telemetryMaxKB);
@@ -6020,6 +6133,8 @@ void loadUiRuntimeConfig()
     systemSoundsEnabled = uiPrefs.getBool("sys_snd", true);
     mediaVolumePercent = uiPrefs.getUChar("sys_vol", mediaVolumePercent);
     displayBrightnessPercent = static_cast<uint8_t>(constrain(uiPrefs.getUChar("disp_bri", displayBrightnessPercent), 5, 100));
+    deviceShortName = sanitizeDeviceShortName(uiPrefs.getString("dev_name", DEVICE_SHORT_NAME));
+    if (deviceShortName.isEmpty()) deviceShortName = DEVICE_SHORT_NAME;
     wsRebootOnDisconnectEnabled = uiPrefs.getBool("ws_reboot", false);
     airplaneModeEnabled = uiPrefs.getBool("airplane", false);
     telemetryMaxKB = uiPrefs.getUInt("tele_kb", 512);
@@ -6065,6 +6180,12 @@ bool handleUiSettingMessage(const char *msg)
         displayBrightnessPercent = static_cast<uint8_t>(max(5, min(100, parsed)));
         uiPrefs.putUChar("disp_bri", displayBrightnessPercent);
         if (displayAwake) displayBacklightSet(displayBacklightLevelFromPercent(displayBrightnessPercent));
+        lvglRefreshConfigUi();
+    }
+    else if (strcmp(key, "DeviceName") == 0) {
+        deviceShortName = sanitizeDeviceShortName(String(value));
+        if (deviceShortName.isEmpty()) deviceShortName = DEVICE_SHORT_NAME;
+        uiPrefs.putString("dev_name", deviceShortName);
         lvglRefreshConfigUi();
     }
     else if (strcmp(key, "WsRebootOnDisconnect") == 0) {
@@ -6623,7 +6744,7 @@ bool mqttPublishChatMessage(const String &text)
     if (peerIdx < 0 || !p2pPeers[peerIdx].enabled) return false;
 
     JsonDocument plainDoc;
-    plainDoc["author"] = DEVICE_SHORT_NAME;
+    plainDoc["author"] = deviceShortNameValue();
     plainDoc["text"] = text.substring(0, P2P_MAX_CHAT_TEXT);
     char plain[P2P_MAX_PACKET] = {0};
     const size_t plainLen = serializeJson(plainDoc, plain, sizeof(plain));
@@ -6924,7 +7045,7 @@ String httpsGetText(const String &url, int *statusOut)
     if (!http.begin(client, url)) return "";
 
     http.addHeader("Accept", "application/vnd.github+json");
-    http.addHeader("User-Agent", DEVICE_SHORT_NAME);
+    http.addHeader("User-Agent", deviceShortNameValue());
 
     const int code = http.GET();
     if (statusOut) *statusOut = code;
@@ -7720,7 +7841,7 @@ void setupWebRoutes()
         JsonArray arr = doc["messages"].to<JsonArray>();
         for (int i = 0; i < chatMessageCount; ++i) {
             JsonObject msg = arr.add<JsonObject>();
-            msg["author"] = chatMessages[i].author;
+            msg["author"] = chatDisplayAuthorForMessage(chatMessages[i]);
             msg["text"] = chatMessages[i].text;
             msg["outgoing"] = chatMessages[i].outgoing;
             msg["ts_ms"] = static_cast<uint64_t>(chatMessages[i].tsMs);
@@ -7732,7 +7853,7 @@ void setupWebRoutes()
 
     server.on("/api/chat/identity", HTTP_GET, [](AsyncWebServerRequest *request) {
         JsonDocument doc;
-        doc["device"] = DEVICE_SHORT_NAME;
+        doc["device"] = deviceShortNameValue();
         doc["port"] = P2P_UDP_PORT;
         doc["public_key"] = p2pPublicKeyHex();
         String payload;
@@ -9333,7 +9454,7 @@ void setup()
 
     Serial.begin(115200);
     Serial.println();
-    Serial.printf("%s UI + fallback file manager\n", DEVICE_SHORT_NAME);
+    Serial.printf("%s UI + fallback file manager\n", deviceShortNameValue().c_str());
     Serial.printf("[P2P] ready=%d pub=%s\n", p2pReady ? 1 : 0, p2pReady ? p2pPublicKeyHex().c_str() : "-");
 
     tft.init();
