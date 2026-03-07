@@ -282,6 +282,14 @@ Flash the current default environment:
 pio run -t upload
 ```
 
+If flashing does not start automatically, the board may not be entering the ESP32 bootloader on its own. On some USB ports, USB-serial adapters, or driver setups, you may need to do it manually:
+
+1. Hold the `BOOT` button.
+2. Press and release `RST` or `EN`.
+3. Release `BOOT` when the upload begins.
+
+If upload still fails, reconnect the USB cable, close any serial monitor, and try again.
+
 ### Serial monitor
 
 ```powershell

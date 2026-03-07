@@ -1077,6 +1077,33 @@ bool gt911WriteReg8(uint16_t reg, uint8_t value)
     return touchWriteBytes(touchI2cAddrActive, data, sizeof(data));
 }
 
+bool gt911ProbeAddr(uint8_t addr, uint8_t *productIdOut = nullptr)
+{
+    touchI2cAddrActive = addr;
+    uint8_t productId[4] = {0, 0, 0, 0};
+    if (!gt911ReadRegs(GT911_REG_PRODUCT_ID, productId, sizeof(productId))) return false;
+
+    bool useful = false;
+    bool printable = true;
+    for (uint8_t i = 0; i < sizeof(productId); i++) {
+        const uint8_t c = productId[i];
+        if (c != 0x00 && c != 0xFF) useful = true;
+        if (c < 0x20 || c > 0x7E) printable = false;
+    }
+    if (!useful) return false;
+    if (productIdOut) memcpy(productIdOut, productId, sizeof(productId));
+
+    Serial.printf("[TOUCH] gt911 probe addr=0x%02X pid=%02X %02X %02X %02X text='%c%c%c%c'%s\n",
+                  static_cast<unsigned int>(addr),
+                  productId[0], productId[1], productId[2], productId[3],
+                  printable ? productId[0] : '.',
+                  printable ? productId[1] : '.',
+                  printable ? productId[2] : '.',
+                  printable ? productId[3] : '.',
+                  printable ? "" : " nonprint");
+    return true;
+}
+
 void touchBusBegin(uint32_t hz)
 {
     touchI2cHzActive = hz;
@@ -1097,7 +1124,8 @@ void gt911PulseReset(uint8_t addr)
 {
     pinMode(TOUCH_RST, OUTPUT);
     pinMode(TOUCH_IRQ, OUTPUT);
-    digitalWrite(TOUCH_IRQ, (addr == GT911_ADDR_PRIMARY) ? HIGH : LOW);
+    // GT911 address latch: INT low -> 0x5D, INT high -> 0x14.
+    digitalWrite(TOUCH_IRQ, (addr == GT911_ADDR_PRIMARY) ? LOW : HIGH);
     digitalWrite(TOUCH_RST, LOW);
     delay(10);
     digitalWrite(TOUCH_RST, HIGH);
@@ -1134,35 +1162,39 @@ void cstInit()
 void gt911Init()
 {
     bool ok = false;
+    uint8_t detectedPid[4] = {0, 0, 0, 0};
     touchI2cAddrActive = GT911_ADDR_PRIMARY;
-    static const uint32_t speeds[] = {TOUCH_I2C_HZ, 100000U};
+    static const uint32_t speeds[] = {100000U, TOUCH_I2C_HZ};
     static const uint8_t addrs[] = {GT911_ADDR_PRIMARY, GT911_ADDR_SECONDARY};
     for (uint8_t s = 0; s < (sizeof(speeds) / sizeof(speeds[0])) && !ok; s++) {
         touchBusBegin(speeds[s]);
+        // First try both addresses without relying on reset wiring.
         for (uint8_t i = 0; i < (sizeof(addrs) / sizeof(addrs[0])) && !ok; i++) {
-            touchI2cAddrActive = addrs[i];
-            gt911PulseReset(touchI2cAddrActive);
-            uint8_t productId[4] = {0, 0, 0, 0};
-            ok = gt911ReadRegs(GT911_REG_PRODUCT_ID, productId, sizeof(productId));
-            if (ok) {
-                const bool printable =
-                    productId[0] >= '0' && productId[0] <= '9' &&
-                    productId[1] >= '0' && productId[1] <= '9' &&
-                    productId[2] >= '0' && productId[2] <= '9' &&
-                    productId[3] >= '0' && productId[3] <= '9';
-                ok = printable;
+            ok = gt911ProbeAddr(addrs[i], detectedPid);
+        }
+        // Fall back to explicit reset/address latch if direct probing failed.
+        for (uint8_t i = 0; i < (sizeof(addrs) / sizeof(addrs[0])) && !ok; i++) {
+            gt911PulseReset(addrs[i]);
+            delay(10);
+            ok = gt911ProbeAddr(addrs[i], detectedPid);
+            if (!ok) {
+                pinMode(TOUCH_RST, INPUT);
+                pinMode(TOUCH_IRQ, TOUCH_USE_IRQ ? INPUT_PULLUP : INPUT);
             }
         }
     }
+    if (!ok) touchI2cAddrActive = GT911_ADDR_PRIMARY;
+    pinMode(TOUCH_RST, INPUT);
     pinMode(TOUCH_IRQ, TOUCH_USE_IRQ ? INPUT_PULLUP : INPUT);
     touchReadFailStreak = 0;
     touchGhostLowStreak = 0;
     touchLastInitMs = millis();
-    Serial.printf("[TOUCH] gt911 init ok=%d addr=0x%02X i2c=%lu irq=%d\n",
+    Serial.printf("[TOUCH] gt911 init ok=%d addr=0x%02X i2c=%lu irq=%d pid=%02X %02X %02X %02X\n",
                   ok ? 1 : 0,
                   static_cast<unsigned int>(touchI2cAddrActive),
                   static_cast<unsigned long>(touchI2cHzActive),
-                  digitalRead(TOUCH_IRQ));
+                  digitalRead(TOUCH_IRQ),
+                  detectedPid[0], detectedPid[1], detectedPid[2], detectedPid[3]);
 }
 
 void touchInit()
