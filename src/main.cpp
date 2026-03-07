@@ -49,6 +49,7 @@ static constexpr int TOUCH_IRQ = 21;
 static constexpr uint32_t TOUCH_I2C_HZ = 400000U;
 static constexpr bool TOUCH_USE_IRQ = false;
 static constexpr unsigned long TOUCH_POLL_INTERVAL_MS = 6UL;
+static constexpr uint8_t WAKE_TOUCH_RELEASE_STABLE_POLLS = 3;
 static constexpr uint16_t TOUCH_REINIT_FAIL_THRESHOLD = 40;
 static constexpr unsigned long TOUCH_REINIT_MIN_INTERVAL_MS = 8000UL;
 static constexpr uint8_t TFT_ROTATION = 0;
@@ -290,6 +291,7 @@ void displaySetAwake(bool awake);
 void displayBacklightInit();
 void displayBacklightSet(uint8_t level);
 void displayBacklightFadeIn(uint16_t durationMs = 220);
+uint8_t displayBacklightLevelFromPercent(uint8_t percent);
 void snakeResetGame();
 void tetrisResetGame();
 void tetrisMove(int dx);
@@ -422,6 +424,8 @@ static lv_obj_t *lvglMqttCtrlList = nullptr;
 static lv_obj_t *lvglChatLabel = nullptr;
 static lv_obj_t *lvglAirplaneBtn = nullptr;
 static lv_obj_t *lvglAirplaneBtnLabel = nullptr;
+static lv_obj_t *lvglBrightnessSlider = nullptr;
+static lv_obj_t *lvglBrightnessValueLabel = nullptr;
 static lv_obj_t *lvglKb = nullptr;
 static lv_obj_t *lvglSnakeScoreLabel = nullptr;
 static lv_obj_t *lvglTetrisScoreLabel = nullptr;
@@ -663,6 +667,7 @@ unsigned long lastSensorSampleMs = 0;
 unsigned long lastChargeEvalMs = 0;
 unsigned long lastChargeSeenMs = 0;
 bool displayAwake = true;
+uint8_t displayBrightnessPercent = 100;
 bool batteryFilterInitialized = false;
 bool lightFilterInitialized = false;
 float lightPercentFiltered = 0.0f;
@@ -1349,11 +1354,18 @@ void lvglTouchReadCb(lv_indev_drv_t *indev, lv_indev_data_t *data)
     if (!displayAwake) {
         if (lvglTouchDown && !wakeTouchReleaseGuard) {
             wakeTouchReleaseGuard = true;
+            wakeTouchConfirmCount = WAKE_TOUCH_RELEASE_STABLE_POLLS;
             displaySetAwake(true);
             lastUserActivityMs = millis();
         }
         if (wakeTouchReleaseGuard) {
-            if (!lvglTouchDown) wakeTouchReleaseGuard = false;
+            if (lvglTouchDown) {
+                wakeTouchConfirmCount = WAKE_TOUCH_RELEASE_STABLE_POLLS;
+            } else if (wakeTouchConfirmCount > 0) {
+                wakeTouchConfirmCount--;
+            } else {
+                wakeTouchReleaseGuard = false;
+            }
             lvglSwipeTracking = false;
             lvglSwipeCandidate = false;
             lvglSwipeHorizontalLocked = false;
@@ -1364,7 +1376,13 @@ void lvglTouchReadCb(lv_indev_drv_t *indev, lv_indev_data_t *data)
         }
     }
     if (wakeTouchReleaseGuard) {
-        if (!lvglTouchDown) wakeTouchReleaseGuard = false;
+        if (lvglTouchDown) {
+            wakeTouchConfirmCount = WAKE_TOUCH_RELEASE_STABLE_POLLS;
+        } else if (wakeTouchConfirmCount > 0) {
+            wakeTouchConfirmCount--;
+        } else {
+            wakeTouchReleaseGuard = false;
+        }
         lvglSwipeTracking = false;
         lvglSwipeCandidate = false;
         lvglSwipeHorizontalLocked = false;
@@ -1737,6 +1755,7 @@ void lvglOpenMqttCtrlEvent(lv_event_t *e);
 void lvglStyleHintEvent(lv_event_t *e);
 void lvglAirplaneToggleEvent(lv_event_t *e);
 void lvglScreenshotEvent(lv_event_t *e);
+void lvglBrightnessEvent(lv_event_t *e);
 void lvglTextAreaFocusEvent(lv_event_t *e);
 void lvglWifiPwdCancelEvent(lv_event_t *e);
 void lvglWifiPwdConnectEvent(lv_event_t *e);
@@ -2025,6 +2044,38 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglCreateMenuButton(cfgWrap, "MQTT Config", lv_color_hex(0x6D4B9A), lvglOpenMqttCfgEvent, nullptr);
             lvglCreateMenuButton(cfgWrap, "MQTT Controls", lv_color_hex(0x2D6D8E), lvglOpenMqttCtrlEvent, nullptr);
             lvglCreateMenuButton(cfgWrap, "Screenshot", lv_color_hex(0x6B5B2A), lvglScreenshotEvent, nullptr);
+
+            lv_obj_t *brightWrap = lv_obj_create(cfgWrap);
+            lv_obj_set_size(brightWrap, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_color(brightWrap, lv_color_hex(0x18222D), 0);
+            lv_obj_set_style_border_width(brightWrap, 0, 0);
+            lv_obj_set_style_radius(brightWrap, 12, 0);
+            lv_obj_set_style_pad_all(brightWrap, 10, 0);
+            lv_obj_set_style_pad_row(brightWrap, 6, 0);
+            lv_obj_set_flex_flow(brightWrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_clear_flag(brightWrap, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *brightHdr = lv_obj_create(brightWrap);
+            lv_obj_set_size(brightHdr, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(brightHdr, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(brightHdr, 0, 0);
+            lv_obj_set_style_pad_all(brightHdr, 0, 0);
+            lv_obj_set_style_pad_column(brightHdr, 8, 0);
+            lv_obj_set_flex_flow(brightHdr, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(brightHdr, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *brightLbl = lv_label_create(brightHdr);
+            lv_label_set_text(brightLbl, "Brightness");
+            lv_obj_set_style_text_color(brightLbl, lv_color_hex(0xE5ECF3), 0);
+            lv_obj_set_flex_grow(brightLbl, 1);
+
+            lvglBrightnessValueLabel = lv_label_create(brightHdr);
+            lv_obj_set_style_text_color(lvglBrightnessValueLabel, lv_color_hex(0xB7C4D1), 0);
+
+            lvglBrightnessSlider = lv_slider_create(brightWrap);
+            lv_obj_set_width(lvglBrightnessSlider, lv_pct(100));
+            lv_slider_set_range(lvglBrightnessSlider, 5, 100);
+            lv_obj_add_event_cb(lvglBrightnessSlider, lvglBrightnessEvent, LV_EVENT_VALUE_CHANGED, nullptr);
             lvglRefreshConfigUi();
             break;
         }
@@ -3176,9 +3227,32 @@ void lvglAirplaneToggleEvent(lv_event_t *e)
     applyAirplaneMode(!airplaneModeEnabled, "lvgl_config");
 }
 
+void lvglBrightnessEvent(lv_event_t *e)
+{
+    (void)e;
+    if (!lvglBrightnessSlider) return;
+    displayBrightnessPercent = static_cast<uint8_t>(lv_slider_get_value(lvglBrightnessSlider));
+    if (displayAwake) displayBacklightSet(displayBacklightLevelFromPercent(displayBrightnessPercent));
+    uiPrefs.putUChar("disp_bri", displayBrightnessPercent);
+    lvglRefreshConfigUi();
+}
+
 void lvglRefreshConfigUi()
 {
     if (lvglAirplaneBtnLabel) lv_label_set_text(lvglAirplaneBtnLabel, airplaneModeEnabled ? "Airplane: ON" : "Airplane: OFF");
+    if (lvglBrightnessSlider && lv_slider_get_value(lvglBrightnessSlider) != displayBrightnessPercent) {
+        lv_slider_set_value(lvglBrightnessSlider, displayBrightnessPercent, LV_ANIM_OFF);
+    }
+    if (lvglBrightnessValueLabel) lv_label_set_text_fmt(lvglBrightnessValueLabel, "%u%%", static_cast<unsigned int>(displayBrightnessPercent));
+    if (lvglBrightnessSlider) {
+        const lv_color_t lowCol = lv_color_hex(0xC94B4B);
+        const lv_color_t normalCol = lv_color_hex(0x52B788);
+        lv_obj_set_style_bg_color(lvglBrightnessSlider, lv_color_hex(0x2A3340), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(lvglBrightnessSlider,
+                                  (displayBrightnessPercent <= 20) ? lowCol : normalCol,
+                                  LV_PART_INDICATOR);
+        lv_obj_set_style_bg_color(lvglBrightnessSlider, lv_color_hex(0xE5ECF3), LV_PART_KNOB);
+    }
 }
 
 void lvglBuildUi()
@@ -3489,6 +3563,12 @@ void displayBacklightInit()
     displayBacklightSet(TFT_BL_LEVEL_OFF);
 }
 
+uint8_t displayBacklightLevelFromPercent(uint8_t percent)
+{
+    percent = static_cast<uint8_t>(constrain(percent, 5, 100));
+    return static_cast<uint8_t>((static_cast<uint16_t>(TFT_BL_LEVEL_ON) * percent) / 100U);
+}
+
 void displayBacklightSet(uint8_t level)
 {
     ledcWrite(TFT_BL_LEDC_CHANNEL, level);
@@ -3498,8 +3578,9 @@ void displayBacklightFadeIn(uint16_t durationMs)
 {
     const uint8_t steps = 16;
     const uint16_t stepDelay = max<uint16_t>(8, durationMs / steps);
+    const uint8_t target = displayBacklightLevelFromPercent(displayBrightnessPercent);
     for (uint8_t i = 0; i <= steps; i++) {
-        const uint8_t level = static_cast<uint8_t>((static_cast<uint16_t>(TFT_BL_LEVEL_ON) * i) / steps);
+        const uint8_t level = static_cast<uint8_t>((static_cast<uint16_t>(target) * i) / steps);
         displayBacklightSet(level);
         delay(stepDelay);
     }
@@ -4462,7 +4543,7 @@ void loadMediaEntries()
 void displaySetAwake(bool awake)
 {
     displayAwake = awake;
-    displayBacklightSet(awake ? TFT_BL_LEVEL_ON : TFT_BL_LEVEL_OFF);
+    displayBacklightSet(awake ? displayBacklightLevelFromPercent(displayBrightnessPercent) : TFT_BL_LEVEL_OFF);
     if (awake) {
         wakeTouchConfirmCount = 0;
         rgbRefreshByMediaState();
@@ -4572,6 +4653,7 @@ void appendUiSettings(JsonDocument &doc)
     doc["RecordTelemetry"] = uiPrefs.getBool("record_tel", recordTelemetryEnabled) ? 1 : 0;
     doc["SystemSounds"] = uiPrefs.getBool("sys_snd", systemSoundsEnabled) ? 1 : 0;
     doc["SystemVolume"] = uiPrefs.getUChar("sys_vol", mediaVolumePercent);
+    doc["DisplayBrightness"] = uiPrefs.getUChar("disp_bri", displayBrightnessPercent);
     doc["WsRebootOnDisconnect"] = uiPrefs.getBool("ws_reboot", wsRebootOnDisconnectEnabled) ? 1 : 0;
     doc["AirplaneMode"] = uiPrefs.getBool("airplane", airplaneModeEnabled) ? 1 : 0;
     doc["TelemetryMaxKB"] = uiPrefs.getUInt("tele_kb", telemetryMaxKB);
@@ -4605,6 +4687,7 @@ void loadUiRuntimeConfig()
     recordTelemetryEnabled = uiPrefs.getBool("record_tel", false);
     systemSoundsEnabled = uiPrefs.getBool("sys_snd", true);
     mediaVolumePercent = uiPrefs.getUChar("sys_vol", mediaVolumePercent);
+    displayBrightnessPercent = static_cast<uint8_t>(constrain(uiPrefs.getUChar("disp_bri", displayBrightnessPercent), 5, 100));
     wsRebootOnDisconnectEnabled = uiPrefs.getBool("ws_reboot", false);
     airplaneModeEnabled = uiPrefs.getBool("airplane", false);
     telemetryMaxKB = uiPrefs.getUInt("tele_kb", 512);
@@ -4645,6 +4728,12 @@ bool handleUiSettingMessage(const char *msg)
         mediaVolumePercent = static_cast<uint8_t>(max(0, min(100, parsed)));
         uiPrefs.putUChar("sys_vol", mediaVolumePercent);
         audioSetVolumeImmediate(mediaVolumePercent);
+    }
+    else if (strcmp(key, "DisplayBrightness") == 0 && parseIntMessageValue(value, parsed)) {
+        displayBrightnessPercent = static_cast<uint8_t>(max(5, min(100, parsed)));
+        uiPrefs.putUChar("disp_bri", displayBrightnessPercent);
+        if (displayAwake) displayBacklightSet(displayBacklightLevelFromPercent(displayBrightnessPercent));
+        lvglRefreshConfigUi();
     }
     else if (strcmp(key, "WsRebootOnDisconnect") == 0) {
         wsRebootOnDisconnectEnabled = atoi(value) != 0;
