@@ -307,6 +307,7 @@ bool otaDownloadAndApplyFromUrl(const String &url, String &errorOut);
 void tetrisRotate();
 void tetrisDrop();
 bool tetrisCellFor(int type, int rot, int i, int &ox, int &oy);
+uint8_t wifiQualityPercentFromRssi(int32_t rssi);
 void mqttPublishAction(const char *action);
 void mqttPublishButtonAction(int index);
 void mqttService();
@@ -319,6 +320,7 @@ bool handleUiSettingMessage(const char *msg);
 void loadUiRuntimeConfig();
 void applyAirplaneMode(bool enabled, const char *reason);
 void lvglRefreshConfigUi();
+void cpuLoadService(uint32_t loopStartUs);
 void setupWifiAndServer();
 void lvglMediaPrevPageEvent(lv_event_t *e);
 void lvglMediaNextPageEvent(lv_event_t *e);
@@ -364,6 +366,9 @@ static constexpr lv_opa_t UI_BUTTON_CLICK_FLASH_MIX = 64;
 static constexpr int16_t UI_TOP_BAR_H = 30;
 static constexpr int16_t UI_CONTENT_TOP_Y = UI_TOP_BAR_H;
 static constexpr int16_t UI_CONTENT_H = DISPLAY_HEIGHT - UI_CONTENT_TOP_Y;
+static constexpr uint8_t INFO_TEMP_BAR_MAX_C = 100;
+static constexpr uint8_t INFO_TEMP_WARN_C = 65;
+static constexpr uint8_t INFO_TEMP_HOT_C = 80;
 static constexpr int16_t SWIPE_EDGE_START_MAX_X = 28;
 static constexpr int16_t SWIPE_BACK_MIN_DX = 52;
 static constexpr int16_t SWIPE_BACK_MAX_DY = 30;
@@ -389,7 +394,20 @@ static lv_obj_t *lvglScrMqttCtrl = nullptr;
 static lv_obj_t *lvglScrSnake = nullptr;
 static lv_obj_t *lvglScrTetris = nullptr;
 static lv_obj_t *lvglStatusLabel = nullptr;
-static lv_obj_t *lvglInfoLabel = nullptr;
+static lv_obj_t *lvglInfoList = nullptr;
+static lv_obj_t *lvglInfoBatteryValueLabel = nullptr;
+static lv_obj_t *lvglInfoBatterySubLabel = nullptr;
+static lv_obj_t *lvglInfoWifiValueLabel = nullptr;
+static lv_obj_t *lvglInfoWifiSubLabel = nullptr;
+static lv_obj_t *lvglInfoLightValueLabel = nullptr;
+static lv_obj_t *lvglInfoLightSubLabel = nullptr;
+static lv_obj_t *lvglInfoCpuValueLabel = nullptr;
+static lv_obj_t *lvglInfoCpuSubLabel = nullptr;
+static lv_obj_t *lvglInfoCpuBar = nullptr;
+static lv_obj_t *lvglInfoTempValueLabel = nullptr;
+static lv_obj_t *lvglInfoTempSubLabel = nullptr;
+static lv_obj_t *lvglInfoTempBar = nullptr;
+static lv_obj_t *lvglInfoSystemLabel = nullptr;
 static lv_obj_t *lvglWifiList = nullptr;
 static lv_obj_t *lvglWifiScanLabel = nullptr;
 static lv_obj_t *lvglWifiPwdModal = nullptr;
@@ -668,6 +686,7 @@ unsigned long lastChargeEvalMs = 0;
 unsigned long lastChargeSeenMs = 0;
 bool displayAwake = true;
 uint8_t displayBrightnessPercent = 100;
+uint8_t cpuLoadPercent = 0;
 bool batteryFilterInitialized = false;
 bool lightFilterInitialized = false;
 float lightPercentFiltered = 0.0f;
@@ -826,6 +845,11 @@ float lastBatterySnapshotVoltage = -1.0f;
 unsigned long lastCarInputTelemetryMs = 0;
 bool rebootRequested = false;
 unsigned long rebootRequestedAtMs = 0;
+uint32_t cpuLoadPrevLoopStartUs = 0;
+uint32_t cpuLoadPrevActiveUs = 0;
+uint32_t cpuLoadAccumActiveUs = 0;
+uint32_t cpuLoadAccumTotalUs = 0;
+unsigned long cpuLoadWindowStartMs = 0;
 
 struct MqttConfig {
     bool enabled = false;
@@ -1736,6 +1760,79 @@ lv_obj_t *lvglCreateMenuButton(lv_obj_t *parent, const char *txt, lv_color_t col
     return btn;
 }
 
+static lv_obj_t *lvglCreateInfoCard(lv_obj_t *parent, const char *symbol, const char *title, lv_color_t accent, lv_obj_t **valueOut, lv_obj_t **subOut, lv_obj_t **barOut = nullptr)
+{
+    if (valueOut) *valueOut = nullptr;
+    if (subOut) *subOut = nullptr;
+    if (barOut) *barOut = nullptr;
+    if (!parent) return nullptr;
+
+    lv_obj_t *card = lv_obj_create(parent);
+    if (!card) return nullptr;
+    lv_obj_set_width(card, lv_pct(100));
+    lv_obj_set_height(card, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x16212C), 0);
+    lv_obj_set_style_border_color(card, lv_color_mix(accent, lv_color_white(), LV_OPA_20), 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_radius(card, 12, 0);
+    lv_obj_set_style_pad_all(card, 10, 0);
+    lv_obj_set_style_pad_row(card, 4, 0);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *top = lv_obj_create(card);
+    lv_obj_set_size(top, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(top, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(top, 0, 0);
+    lv_obj_set_style_pad_all(top, 0, 0);
+    lv_obj_set_style_pad_column(top, 6, 0);
+    lv_obj_set_flex_flow(top, LV_FLEX_FLOW_ROW);
+    lv_obj_clear_flag(top, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *icon = lv_label_create(top);
+    lv_label_set_text_fmt(icon, "%s", symbol ? symbol : "");
+    lv_obj_set_style_text_color(icon, accent, 0);
+
+    lv_obj_t *name = lv_label_create(top);
+    lv_label_set_text(name, title ? title : "");
+    lv_obj_set_style_text_color(name, lv_color_hex(0xE5ECF3), 0);
+    lv_obj_set_flex_grow(name, 1);
+
+    lv_obj_t *value = lv_label_create(top);
+    lv_label_set_text(value, "--");
+    lv_obj_set_style_text_color(value, lv_color_hex(0xF5F8FB), 0);
+
+    lv_obj_t *sub = lv_label_create(card);
+    lv_obj_set_width(sub, lv_pct(100));
+    lv_label_set_long_mode(sub, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(sub, "");
+    lv_obj_set_style_text_color(sub, lv_color_hex(0x9FB0C2), 0);
+
+    lv_obj_t *bar = nullptr;
+    if (barOut) {
+        bar = lv_bar_create(card);
+        lv_obj_set_size(bar, lv_pct(100), 10);
+        lv_bar_set_range(bar, 0, 100);
+        lv_bar_set_value(bar, 0, LV_ANIM_OFF);
+        lv_obj_set_style_bg_color(bar, lv_color_hex(0x2A3340), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(bar, accent, LV_PART_INDICATOR);
+        lv_obj_set_style_radius(bar, 6, LV_PART_MAIN);
+        lv_obj_set_style_radius(bar, 6, LV_PART_INDICATOR);
+    }
+
+    if (valueOut) *valueOut = value;
+    if (subOut) *subOut = sub;
+    if (barOut) *barOut = bar;
+    return card;
+}
+
+static void lvglSetInfoBarColor(lv_obj_t *bar, lv_color_t color)
+{
+    if (!bar) return;
+    lv_obj_set_style_bg_color(bar, color, LV_PART_INDICATOR);
+}
+
 void lvglRefreshWifiList();
 void lvglRefreshMediaList();
 void lvglRefreshInfoPanel();
@@ -2003,14 +2100,46 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_style_text_color(lbl, lv_color_hex(0xC8CED6), 0);
             break;
         }
-        case UI_INFO:
+        case UI_INFO: {
             lvglScrInfo = lvglCreateScreenBase("Info", true);
-            lvglInfoLabel = lv_label_create(lvglScrInfo);
-            lv_obj_set_width(lvglInfoLabel, lv_pct(94));
-            lv_obj_align(lvglInfoLabel, LV_ALIGN_TOP_LEFT, 10, UI_CONTENT_TOP_Y + 8);
-            lv_obj_set_style_text_color(lvglInfoLabel, lv_color_hex(0xE5ECF3), 0);
-            lv_label_set_long_mode(lvglInfoLabel, LV_LABEL_LONG_WRAP);
+            lvglInfoList = lv_obj_create(lvglScrInfo);
+            lv_obj_set_size(lvglInfoList, lv_pct(100), UI_CONTENT_H);
+            lv_obj_align(lvglInfoList, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
+            lv_obj_set_style_bg_opa(lvglInfoList, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(lvglInfoList, 0, 0);
+            lv_obj_set_style_pad_all(lvglInfoList, 8, 0);
+            lv_obj_set_style_pad_row(lvglInfoList, 6, 0);
+            lv_obj_set_flex_flow(lvglInfoList, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_scroll_dir(lvglInfoList, LV_DIR_VER);
+            lv_obj_set_scrollbar_mode(lvglInfoList, LV_SCROLLBAR_MODE_OFF);
+
+            lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_BATTERY_FULL, "Battery", lv_color_hex(0x52B788),
+                               &lvglInfoBatteryValueLabel, &lvglInfoBatterySubLabel);
+            lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_WIFI, "WiFi Strength", lv_color_hex(0x4FC3F7),
+                               &lvglInfoWifiValueLabel, &lvglInfoWifiSubLabel);
+            lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_EYE_OPEN, "Lighting", lv_color_hex(0xF4B942),
+                               &lvglInfoLightValueLabel, &lvglInfoLightSubLabel);
+            lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_CHARGE, "Processor Load", lv_color_hex(0x7BC96F),
+                               &lvglInfoCpuValueLabel, &lvglInfoCpuSubLabel, &lvglInfoCpuBar);
+            lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_WARNING, "Chip Temperature", lv_color_hex(0xF2C35E),
+                               &lvglInfoTempValueLabel, &lvglInfoTempSubLabel, &lvglInfoTempBar);
+
+            lv_obj_t *systemCard = lv_obj_create(lvglInfoList);
+            lv_obj_set_width(systemCard, lv_pct(100));
+            lv_obj_set_height(systemCard, LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_color(systemCard, lv_color_hex(0x16212C), 0);
+            lv_obj_set_style_border_color(systemCard, lv_color_hex(0x536274), 0);
+            lv_obj_set_style_border_width(systemCard, 1, 0);
+            lv_obj_set_style_radius(systemCard, 12, 0);
+            lv_obj_set_style_pad_all(systemCard, 10, 0);
+            lv_obj_clear_flag(systemCard, LV_OBJ_FLAG_SCROLLABLE);
+
+            lvglInfoSystemLabel = lv_label_create(systemCard);
+            lv_obj_set_width(lvglInfoSystemLabel, lv_pct(100));
+            lv_label_set_long_mode(lvglInfoSystemLabel, LV_LABEL_LONG_WRAP);
+            lv_obj_set_style_text_color(lvglInfoSystemLabel, lv_color_hex(0xC8D3DD), 0);
             break;
+        }
         case UI_GAMES: {
             lvglScrGames = lvglCreateScreenBase("Games", true);
             lv_obj_t *gamesWrap = lv_obj_create(lvglScrGames);
@@ -2544,31 +2673,92 @@ void lvglMediaEntryEvent(lv_event_t *e)
 
 void lvglRefreshInfoPanel()
 {
-    if (!lvglInfoLabel) return;
+    if (!lvglInfoList) return;
     sampleTopIndicators();
     lvglRefreshTopIndicators();
-    bool connected = wifiConnectedSafe();
-    String ssid = connected ? wifiSsidSafe() : String("disconnected");
-    String ip = connected ? wifiIpSafe() : String("-");
-    const int rssi = connected ? static_cast<int>(wifiRssiSafe()) : 0;
-    char buf[400];
-    snprintf(
-        buf,
-        sizeof(buf),
-        "FW: %s\nAP: %s\nSTA: %s\nIP: %s\nRSSI: %d\nBattery: %u%% (%.2fV)\nCharging: %s\nLight: %u%%\nSD mounted: %s\nMedia: %s",
-        FW_VERSION,
-        AP_SSID,
-        ssid.c_str(),
-        ip.c_str(),
-        rssi,
-        batteryPercent,
-        batteryVoltage,
-        batteryCharging ? "yes" : "no",
-        lightPercent,
-        sdMounted ? "yes" : "no",
-        mediaIsPlaying ? mediaNowPlaying.c_str() : "stopped"
-    );
-    lv_label_set_text(lvglInfoLabel, buf);
+    const bool connected = wifiConnectedSafe();
+    const String ssid = connected ? wifiSsidSafe() : String("Disconnected");
+    const String ip = connected ? wifiIpSafe() : String("-");
+    const int rssi = connected ? static_cast<int>(wifiRssiSafe()) : -127;
+    const uint8_t wifiQuality = connected ? wifiQualityPercentFromRssi(rssi) : 0;
+    const float tempC = temperatureRead();
+    uint8_t tempBarValue = 0;
+    if (!isnan(tempC) && tempC > 0.0f) {
+        float clamped = tempC;
+        if (clamped < 0.0f) clamped = 0.0f;
+        if (clamped > INFO_TEMP_BAR_MAX_C) clamped = INFO_TEMP_BAR_MAX_C;
+        tempBarValue = static_cast<uint8_t>(clamped + 0.5f);
+    }
+    const uint32_t freeHeap = static_cast<uint32_t>(ESP.getFreeHeap());
+    const uint32_t largest8 = static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    char batteryBuf[40];
+    const int batteryCentivolts = static_cast<int>(batteryVoltage * 100.0f + 0.5f);
+    snprintf(batteryBuf, sizeof(batteryBuf), "%d.%02dV  |  %s",
+             batteryCentivolts / 100,
+             abs(batteryCentivolts % 100),
+             batteryCharging ? "Charging" : "On battery");
+
+    if (lvglInfoBatteryValueLabel) lv_label_set_text_fmt(lvglInfoBatteryValueLabel, "%u%%", batteryPercent);
+    if (lvglInfoBatterySubLabel) {
+        lv_label_set_text(lvglInfoBatterySubLabel, batteryBuf);
+    }
+
+    if (lvglInfoWifiValueLabel) lv_label_set_text_fmt(lvglInfoWifiValueLabel, connected ? "%u%%" : "Offline", wifiQuality);
+    if (lvglInfoWifiSubLabel) {
+        if (connected) lv_label_set_text_fmt(lvglInfoWifiSubLabel, "%s  |  %s  |  %ddBm", ssid.c_str(), ip.c_str(), rssi);
+        else lv_label_set_text_fmt(lvglInfoWifiSubLabel, "AP %s  |  Touch to Config > WiFi to connect", AP_SSID);
+    }
+
+    if (lvglInfoLightValueLabel) lv_label_set_text_fmt(lvglInfoLightValueLabel, "%u%%", lightPercent);
+    if (lvglInfoLightSubLabel) {
+        lv_label_set_text_fmt(lvglInfoLightSubLabel, "Display %s  |  Backlight %u%%  |  raw %u",
+                              displayAwake ? "awake" : "sleeping",
+                              static_cast<unsigned int>(displayBrightnessPercent),
+                              static_cast<unsigned int>(lightRawAdc));
+    }
+
+    if (lvglInfoCpuValueLabel) lv_label_set_text_fmt(lvglInfoCpuValueLabel, "%u%%", static_cast<unsigned int>(cpuLoadPercent));
+    if (lvglInfoCpuSubLabel) {
+        lv_label_set_text_fmt(lvglInfoCpuSubLabel, "Approx. main-loop load  |  Free heap %lu KB", static_cast<unsigned long>(freeHeap / 1024U));
+    }
+    if (lvglInfoCpuBar) {
+        lv_bar_set_value(lvglInfoCpuBar, static_cast<int32_t>(cpuLoadPercent), LV_ANIM_OFF);
+        lv_color_t cpuColor = lv_color_hex(0x52B788);
+        if (cpuLoadPercent >= 85) cpuColor = lv_color_hex(0xD95C5C);
+        else if (cpuLoadPercent >= 65) cpuColor = lv_color_hex(0xF2C35E);
+        lvglSetInfoBarColor(lvglInfoCpuBar, cpuColor);
+    }
+
+    if (lvglInfoTempValueLabel) {
+        if (!isnan(tempC) && tempC > 0.0f) {
+            char tempBuf[16];
+            const int tempTenths = static_cast<int>(tempC * 10.0f + 0.5f);
+            snprintf(tempBuf, sizeof(tempBuf), "%d.%dC", tempTenths / 10, abs(tempTenths % 10));
+            lv_label_set_text(lvglInfoTempValueLabel, tempBuf);
+        } else {
+            lv_label_set_text(lvglInfoTempValueLabel, "--");
+        }
+    }
+    if (lvglInfoTempSubLabel) lv_label_set_text_fmt(lvglInfoTempSubLabel, "ESP32 die temp  |  target range under %uC", INFO_TEMP_WARN_C);
+    if (lvglInfoTempBar) {
+        lv_bar_set_value(lvglInfoTempBar, static_cast<int32_t>(tempBarValue), LV_ANIM_OFF);
+        lv_color_t tempColor = lv_color_hex(0x4FC3F7);
+        if (tempBarValue >= INFO_TEMP_HOT_C) tempColor = lv_color_hex(0xD95C5C);
+        else if (tempBarValue >= INFO_TEMP_WARN_C) tempColor = lv_color_hex(0xF2C35E);
+        lvglSetInfoBarColor(lvglInfoTempBar, tempColor);
+    }
+
+    if (lvglInfoSystemLabel) {
+        lv_label_set_text_fmt(
+            lvglInfoSystemLabel,
+            "Model: %s\nFirmware: %s\nSoftAP: %s\nLargest 8-bit block: %lu KB\nSD: %s\nMedia: %s",
+            DEVICE_SHORT_NAME,
+            FW_VERSION,
+            AP_SSID,
+            static_cast<unsigned long>(largest8 / 1024U),
+            sdMounted ? "mounted" : "offline",
+            mediaIsPlaying ? mediaNowPlaying.c_str() : "stopped");
+    }
 }
 
 void lvglRefreshWifiList()
@@ -3245,12 +3435,14 @@ void lvglRefreshConfigUi()
     }
     if (lvglBrightnessValueLabel) lv_label_set_text_fmt(lvglBrightnessValueLabel, "%u%%", static_cast<unsigned int>(displayBrightnessPercent));
     if (lvglBrightnessSlider) {
-        const lv_color_t lowCol = lv_color_hex(0xC94B4B);
         const lv_color_t normalCol = lv_color_hex(0x52B788);
+        const lv_color_t highCol = lv_color_hex(0xC94B4B);
         lv_obj_set_style_bg_color(lvglBrightnessSlider, lv_color_hex(0x2A3340), LV_PART_MAIN);
-        lv_obj_set_style_bg_color(lvglBrightnessSlider,
-                                  (displayBrightnessPercent <= 20) ? lowCol : normalCol,
-                                  LV_PART_INDICATOR);
+        lv_obj_set_style_bg_color(lvglBrightnessSlider, normalCol, LV_PART_INDICATOR);
+        lv_obj_set_style_bg_grad_color(lvglBrightnessSlider, highCol, LV_PART_INDICATOR);
+        lv_obj_set_style_bg_grad_dir(lvglBrightnessSlider, LV_GRAD_DIR_HOR, LV_PART_INDICATOR);
+        lv_obj_set_style_bg_main_stop(lvglBrightnessSlider, 204, LV_PART_INDICATOR);
+        lv_obj_set_style_bg_grad_stop(lvglBrightnessSlider, 255, LV_PART_INDICATOR);
         lv_obj_set_style_bg_color(lvglBrightnessSlider, lv_color_hex(0xE5ECF3), LV_PART_KNOB);
     }
 }
@@ -3397,6 +3589,31 @@ uint8_t batteryPercentFromVoltage(float vbat)
     if (p < 0.0f) p = 0.0f;
     if (p > 100.0f) p = 100.0f;
     return static_cast<uint8_t>(p + 0.5f);
+}
+
+void cpuLoadService(uint32_t loopStartUs)
+{
+    if (cpuLoadPrevLoopStartUs != 0U) {
+        const uint32_t loopTotalUs = loopStartUs - cpuLoadPrevLoopStartUs;
+        const uint32_t loopActiveUs = (cpuLoadPrevActiveUs > loopTotalUs) ? loopTotalUs : cpuLoadPrevActiveUs;
+        cpuLoadAccumActiveUs += loopActiveUs;
+        cpuLoadAccumTotalUs += loopTotalUs;
+    }
+    cpuLoadPrevLoopStartUs = loopStartUs;
+
+    const unsigned long nowMs = millis();
+    if (cpuLoadWindowStartMs == 0UL) cpuLoadWindowStartMs = nowMs;
+    if ((nowMs - cpuLoadWindowStartMs) < 1000UL) return;
+
+    uint8_t nextLoad = cpuLoadPercent;
+    if (cpuLoadAccumTotalUs > 0U) {
+        const uint32_t pct = (cpuLoadAccumActiveUs * 100U) / cpuLoadAccumTotalUs;
+        nextLoad = static_cast<uint8_t>(pct > 100U ? 100U : pct);
+    }
+    cpuLoadPercent = nextLoad;
+    cpuLoadAccumActiveUs = 0U;
+    cpuLoadAccumTotalUs = 0U;
+    cpuLoadWindowStartMs = nowMs;
 }
 
 uint16_t readLightRaw()
@@ -7713,6 +7930,8 @@ void setup()
 
 void loop()
 {
+    const uint32_t loopStartUs = micros();
+    cpuLoadService(loopStartUs);
     lvglService();
     bool isDown = lvglReady ? lvglTouchDown : false;
 
@@ -7843,5 +8062,6 @@ void loop()
     }
 
     if (canEnterLowPowerSleep(isDown)) enterLowPowerSleep();
+    cpuLoadPrevActiveUs = micros() - loopStartUs;
     delay(1);
 }
