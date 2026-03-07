@@ -244,6 +244,7 @@ WiFiClient mqttNetClient;
 PubSubClient mqttClient(mqttNetClient);
 void loadMediaEntries();
 void refreshWifiScan();
+void wifiScanService();
 void startWifiConnect(const String &ssid, const String &pass);
 void tryBootStaReconnect();
 void sampleTopIndicators();
@@ -380,6 +381,10 @@ static lv_obj_t *lvglScrTetris = nullptr;
 static lv_obj_t *lvglStatusLabel = nullptr;
 static lv_obj_t *lvglInfoLabel = nullptr;
 static lv_obj_t *lvglWifiList = nullptr;
+static lv_obj_t *lvglWifiScanLabel = nullptr;
+static lv_obj_t *lvglWifiPwdModal = nullptr;
+static lv_obj_t *lvglWifiPwdTa = nullptr;
+static lv_obj_t *lvglWifiPwdSsidLabel = nullptr;
 static lv_obj_t *lvglMediaPlayerPanel = nullptr;
 static lv_obj_t *lvglMediaList = nullptr;
 static lv_obj_t *lvglMediaTrackLabel = nullptr;
@@ -416,6 +421,7 @@ static constexpr uint8_t LVGL_MAX_TOP_INDICATORS = 16;
 static lv_obj_t *lvglTopIndicators[LVGL_MAX_TOP_INDICATORS] = {};
 static uint8_t lvglTopIndicatorCount = 0;
 static int lvglMqttEditIndex = 0;
+static String lvglWifiPendingSsid;
 static bool lvglTouchDown = false;
 static int16_t lvglLastTouchX = DISPLAY_CENTER_X;
 static int16_t lvglLastTouchY = DISPLAY_CENTER_Y;
@@ -616,6 +622,9 @@ bool sdSpiReady = false;
 unsigned long sdLastAutoRetryMs = 0;
 bool bootSdInitPending = true;
 bool bootWifiInitPending = true;
+bool wifiScanInProgress = false;
+unsigned long wifiScanAnimLastMs = 0;
+uint8_t wifiScanAnimPhase = 0;
 unsigned long bootDeferredStartMs = 0;
 bool mdnsStarted = false;
 bool webRoutesRegistered = false;
@@ -1717,6 +1726,9 @@ void lvglStyleHintEvent(lv_event_t *e);
 void lvglAirplaneToggleEvent(lv_event_t *e);
 void lvglScreenshotEvent(lv_event_t *e);
 void lvglTextAreaFocusEvent(lv_event_t *e);
+void lvglWifiPwdCancelEvent(lv_event_t *e);
+void lvglWifiPwdConnectEvent(lv_event_t *e);
+void lvglOpenWifiPasswordDialog(const String &ssid);
 void lvglMqttCountMinusEvent(lv_event_t *e);
 void lvglMqttCountPlusEvent(lv_event_t *e);
 void lvglMqttEditPrevEvent(lv_event_t *e);
@@ -2191,12 +2203,14 @@ void lvglNavigateBackBySwipe()
     if (!lvglReady) return;
     switch (uiScreen) {
         case UI_CHAT:
-        case UI_WIFI_LIST:
         case UI_MEDIA:
         case UI_INFO:
         case UI_GAMES:
         case UI_CONFIG:
             lvglOpenScreen(UI_HOME, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
+            break;
+        case UI_WIFI_LIST:
+            lvglOpenScreen(UI_CONFIG, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
             break;
         case UI_GAME_SNAKE:
         case UI_GAME_TETRIS:
@@ -2239,8 +2253,7 @@ void lvglWifiEntryEvent(lv_event_t *e)
     const int idx = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
     if (idx < 0 || idx >= wifiCount) return;
     if (wifiEntries[idx].auth != WIFI_AUTH_OPEN) {
-        uiStatusLine = "Secured AP: connect via /wifi";
-        lvglSyncStatusLine();
+        lvglOpenWifiPasswordDialog(wifiEntries[idx].ssid);
         return;
     }
     startWifiConnect(wifiEntries[idx].ssid, "");
@@ -2498,6 +2511,18 @@ void lvglRefreshWifiList()
 {
     if (!lvglWifiList) return;
     lv_obj_clean(lvglWifiList);
+    lvglWifiScanLabel = nullptr;
+
+    if (wifiScanInProgress) {
+        lvglWifiScanLabel = lv_label_create(lvglWifiList);
+        if (lvglWifiScanLabel) {
+            lv_label_set_text(lvglWifiScanLabel, "Searching for access points");
+            lv_obj_set_width(lvglWifiScanLabel, lv_pct(100));
+            lv_obj_set_style_text_align(lvglWifiScanLabel, LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_set_style_text_color(lvglWifiScanLabel, lv_color_hex(0xC8CED6), 0);
+        }
+        return;
+    }
 
     for (int i = 0; i < wifiCount; i++) {
         char line[96];
@@ -2512,7 +2537,7 @@ void lvglRefreshWifiList()
     }
     if (wifiCount == 0) {
         lv_obj_t *lbl = lv_label_create(lvglWifiList);
-        lv_label_set_text(lbl, "No scan yet. Tap Rescan.");
+        lv_label_set_text(lbl, "No access points found. Tap Rescan.");
         lv_obj_set_style_text_color(lbl, lv_color_hex(0xC8CED6), 0);
     }
 }
@@ -2609,6 +2634,84 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
     }
     lv_keyboard_set_textarea(lvglKb, ta);
     lv_obj_clear_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
+}
+
+void lvglWifiPwdCancelEvent(lv_event_t *e)
+{
+    (void)e;
+    if (lvglKb) {
+        lv_keyboard_set_textarea(lvglKb, nullptr);
+        lv_obj_add_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (lvglWifiPwdModal) lv_obj_add_flag(lvglWifiPwdModal, LV_OBJ_FLAG_HIDDEN);
+    lvglWifiPendingSsid = "";
+}
+
+void lvglWifiPwdConnectEvent(lv_event_t *e)
+{
+    (void)e;
+    if (!lvglWifiPwdTa || lvglWifiPendingSsid.isEmpty()) return;
+    const char *pass = lv_textarea_get_text(lvglWifiPwdTa);
+    startWifiConnect(lvglWifiPendingSsid, pass ? String(pass) : String(""));
+    uiStatusLine = "Connecting to: " + lvglWifiPendingSsid;
+    lvglSyncStatusLine();
+    lvglWifiPwdCancelEvent(nullptr);
+}
+
+void lvglOpenWifiPasswordDialog(const String &ssid)
+{
+    if (!lvglReady) return;
+    if (!lvglWifiPwdModal) {
+        lvglWifiPwdModal = lv_obj_create(lv_layer_top());
+        if (!lvglWifiPwdModal) return;
+        lv_obj_set_size(lvglWifiPwdModal, DISPLAY_WIDTH - 24, 170);
+        lv_obj_center(lvglWifiPwdModal);
+        lv_obj_set_style_bg_color(lvglWifiPwdModal, lv_color_hex(0x16212C), 0);
+        lv_obj_set_style_border_color(lvglWifiPwdModal, lv_color_hex(0x5A6B7C), 0);
+        lv_obj_set_style_border_width(lvglWifiPwdModal, 1, 0);
+        lv_obj_set_style_radius(lvglWifiPwdModal, 12, 0);
+        lv_obj_set_style_pad_all(lvglWifiPwdModal, 10, 0);
+        lv_obj_set_style_pad_row(lvglWifiPwdModal, 8, 0);
+        lv_obj_set_flex_flow(lvglWifiPwdModal, LV_FLEX_FLOW_COLUMN);
+        lv_obj_clear_flag(lvglWifiPwdModal, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *title = lv_label_create(lvglWifiPwdModal);
+        lv_label_set_text(title, "Connect to WiFi");
+        lv_obj_set_style_text_color(title, lv_color_hex(0xE5ECF3), 0);
+
+        lvglWifiPwdSsidLabel = lv_label_create(lvglWifiPwdModal);
+        lv_obj_set_width(lvglWifiPwdSsidLabel, lv_pct(100));
+        lv_label_set_long_mode(lvglWifiPwdSsidLabel, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_color(lvglWifiPwdSsidLabel, lv_color_hex(0xB7C4D1), 0);
+
+        lvglWifiPwdTa = lv_textarea_create(lvglWifiPwdModal);
+        lv_obj_set_width(lvglWifiPwdTa, lv_pct(100));
+        lv_textarea_set_one_line(lvglWifiPwdTa, true);
+        lv_textarea_set_password_mode(lvglWifiPwdTa, true);
+        lv_textarea_set_placeholder_text(lvglWifiPwdTa, "Password");
+        lv_obj_add_event_cb(lvglWifiPwdTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
+
+        lv_obj_t *row = lv_obj_create(lvglWifiPwdModal);
+        lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_set_style_pad_column(row, 8, 0);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+        lvglCreateMenuButton(row, "Cancel", lv_color_hex(0x4E5D6C), lvglWifiPwdCancelEvent, nullptr);
+        lvglCreateMenuButton(row, "Connect", lv_color_hex(0x357A38), lvglWifiPwdConnectEvent, nullptr);
+    }
+
+    lvglWifiPendingSsid = ssid;
+    if (lvglWifiPwdSsidLabel) lv_label_set_text_fmt(lvglWifiPwdSsidLabel, "SSID: %s", ssid.c_str());
+    if (lvglWifiPwdTa) {
+        lv_textarea_set_text(lvglWifiPwdTa, "");
+        lv_event_send(lvglWifiPwdTa, LV_EVENT_FOCUSED, nullptr);
+    }
+    lv_obj_move_foreground(lvglWifiPwdModal);
+    lv_obj_clear_flag(lvglWifiPwdModal, LV_OBJ_FLAG_HIDDEN);
 }
 
 void lvglMqttPublishDiscoveryEvent(lv_event_t *e)
@@ -3098,6 +3201,13 @@ void lvglService()
         lvglRefreshMediaList();
     }
     const unsigned long now = millis();
+    if (wifiScanInProgress && lvglWifiScanLabel && (now - wifiScanAnimLastMs) >= 320UL) {
+        wifiScanAnimLastMs = now;
+        wifiScanAnimPhase = static_cast<uint8_t>((wifiScanAnimPhase + 1U) & 0x03U);
+        char msg[48];
+        snprintf(msg, sizeof(msg), "Searching for access points%.*s", wifiScanAnimPhase, "...");
+        lv_label_set_text(lvglWifiScanLabel, msg);
+    }
     unsigned long delta = now - lvglLastTickMs;
     if (delta > 0) {
         lv_tick_inc(delta);
@@ -3276,12 +3386,16 @@ uint16_t scaleColor565(uint16_t color, uint8_t level)
 void animateChargingBeforeSleep()
 {
     digitalWrite(TFT_BL, HIGH);
-    const int16_t x = 40, y = 110, w = 150, h = 70;
+    const int16_t w = min<int16_t>(220, max<int16_t>(140, DISPLAY_WIDTH - 90));
+    const int16_t h = min<int16_t>(100, max<int16_t>(70, DISPLAY_HEIGHT / 5));
+    const int16_t x = (DISPLAY_WIDTH - w) / 2;
+    const int16_t titleY = max<int16_t>(36, DISPLAY_HEIGHT / 5);
+    const int16_t y = min<int16_t>(DISPLAY_HEIGHT - h - 36, titleY + 40);
     tft.fillScreen(TFT_BLACK);
     drawLargeBatteryFrame(x, y, w, h);
     drawChargingCableDecor(x, y, w, h, TFT_DARKGREY);
     tft.setTextColor(TFT_GREEN, TFT_BLACK);
-    tft.drawCentreString("Charging", DISPLAY_CENTER_X, 70, 4);
+    tft.drawCentreString("Charging", DISPLAY_CENTER_X, titleY, 4);
     for (uint8_t cycle = 0; cycle < CHARGE_ANIM_CYCLES; cycle++) {
         for (int p = 0; p <= 100; p += 3) {
             tft.fillRect(x + 2, y + 2, w - 4, h - 4, TFT_BLACK);
@@ -3300,20 +3414,47 @@ const char *authName(wifi_auth_mode_t auth)
 
 void refreshWifiScan()
 {
+    const int scanState = WiFi.scanComplete();
+    if (scanState == WIFI_SCAN_RUNNING) return;
     WiFi.scanDelete();
     wifiCount = 0;
-    int n = WiFi.scanNetworks(false, true);
-    if (n <= 0) {
-        uiStatusLine = "No networks found";
+    wifiScanInProgress = true;
+    wifiScanAnimLastMs = millis();
+    wifiScanAnimPhase = 0;
+    if (!WiFi.scanNetworks(true, true)) {
+        wifiScanInProgress = false;
+        uiStatusLine = "WiFi scan start failed";
         return;
     }
-    for (int i = 0; i < n && wifiCount < MAX_WIFI_RESULTS; i++) {
-        wifiEntries[wifiCount].ssid = WiFi.SSID(i);
-        wifiEntries[wifiCount].rssi = WiFi.RSSI(i);
-        wifiEntries[wifiCount].auth = WiFi.encryptionType(i);
-        wifiCount++;
+    uiStatusLine = "Searching for access points";
+}
+
+void wifiScanService()
+{
+    if (!wifiScanInProgress) return;
+    const int n = WiFi.scanComplete();
+    if (n == WIFI_SCAN_RUNNING) return;
+
+    wifiScanInProgress = false;
+    wifiCount = 0;
+    if (n > 0) {
+        for (int i = 0; i < n && wifiCount < MAX_WIFI_RESULTS; i++) {
+            wifiEntries[wifiCount].ssid = WiFi.SSID(i);
+            wifiEntries[wifiCount].rssi = WiFi.RSSI(i);
+            wifiEntries[wifiCount].auth = WiFi.encryptionType(i);
+            wifiCount++;
+        }
+        uiStatusLine = "Scan complete: " + String(wifiCount);
+    } else if (n == 0) {
+        uiStatusLine = "No access points found";
+    } else {
+        uiStatusLine = "WiFi scan failed";
     }
-    uiStatusLine = "Scan complete: " + String(wifiCount);
+    WiFi.scanDelete();
+    if (lvglReady) {
+        if (uiScreen == UI_WIFI_LIST) lvglRefreshWifiList();
+        lvglSyncStatusLine();
+    }
 }
 
 bool snakeCellOccupied(int x, int y)
@@ -7371,6 +7512,7 @@ void loop()
     }
 
     if (dnsRunning) dnsServer.processNextRequest();
+    wifiScanService();
     wifiConnectionService();
     sdStatsService();
     const bool allowSdAutoRetry = (uiScreen == UI_MEDIA) || !displayAwake;
