@@ -121,6 +121,11 @@ static constexpr int RGB_PIN_R = 4;
 static constexpr int RGB_PIN_G = 17;
 static constexpr int RGB_PIN_B = 16;
 static constexpr bool RGB_ACTIVE_LOW = true;
+static constexpr uint8_t TFT_BL_LEDC_CHANNEL = 0;
+static constexpr uint16_t TFT_BL_LEDC_FREQ = 5000;
+static constexpr uint8_t TFT_BL_LEDC_RES = 8;
+static constexpr uint8_t TFT_BL_LEVEL_ON = 255;
+static constexpr uint8_t TFT_BL_LEVEL_OFF = 0;
 static constexpr unsigned long LCD_IDLE_TIMEOUT_MS = 120000;
 static constexpr unsigned long SENSOR_SAMPLE_PERIOD_MS = 2000;
 static constexpr unsigned long LIGHT_SLEEP_AFTER_IDLE_MS = 20000;
@@ -282,6 +287,9 @@ String mqttDefaultButtonName(int idx);
 String mqttButtonPayloadForIndex(int idx);
 String mediaBuildListLabel(const String &name, bool isDir, size_t sizeBytes);
 void displaySetAwake(bool awake);
+void displayBacklightInit();
+void displayBacklightSet(uint8_t level);
+void displayBacklightFadeIn(uint16_t durationMs = 220);
 void snakeResetGame();
 void tetrisResetGame();
 void tetrisMove(int dx);
@@ -385,6 +393,9 @@ static lv_obj_t *lvglWifiScanLabel = nullptr;
 static lv_obj_t *lvglWifiPwdModal = nullptr;
 static lv_obj_t *lvglWifiPwdTa = nullptr;
 static lv_obj_t *lvglWifiPwdSsidLabel = nullptr;
+static lv_obj_t *lvglWifiPwdStatusLabel = nullptr;
+static lv_obj_t *lvglWifiPwdShowBtnLabel = nullptr;
+static lv_obj_t *lvglWifiPwdShowBtn = nullptr;
 static lv_obj_t *lvglMediaPlayerPanel = nullptr;
 static lv_obj_t *lvglMediaList = nullptr;
 static lv_obj_t *lvglMediaTrackLabel = nullptr;
@@ -422,6 +433,7 @@ static lv_obj_t *lvglTopIndicators[LVGL_MAX_TOP_INDICATORS] = {};
 static uint8_t lvglTopIndicatorCount = 0;
 static int lvglMqttEditIndex = 0;
 static String lvglWifiPendingSsid;
+static bool lvglWifiPwdConnectPending = false;
 static bool lvglTouchDown = false;
 static int16_t lvglLastTouchX = DISPLAY_CENTER_X;
 static int16_t lvglLastTouchY = DISPLAY_CENTER_Y;
@@ -1728,6 +1740,7 @@ void lvglScreenshotEvent(lv_event_t *e);
 void lvglTextAreaFocusEvent(lv_event_t *e);
 void lvglWifiPwdCancelEvent(lv_event_t *e);
 void lvglWifiPwdConnectEvent(lv_event_t *e);
+void lvglWifiPwdShowToggleEvent(lv_event_t *e);
 void lvglOpenWifiPasswordDialog(const String &ssid);
 void lvglMqttCountMinusEvent(lv_event_t *e);
 void lvglMqttCountPlusEvent(lv_event_t *e);
@@ -2623,6 +2636,10 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
             [](lv_event_t *ke) {
                 lv_event_code_t code = lv_event_get_code(ke);
                 if (code != LV_EVENT_READY && code != LV_EVENT_CANCEL) return;
+                if (code == LV_EVENT_READY && lvglWifiPwdModal && !lv_obj_has_flag(lvglWifiPwdModal, LV_OBJ_FLAG_HIDDEN) &&
+                    lvglWifiPwdTa && lv_keyboard_get_textarea(lvglKb) == lvglWifiPwdTa) {
+                    lvglWifiPwdConnectEvent(nullptr);
+                }
                 if (lvglKb) {
                     lv_keyboard_set_textarea(lvglKb, nullptr);
                     lv_obj_add_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
@@ -2644,6 +2661,7 @@ void lvglWifiPwdCancelEvent(lv_event_t *e)
         lv_obj_add_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
     }
     if (lvglWifiPwdModal) lv_obj_add_flag(lvglWifiPwdModal, LV_OBJ_FLAG_HIDDEN);
+    lvglWifiPwdConnectPending = false;
     lvglWifiPendingSsid = "";
 }
 
@@ -2652,10 +2670,20 @@ void lvglWifiPwdConnectEvent(lv_event_t *e)
     (void)e;
     if (!lvglWifiPwdTa || lvglWifiPendingSsid.isEmpty()) return;
     const char *pass = lv_textarea_get_text(lvglWifiPwdTa);
+    if (lvglWifiPwdStatusLabel) lv_label_set_text(lvglWifiPwdStatusLabel, "Saving and connecting...");
+    lvglWifiPwdConnectPending = true;
     startWifiConnect(lvglWifiPendingSsid, pass ? String(pass) : String(""));
     uiStatusLine = "Connecting to: " + lvglWifiPendingSsid;
     lvglSyncStatusLine();
-    lvglWifiPwdCancelEvent(nullptr);
+}
+
+void lvglWifiPwdShowToggleEvent(lv_event_t *e)
+{
+    lv_obj_t *btn = lv_event_get_target(e);
+    if (!btn || !lvglWifiPwdTa) return;
+    const bool makeVisible = lv_textarea_get_password_mode(lvglWifiPwdTa);
+    lv_textarea_set_password_mode(lvglWifiPwdTa, makeVisible ? false : true);
+    if (lvglWifiPwdShowBtnLabel) lv_label_set_text(lvglWifiPwdShowBtnLabel, makeVisible ? LV_SYMBOL_EYE_OPEN : LV_SYMBOL_EYE_CLOSE);
 }
 
 void lvglOpenWifiPasswordDialog(const String &ssid)
@@ -2684,12 +2712,40 @@ void lvglOpenWifiPasswordDialog(const String &ssid)
         lv_label_set_long_mode(lvglWifiPwdSsidLabel, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_color(lvglWifiPwdSsidLabel, lv_color_hex(0xB7C4D1), 0);
 
-        lvglWifiPwdTa = lv_textarea_create(lvglWifiPwdModal);
+        lv_obj_t *pwdRow = lv_obj_create(lvglWifiPwdModal);
+        lv_obj_set_size(pwdRow, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(pwdRow, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(pwdRow, 0, 0);
+        lv_obj_set_style_pad_all(pwdRow, 0, 0);
+        lv_obj_set_style_pad_column(pwdRow, 6, 0);
+        lv_obj_set_flex_flow(pwdRow, LV_FLEX_FLOW_ROW);
+        lv_obj_clear_flag(pwdRow, LV_OBJ_FLAG_SCROLLABLE);
+
+        lvglWifiPwdTa = lv_textarea_create(pwdRow);
         lv_obj_set_width(lvglWifiPwdTa, lv_pct(100));
+        lv_obj_set_flex_grow(lvglWifiPwdTa, 1);
+        lv_obj_set_height(lvglWifiPwdTa, 38);
         lv_textarea_set_one_line(lvglWifiPwdTa, true);
         lv_textarea_set_password_mode(lvglWifiPwdTa, true);
         lv_textarea_set_placeholder_text(lvglWifiPwdTa, "Password");
         lv_obj_add_event_cb(lvglWifiPwdTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
+
+        lvglWifiPwdShowBtn = lv_btn_create(pwdRow);
+        lv_obj_set_size(lvglWifiPwdShowBtn, 34, 34);
+        lv_obj_set_style_radius(lvglWifiPwdShowBtn, 8, 0);
+        lv_obj_set_style_border_width(lvglWifiPwdShowBtn, 0, 0);
+        lv_obj_set_style_bg_color(lvglWifiPwdShowBtn, lv_color_hex(0x3F4A57), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(lvglWifiPwdShowBtn, lv_color_hex(0x526274), LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_shadow_width(lvglWifiPwdShowBtn, 0, 0);
+        lv_obj_add_event_cb(lvglWifiPwdShowBtn, lvglWifiPwdShowToggleEvent, LV_EVENT_CLICKED, nullptr);
+        lvglWifiPwdShowBtnLabel = lv_label_create(lvglWifiPwdShowBtn);
+        lv_label_set_text(lvglWifiPwdShowBtnLabel, LV_SYMBOL_EYE_OPEN);
+        lv_obj_center(lvglWifiPwdShowBtnLabel);
+
+        lvglWifiPwdStatusLabel = lv_label_create(lvglWifiPwdModal);
+        lv_obj_set_width(lvglWifiPwdStatusLabel, lv_pct(100));
+        lv_label_set_long_mode(lvglWifiPwdStatusLabel, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_color(lvglWifiPwdStatusLabel, lv_color_hex(0xD8B36A), 0);
 
         lv_obj_t *row = lv_obj_create(lvglWifiPwdModal);
         lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
@@ -2700,16 +2756,35 @@ void lvglOpenWifiPasswordDialog(const String &ssid)
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
-        lvglCreateMenuButton(row, "Cancel", lv_color_hex(0x4E5D6C), lvglWifiPwdCancelEvent, nullptr);
-        lvglCreateMenuButton(row, "Connect", lv_color_hex(0x357A38), lvglWifiPwdConnectEvent, nullptr);
+        auto makeActionBtn = [&](const char *txt, lv_color_t color, lv_event_cb_t cb) {
+            lv_obj_t *btn = lv_btn_create(row);
+            if (!btn) return;
+            lv_obj_set_size(btn, 84, 30);
+            lv_obj_set_style_radius(btn, 8, 0);
+            lv_obj_set_style_border_width(btn, 0, 0);
+            lv_obj_set_style_bg_color(btn, color, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_color(btn, color, LV_PART_MAIN | LV_STATE_PRESSED);
+            lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, nullptr);
+            lv_obj_t *lbl = lv_label_create(btn);
+            if (lbl) {
+                lv_label_set_text(lbl, txt);
+                lv_obj_center(lbl);
+            }
+        };
+        makeActionBtn("Cancel", lv_color_hex(0x4E5D6C), lvglWifiPwdCancelEvent);
+        makeActionBtn("Save", lv_color_hex(0x357A38), lvglWifiPwdConnectEvent);
     }
 
     lvglWifiPendingSsid = ssid;
+    lvglWifiPwdConnectPending = false;
     if (lvglWifiPwdSsidLabel) lv_label_set_text_fmt(lvglWifiPwdSsidLabel, "SSID: %s", ssid.c_str());
     if (lvglWifiPwdTa) {
         lv_textarea_set_text(lvglWifiPwdTa, "");
+        lv_textarea_set_password_mode(lvglWifiPwdTa, true);
         lv_event_send(lvglWifiPwdTa, LV_EVENT_FOCUSED, nullptr);
     }
+    if (lvglWifiPwdShowBtnLabel) lv_label_set_text(lvglWifiPwdShowBtnLabel, LV_SYMBOL_EYE_OPEN);
+    if (lvglWifiPwdStatusLabel) lv_label_set_text(lvglWifiPwdStatusLabel, "");
     lv_obj_move_foreground(lvglWifiPwdModal);
     lv_obj_clear_flag(lvglWifiPwdModal, LV_OBJ_FLAG_HIDDEN);
 }
@@ -3385,7 +3460,7 @@ uint16_t scaleColor565(uint16_t color, uint8_t level)
 
 void animateChargingBeforeSleep()
 {
-    digitalWrite(TFT_BL, HIGH);
+    displayBacklightSet(TFT_BL_LEVEL_ON);
     const int16_t w = min<int16_t>(220, max<int16_t>(140, DISPLAY_WIDTH - 90));
     const int16_t h = min<int16_t>(100, max<int16_t>(70, DISPLAY_HEIGHT / 5));
     const int16_t x = (DISPLAY_WIDTH - w) / 2;
@@ -3404,6 +3479,29 @@ void animateChargingBeforeSleep()
             drawChargingCableDecor(x, y, w, h, scaleColor565(TFT_GREEN, 180));
             delay(55);
         }
+    }
+}
+
+void displayBacklightInit()
+{
+    ledcSetup(TFT_BL_LEDC_CHANNEL, TFT_BL_LEDC_FREQ, TFT_BL_LEDC_RES);
+    ledcAttachPin(TFT_BL, TFT_BL_LEDC_CHANNEL);
+    displayBacklightSet(TFT_BL_LEVEL_OFF);
+}
+
+void displayBacklightSet(uint8_t level)
+{
+    ledcWrite(TFT_BL_LEDC_CHANNEL, level);
+}
+
+void displayBacklightFadeIn(uint16_t durationMs)
+{
+    const uint8_t steps = 16;
+    const uint16_t stepDelay = max<uint16_t>(8, durationMs / steps);
+    for (uint8_t i = 0; i <= steps; i++) {
+        const uint8_t level = static_cast<uint8_t>((static_cast<uint16_t>(TFT_BL_LEVEL_ON) * i) / steps);
+        displayBacklightSet(level);
+        delay(stepDelay);
     }
 }
 
@@ -4364,7 +4462,7 @@ void loadMediaEntries()
 void displaySetAwake(bool awake)
 {
     displayAwake = awake;
-    digitalWrite(TFT_BL, awake ? HIGH : LOW);
+    displayBacklightSet(awake ? TFT_BL_LEVEL_ON : TFT_BL_LEVEL_OFF);
     if (awake) {
         wakeTouchConfirmCount = 0;
         rgbRefreshByMediaState();
@@ -5117,7 +5215,6 @@ void startWifiConnect(const String &ssid, const String &pass)
     pendingSaveCreds = true;
     ensureApOnline("manual_connect");
     beginStaConnectAttempt("manual_connect");
-    uiScreen = UI_HOME;
     lvglSyncStatusLine();
 }
 
@@ -7259,6 +7356,12 @@ void wifiConnectionService()
             pendingSavePass = "";
         }
         uiStatusLine = "Connected: " + ssid;
+        if (lvglWifiPwdConnectPending && ssid == lvglWifiPendingSsid) {
+            lvglWifiPwdConnectPending = false;
+            if (lvglWifiPwdStatusLabel) lv_label_set_text(lvglWifiPwdStatusLabel, "Connected");
+            lvglWifiPwdCancelEvent(nullptr);
+            lvglOpenScreen(UI_HOME, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
+        }
         Serial.printf("[WIFI] STA connected ssid=%s ip=%s rssi=%d\n",
                       ssid.c_str(),
                       ip.c_str(),
@@ -7271,6 +7374,17 @@ void wifiConnectionService()
         bootStaConnectInProgress = false;
         ensureApOnline("sta_disconnected");
         uiStatusLine = "WiFi disconnected";
+        if (lvglWifiPwdConnectPending) {
+            lvglWifiPwdConnectPending = false;
+            if (lvglWifiPwdStatusLabel) {
+                lv_label_set_text_fmt(lvglWifiPwdStatusLabel, "Connection failed: %s",
+                                      WiFi.disconnectReasonName(static_cast<wifi_err_reason_t>(reason)));
+            }
+            if (lvglWifiPwdTa) {
+                lv_textarea_set_text(lvglWifiPwdTa, "");
+                lv_event_send(lvglWifiPwdTa, LV_EVENT_FOCUSED, nullptr);
+            }
+        }
         Serial.printf("[WIFI] STA disconnected reason=%u (%s)\n",
                       static_cast<unsigned int>(reason),
                       WiFi.disconnectReasonName(static_cast<wifi_err_reason_t>(reason)));
@@ -7289,6 +7403,14 @@ void wifiConnectionService()
             WiFi.disconnect(false, false);
             ensureApOnline("sta_timeout");
             uiStatusLine = "Saved STA reconnect failed";
+            if (lvglWifiPwdConnectPending) {
+                lvglWifiPwdConnectPending = false;
+                if (lvglWifiPwdStatusLabel) lv_label_set_text(lvglWifiPwdStatusLabel, "Connection timed out");
+                if (lvglWifiPwdTa) {
+                    lv_textarea_set_text(lvglWifiPwdTa, "");
+                    lv_event_send(lvglWifiPwdTa, LV_EVENT_FOCUSED, nullptr);
+                }
+            }
             Serial.printf("[WIFI] STA connect timeout ssid=%s\n", wifiDesiredStaSsid().c_str());
             staLastConnectAttemptMs = now;
         }
@@ -7438,8 +7560,7 @@ void setupSd()
 void setup()
 {
     sdMutex = xSemaphoreCreateMutex();
-    pinMode(TFT_BL, OUTPUT);
-    digitalWrite(TFT_BL, HIGH);
+    displayBacklightInit();
     pinMode(RGB_PIN_R, OUTPUT);
     pinMode(RGB_PIN_G, OUTPUT);
     pinMode(RGB_PIN_B, OUTPUT);
@@ -7473,10 +7594,16 @@ void setup()
     tft.init();
     tft.setRotation(TFT_ROTATION);
     tft.setTextFont(2);
+    tft.fillScreen(TFT_BLACK);
 
     Serial.println("[BOOT] touch pre-init");
     touchInit();
     lvglInitUi();
+    if (lvglReady) {
+        lv_timer_handler();
+        delay(20);
+    }
+    displayBacklightFadeIn();
     Serial.println("[BOOT] SD/network init deferred to loop");
     bootDeferredStartMs = millis();
     bootSdInitPending = true;
