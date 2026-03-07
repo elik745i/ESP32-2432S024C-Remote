@@ -1,0 +1,24 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "PlatformIO: Build",
+            "type": "shell",
+            "command": "platformio",
+            "args": ["run"],
+            "problemMatcher": ["$platformio"],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        },
+        {
+            "label": "PlatformIO: Upload",
+            "type": "shell",
+            "command": "platformio",
+            "args": ["run", "--target", "upload"],
+            "problemMatcher": ["$platformio"],
+            "group": "none"
+        }
+    ]
+}

@@ -1,0 +1,135 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Recovery Browser</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Arial;background:#10131a;color:#eef;margin:0;padding:18px}
+    .card{max-width:980px;margin:0 auto;background:#171c26;border:1px solid #2f3b50;border-radius:12px;padding:14px}
+    .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    .path{font-family:Consolas,monospace;color:#bde0ff}
+    #list{margin-top:10px;border:1px solid #2f3b50;border-radius:10px;max-height:62vh;overflow:auto}
+    .it{display:grid;grid-template-columns:28px 1fr 110px 180px;gap:8px;align-items:center;padding:8px 10px;border-bottom:1px solid #232e40}
+    .it:last-child{border-bottom:0}
+    .muted{color:#9fb0cc}
+    input,button{background:#0f141d;color:#eef;border:1px solid #2f3b50;border-radius:8px;padding:7px 10px}
+    button{cursor:pointer}
+    .a{background:#1e6fff;border-color:#1e6fff}
+    .d{background:#c73a3a;border-color:#c73a3a}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <strong>Recovery Browser</strong><span id="fwVersion">...</span>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="upBtn">Up</button><button id="refreshBtn">Refresh</button><span class="path" id="pathLbl">/web</span>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <input id="folderName" placeholder="new-folder-name">
+      <button id="mkBtn" class="a">Create Folder</button>
+      <input id="uploadInput" type="file" multiple>
+      <button id="upFileBtn" class="a">Upload</button>
+    </div>
+    <div id="status" class="muted" style="margin-top:8px">Ready.</div>
+    <div id="list"></div>
+  </div>
+<script>
+let cur = '/web';
+const listEl = document.getElementById('list');
+const statusEl = document.getElementById('status');
+const pathLbl = document.getElementById('pathLbl');
+const fwVersionEl = document.getElementById('fwVersion');
+const esc = (s)=>String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+const show = (m,e=false)=>{ statusEl.textContent = m; statusEl.style.color = e ? '#ff9797' : '#9fb0cc'; };
+const human = (n)=>{ n=Number(n)||0; if(n<1024) return n+' B'; if(n<1048576) return (n/1024).toFixed(1)+' KB'; return (n/1048576).toFixed(1)+' MB'; };
+
+const loadVersion = ()=>fetch('/version',{cache:'no-store'})
+  .then(r=>r.ok ? r.json() : null)
+  .then(j=>{ fwVersionEl.textContent = j && j.current ? j.current : 'unknown'; })
+  .catch(()=>{ fwVersionEl.textContent = 'unknown'; });
+
+const loadDir = ()=>{
+  pathLbl.textContent = cur;
+  return fetch('/fs/list?dir='+encodeURIComponent(cur),{cache:'no-store'})
+    .then(r => r.json().then(j => ({r,j})))
+    .then(({r,j})=>{
+      if(!r.ok || (j && j.ok===false)) throw new Error((j&&j.error)||('HTTP '+r.status));
+      const arr = Array.isArray(j.entries) ? j.entries : [];
+      if(!arr.length){ listEl.innerHTML = '<div class="it"><div></div><div class="muted">Empty folder</div><div></div><div></div></div>'; return; }
+      arr.sort((a,b)=>(b.isDir-a.isDir)||String(a.name).localeCompare(String(b.name)));
+      listEl.innerHTML = arr.map(it=>{
+        const icon = it.isDir ? '&#128193;' : '&#128196;';
+        const action = it.isDir
+          ? '<button data-open="'+esc(it.path)+'">Open</button> <button class="d" data-del="'+esc(it.path)+'">Delete</button>'
+          : '<a href="/fs/download?path='+encodeURIComponent(it.path)+'"><button>Download</button></a> <button class="d" data-del="'+esc(it.path)+'">Delete</button>';
+        return '<div class="it"><div>'+icon+'</div><div>'+esc(it.name)+'</div><div class="muted">'+(it.isDir?'--':human(it.size))+'</div><div>'+action+'</div></div>';
+      }).join('');
+    })
+    .catch(e=>show(e.message||'List failed',true));
+};
+
+const doDelete = (path)=>{
+  if(!confirm('Delete '+path+' ?')) return;
+  const body = new URLSearchParams({path});
+  return fetch('/fs/delete',{method:'POST',body})
+    .then(r=>r.text().then(t=>({r,t})))
+    .then(({r,t})=>{ if(!r.ok) throw new Error(t||('HTTP '+r.status)); show('Deleted: '+path); return loadDir(); })
+    .catch(e=>show(e.message||'Delete failed',true));
+};
+
+const doMkdir = ()=>{
+  const n = (document.getElementById('folderName').value||'').trim();
+  if(!n){ show('Enter folder name', true); return; }
+  const p = (cur.endsWith('/') ? cur : cur + '/') + n;
+  const body = new URLSearchParams({path:p});
+  return fetch('/fs/mkdir',{method:'POST',body})
+    .then(r=>r.text().then(t=>({r,t})))
+    .then(({r,t})=>{ if(!r.ok) throw new Error(t||('HTTP '+r.status)); show('Created: '+p); document.getElementById('folderName').value=''; return loadDir(); })
+    .catch(e=>show(e.message||'Create failed',true));
+};
+
+const uploadFiles = (files)=>{
+  let p = Promise.resolve();
+  files.forEach((f,i)=>{
+    p = p.then(()=>{
+      const fd = new FormData();
+      fd.append('fsFile', f, f.name);
+      const url = '/fs/upload?path=' + encodeURIComponent(cur.endsWith('/') ? cur : (cur + '/'));
+      return fetch(url, {method:'POST', body:fd}).then(r=>r.text().then(t=>({r,t}))).then(({r,t})=>{
+        if(!r.ok) throw new Error(t||('HTTP '+r.status));
+        show('Uploaded '+f.name+' ('+(i+1)+'/'+files.length+')');
+      });
+    });
+  });
+  return p.then(()=>loadDir()).catch(e=>show(e.message||'Upload failed', true));
+};
+
+document.getElementById('refreshBtn').onclick = loadDir;
+document.getElementById('mkBtn').onclick = doMkdir;
+document.getElementById('upFileBtn').onclick = ()=>uploadFiles(Array.from(document.getElementById('uploadInput').files || []));
+document.getElementById('upBtn').onclick = ()=>{
+  let p = String(cur||'/web').replace(/\/+$/,'');
+  if(!p.length) p='/web';
+  if(p==='/web'){ cur='/'; loadDir(); return; }
+  if(p==='/'){ show('Already at root'); return; }
+  const i = p.lastIndexOf('/');
+  cur = (i <= 0) ? '/' : p.substring(0, i);
+  if(!cur.length) cur='/';
+  loadDir();
+};
+
+listEl.addEventListener('click',(e)=>{
+  const o = e.target && e.target.getAttribute ? e.target.getAttribute('data-open') : null;
+  const d = e.target && e.target.getAttribute ? e.target.getAttribute('data-del') : null;
+  if(o){ cur=o; loadDir(); }
+  if(d){ doDelete(d); }
+});
+
+loadVersion();
+loadDir();
+</script>
+</body>
+</html>
