@@ -91,6 +91,7 @@ static constexpr unsigned long SD_RECOVERY_RETRY_DELAY_MS = 80;
 static constexpr unsigned long SD_RECOVERY_MIN_INTERVAL_MS = 10000;
 static constexpr unsigned long SD_AUTORETRY_PERIOD_MS = 30000;
 static constexpr unsigned long SD_STATS_LOG_PERIOD_MS = 30000;
+static constexpr const char *CHAT_LOG_DIR = "/Conversations";
 static constexpr uint32_t SD_BOOT_PROBE_FREQ_HZ = SD_SPI_FREQ_SAFE_HZ;
 static constexpr unsigned long BOOT_DEFER_SD_MS = 80UL;
 static constexpr unsigned long BOOT_DEFER_WIFI_MS = 220UL;
@@ -331,12 +332,17 @@ void p2pEnsureUdp();
 void p2pService();
 bool p2pSendChatMessage(const String &text);
 String p2pPublicKeyHex();
+static int p2pFindPeerByPubKeyHex(const String &pubKeyHex);
 void p2pBroadcastDiscover();
 bool p2pAddOrUpdateTrustedPeer(const String &name, const String &pubKeyHex, const IPAddress &ip, uint16_t port);
 void setupWifiAndServer();
 void lvglRefreshChatUi();
 void lvglRefreshChatPeerUi();
 void lvglSetChatKeyboardVisible(bool visible);
+void chatReloadRecentMessagesFromSd(const String &peerKey);
+void lvglRefreshChatContactsUi();
+static String chatDisplayNameForPeerKey(const String &peerKey);
+void lvglRefreshChatLayout();
 void lvglMediaPrevPageEvent(lv_event_t *e);
 void lvglMediaNextPageEvent(lv_event_t *e);
 void lvglQueueMediaRefresh();
@@ -460,6 +466,8 @@ static lv_obj_t *lvglChatList = nullptr;
 static lv_obj_t *lvglChatInputTa = nullptr;
 static lv_obj_t *lvglChatEmptyLabel = nullptr;
 static lv_obj_t *lvglChatComposer = nullptr;
+static lv_obj_t *lvglChatContacts = nullptr;
+static lv_obj_t *lvglChatContactLabel = nullptr;
 static lv_obj_t *lvglChatPeerList = nullptr;
 static lv_obj_t *lvglChatPeerIdentityLabel = nullptr;
 static lv_obj_t *lvglAirplaneBtn = nullptr;
@@ -589,6 +597,7 @@ bool sdMountAttemptAtFreq(uint32_t freqHz)
     if (!SD.begin(SD_CS, sdSpi, freqHz)) return false;
     if (!SD.exists("/web")) SD.mkdir("/web");
     if (!SD.exists("/Screenshots")) SD.mkdir("/Screenshots");
+    if (!SD.exists(CHAT_LOG_DIR)) SD.mkdir(CHAT_LOG_DIR);
     return true;
 }
 
@@ -755,16 +764,24 @@ static constexpr int MAX_WIFI_RESULTS = 20;
 WifiEntry wifiEntries[MAX_WIFI_RESULTS];
 int wifiCount = 0;
 
+enum ChatTransport : uint8_t {
+    CHAT_TRANSPORT_WIFI = 0,
+    CHAT_TRANSPORT_MQTT = 1,
+};
+
 struct ChatMessage {
     String author;
     String text;
     bool outgoing;
     unsigned long tsMs;
+    ChatTransport transport;
 };
 
-static constexpr int MAX_CHAT_MESSAGES = 24;
+static constexpr int CHAT_PAGE_MESSAGES = 8;
+static constexpr int MAX_CHAT_MESSAGES = CHAT_PAGE_MESSAGES * 2;
 ChatMessage chatMessages[MAX_CHAT_MESSAGES];
 int chatMessageCount = 0;
+String currentChatPeerKey;
 
 struct P2PPeer {
     String name;
@@ -1913,7 +1930,116 @@ static void lvglSetInfoBarColor(lv_obj_t *bar, lv_color_t color)
     lv_obj_set_style_bg_color(bar, color, LV_PART_INDICATOR);
 }
 
-static void chatAddMessage(const String &author, const String &text, bool outgoing)
+static String chatEscapeLogField(String text)
+{
+    text.replace("\\", "\\\\");
+    text.replace("\t", "\\t");
+    text.replace("\r", " ");
+    text.replace("\n", "\\n");
+    return text;
+}
+
+static String chatUnescapeLogField(String text)
+{
+    text.replace("\\n", "\n");
+    text.replace("\\t", "\t");
+    text.replace("\\\\", "\\");
+    return text;
+}
+
+static String chatSafeFileToken(const String &raw)
+{
+    String out;
+    for (size_t i = 0; i < raw.length(); ++i) {
+        const char c = raw[i];
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) out += c;
+        else out += '_';
+    }
+    if (out.isEmpty()) out = "unknown";
+    return out;
+}
+
+static String chatFriendlyLogFilenameForPeer(const String &peerKey)
+{
+    const String safeKey = chatSafeFileToken(peerKey);
+    String shortKey = safeKey;
+    if (shortKey.length() > 8) shortKey = shortKey.substring(0, 8);
+    String name = chatSafeFileToken(chatDisplayNameForPeerKey(peerKey));
+    if (name.length() > 24) name = name.substring(0, 24);
+    return name + "_" + shortKey + ".txt";
+}
+
+static String chatLegacyLogPathForPeer(const String &peerKey)
+{
+    return String(CHAT_LOG_DIR) + "/" + chatSafeFileToken(peerKey) + ".txt";
+}
+
+static String chatLogPathForPeer(const String &peerKey)
+{
+    if (peerKey.isEmpty()) return "";
+    const String safeKey = chatSafeFileToken(peerKey);
+    String shortKey = safeKey;
+    if (shortKey.length() > 8) shortKey = shortKey.substring(0, 8);
+    const String friendlyPath = String(CHAT_LOG_DIR) + "/" + chatFriendlyLogFilenameForPeer(peerKey);
+    const String legacyPath = chatLegacyLogPathForPeer(peerKey);
+    const String keySuffix = "_" + shortKey + ".txt";
+
+    String resolved = friendlyPath;
+    if (SD.exists(friendlyPath)) {
+        resolved = friendlyPath;
+    } else if (SD.exists(legacyPath)) {
+        resolved = legacyPath;
+    } else {
+        File dir = SD.open(CHAT_LOG_DIR, FILE_READ);
+        if (dir) {
+            File entry = dir.openNextFile();
+            while (entry) {
+                if (!entry.isDirectory()) {
+                    String name = String(entry.name());
+                    if (name.endsWith(keySuffix)) {
+                        resolved = String(CHAT_LOG_DIR) + "/" + name;
+                        entry.close();
+                        break;
+                    }
+                }
+                entry.close();
+                entry = dir.openNextFile();
+            }
+            dir.close();
+        }
+    }
+    return resolved;
+}
+
+static bool chatPeerHasHistory(const String &peerKey)
+{
+    if (peerKey.isEmpty()) return false;
+    if (!sdEnsureMounted()) return false;
+    if (!sdLock()) return false;
+    const bool exists = SD.exists(chatLogPathForPeer(peerKey));
+    sdUnlock();
+    return exists;
+}
+
+static String chatDisplayNameForPeerKey(const String &peerKey)
+{
+    const int idx = p2pFindPeerByPubKeyHex(peerKey);
+    if (idx >= 0 && !p2pPeers[idx].name.isEmpty()) return p2pPeers[idx].name;
+    String shortKey = peerKey;
+    if (shortKey.length() > 12) shortKey = shortKey.substring(0, 12) + "...";
+    return shortKey;
+}
+
+static void chatClearCache()
+{
+    for (int i = 0; i < chatMessageCount; ++i) {
+        chatMessages[i].author = "";
+        chatMessages[i].text = "";
+    }
+    chatMessageCount = 0;
+}
+
+static void chatAddMessage(const String &author, const String &text, bool outgoing, ChatTransport transport)
 {
     if (text.isEmpty()) return;
     if (chatMessageCount >= MAX_CHAT_MESSAGES) {
@@ -1924,7 +2050,98 @@ static void chatAddMessage(const String &author, const String &text, bool outgoi
     chatMessages[chatMessageCount].text = text;
     chatMessages[chatMessageCount].outgoing = outgoing;
     chatMessages[chatMessageCount].tsMs = millis();
+    chatMessages[chatMessageCount].transport = transport;
     chatMessageCount++;
+}
+
+static bool chatAppendMessageToSd(const String &peerKey, ChatTransport transport, const String &author, const String &text, bool outgoing, unsigned long tsMs)
+{
+    if (peerKey.isEmpty()) return false;
+    if (!sdEnsureMounted(true)) return false;
+    fsWriteBegin();
+    bool ok = false;
+    if (sdLock()) {
+        if (!SD.exists(CHAT_LOG_DIR)) SD.mkdir(CHAT_LOG_DIR);
+        String path = chatLogPathForPeer(peerKey);
+        const String friendlyPath = String(CHAT_LOG_DIR) + "/" + chatFriendlyLogFilenameForPeer(peerKey);
+        if (path != friendlyPath && !SD.exists(friendlyPath) && SD.exists(path)) {
+            if (SD.rename(path, friendlyPath)) path = friendlyPath;
+        }
+        File f = SD.open(path, FILE_APPEND);
+        if (f) {
+            const String line = String(tsMs) + "\t" +
+                                (outgoing ? "out" : "in") + "\t" +
+                                String(static_cast<int>(transport)) + "\t" +
+                                chatEscapeLogField(author) + "\t" +
+                                chatEscapeLogField(text) + "\n";
+            ok = f.print(line) > 0;
+            f.close();
+        }
+        sdUnlock();
+    }
+    fsWriteEnd();
+    return ok;
+}
+
+static void chatStoreMessage(const String &peerKey, const String &author, const String &text, bool outgoing, ChatTransport transport)
+{
+    const unsigned long nowMs = millis();
+    chatAppendMessageToSd(peerKey, transport, author, text, outgoing, nowMs);
+    if (currentChatPeerKey == peerKey) chatAddMessage(author, text, outgoing, transport);
+}
+
+static void chatSelectFirstEnabledPeer()
+{
+    currentChatPeerKey = "";
+    for (int i = 0; i < p2pPeerCount; ++i) {
+        if (p2pPeers[i].enabled && chatPeerHasHistory(p2pPeers[i].pubKeyHex)) {
+            currentChatPeerKey = p2pPeers[i].pubKeyHex;
+            return;
+        }
+    }
+    for (int i = 0; i < p2pPeerCount; ++i) {
+        if (p2pPeers[i].enabled) {
+            currentChatPeerKey = p2pPeers[i].pubKeyHex;
+            break;
+        }
+    }
+}
+
+void chatReloadRecentMessagesFromSd(const String &peerKey)
+{
+    chatClearCache();
+    if (peerKey.isEmpty()) return;
+    if (!sdEnsureMounted()) return;
+    if (!sdLock()) return;
+
+    File f = SD.open(chatLogPathForPeer(peerKey), FILE_READ);
+    if (f) {
+        while (f.available()) {
+            String line = f.readStringUntil('\n');
+            line.trim();
+            if (line.isEmpty()) continue;
+            const int p1 = line.indexOf('\t');
+            const int p2 = (p1 >= 0) ? line.indexOf('\t', p1 + 1) : -1;
+            const int p3 = (p2 >= 0) ? line.indexOf('\t', p2 + 1) : -1;
+            const int p4 = (p3 >= 0) ? line.indexOf('\t', p3 + 1) : -1;
+            if (p1 <= 0 || p2 <= p1 || p3 <= p2 || p4 <= p3) continue;
+            ChatMessage msg;
+            msg.tsMs = static_cast<unsigned long>(strtoul(line.substring(0, p1).c_str(), nullptr, 10));
+            msg.outgoing = line.substring(p1 + 1, p2) == "out";
+            msg.transport = static_cast<ChatTransport>(atoi(line.substring(p2 + 1, p3).c_str()));
+            msg.author = chatUnescapeLogField(line.substring(p3 + 1, p4));
+            msg.text = chatUnescapeLogField(line.substring(p4 + 1));
+            if (msg.text.isEmpty()) continue;
+            if (chatMessageCount < MAX_CHAT_MESSAGES) {
+                chatMessages[chatMessageCount++] = msg;
+            } else {
+                for (int i = 1; i < chatMessageCount; ++i) chatMessages[i - 1] = chatMessages[i];
+                chatMessages[chatMessageCount - 1] = msg;
+            }
+        }
+        f.close();
+    }
+    sdUnlock();
 }
 
 static bool p2pHexToBytes(const String &hex, unsigned char *out, size_t outLen)
@@ -1947,6 +2164,8 @@ String p2pPublicKeyHex()
 {
     return p2pBytesToHex(p2pPublicKey, sizeof(p2pPublicKey));
 }
+
+static int p2pFindPeerByPubKeyHex(const String &pubKeyHex);
 
 static int p2pFindPeerByPubKeyHex(const String &pubKeyHex)
 {
@@ -2213,9 +2432,26 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_clear_flag(chatOps, LV_OBJ_FLAG_SCROLLABLE);
             makeSmallBtn(chatOps, "Peers", 62, 28, lv_color_hex(0x2F6D86), lvglOpenChatPeersEvent);
 
+            lvglChatContactLabel = lv_label_create(lvglScrChat);
+            lv_obj_set_width(lvglChatContactLabel, lv_pct(100));
+            lv_obj_align(lvglChatContactLabel, LV_ALIGN_TOP_LEFT, 8, UI_CONTENT_TOP_Y + 42);
+            lv_obj_set_style_text_color(lvglChatContactLabel, lv_color_hex(0xC8D3DD), 0);
+
+            lvglChatContacts = lv_obj_create(lvglScrChat);
+            lv_obj_set_size(lvglChatContacts, lv_pct(100), UI_CONTENT_H - 44);
+            lv_obj_align(lvglChatContacts, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y + 60);
+            lv_obj_set_style_bg_opa(lvglChatContacts, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(lvglChatContacts, 0, 0);
+            lv_obj_set_style_pad_all(lvglChatContacts, 6, 0);
+            lv_obj_set_style_pad_row(lvglChatContacts, 6, 0);
+            lv_obj_set_style_pad_column(lvglChatContacts, 0, 0);
+            lv_obj_set_flex_flow(lvglChatContacts, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_scroll_dir(lvglChatContacts, LV_DIR_VER);
+            lv_obj_set_scrollbar_mode(lvglChatContacts, LV_SCROLLBAR_MODE_OFF);
+
             lvglChatList = lv_obj_create(lvglScrChat);
-            lv_obj_set_size(lvglChatList, lv_pct(100), UI_CONTENT_H - 96);
-            lv_obj_align(lvglChatList, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y + 40);
+            lv_obj_set_size(lvglChatList, lv_pct(100), UI_CONTENT_H - 156);
+            lv_obj_align(lvglChatList, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y + 102);
             lv_obj_set_style_bg_color(lvglChatList, lv_color_hex(0x111922), 0);
             lv_obj_set_style_border_width(lvglChatList, 0, 0);
             lv_obj_set_style_pad_all(lvglChatList, 8, 0);
@@ -2254,15 +2490,25 @@ void lvglEnsureScreenBuilt(UiScreen screen)
                                  lvglSyncStatusLine();
                                  return;
                              }
-                             chatAddMessage("Me", text, true);
-                             const bool sentLan = p2pSendChatMessage(text);
-                             const bool sentGlobal = mqttPublishChatMessage(text);
+                            if (currentChatPeerKey.isEmpty()) {
+                                uiStatusLine = "Select a contact first";
+                                lvglSyncStatusLine();
+                                return;
+                            }
+                            const bool sentLan = p2pSendChatMessage(text);
+                            const bool sentGlobal = mqttPublishChatMessage(text);
+                            chatStoreMessage(currentChatPeerKey, "Me", text, true, sentGlobal ? CHAT_TRANSPORT_MQTT : CHAT_TRANSPORT_WIFI);
                              lv_textarea_set_text(lvglChatInputTa, "");
+                             if (lvglKb) {
+                                 lv_keyboard_set_textarea(lvglKb, nullptr);
+                                 lv_obj_add_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
+                             }
                              lvglSetChatKeyboardVisible(false);
                              uiStatusLine = sentGlobal ? "Chat sent globally" : (sentLan ? "Chat sent to peers" : "Chat saved locally");
                              lvglSyncStatusLine();
                              lvglRefreshChatUi();
                          });
+            lvglRefreshChatLayout();
             lvglRefreshChatUi();
             break;
         }
@@ -2681,14 +2927,20 @@ void lvglEnsureScreenBuilt(UiScreen screen)
 
 void lvglOpenScreen(UiScreen screen, lv_scr_load_anim_t anim)
 {
+    const UiScreen prevScreen = uiScreen;
     lvglEnsureScreenBuilt(screen);
     lv_obj_t *target = lvglScreenForUi(screen);
     if (!target) return;
     uiScreen = screen;
+    if (prevScreen == UI_CHAT && screen != UI_CHAT) chatClearCache();
     if (screen == UI_WIFI_LIST) {
         refreshWifiScan();
         lvglRefreshWifiList();
     } else if (screen == UI_CHAT) {
+        currentChatPeerKey = "";
+        chatClearCache();
+        lvglRefreshChatLayout();
+        lvglRefreshChatContactsUi();
         lvglRefreshChatUi();
     } else if (screen == UI_CHAT_PEERS) {
         lvglRefreshChatPeerUi();
@@ -2708,6 +2960,16 @@ void lvglNavigateBackBySwipe()
     if (!lvglReady) return;
     switch (uiScreen) {
         case UI_CHAT:
+            if (!currentChatPeerKey.isEmpty()) {
+                currentChatPeerKey = "";
+                chatClearCache();
+                lvglRefreshChatLayout();
+                lvglRefreshChatContactsUi();
+                lvglRefreshChatUi();
+            } else {
+                lvglOpenScreen(UI_HOME, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
+            }
+            break;
         case UI_MEDIA:
         case UI_INFO:
         case UI_GAMES:
@@ -3000,9 +3262,13 @@ void lvglRefreshChatUi()
     lv_obj_clean(lvglChatList);
     lvglChatEmptyLabel = nullptr;
 
+    if (currentChatPeerKey.isEmpty()) {
+        return;
+    }
+
     if (chatMessageCount == 0) {
         lvglChatEmptyLabel = lv_label_create(lvglChatList);
-        lv_label_set_text(lvglChatEmptyLabel, "No messages yet.\nChat is local-only for now; peer transport comes next.");
+        lv_label_set_text(lvglChatEmptyLabel, "No messages yet for this contact.");
         lv_obj_set_width(lvglChatEmptyLabel, lv_pct(100));
         lv_obj_set_style_text_color(lvglChatEmptyLabel, lv_color_hex(0xC8CED6), 0);
         lv_label_set_long_mode(lvglChatEmptyLabel, LV_LABEL_LONG_WRAP);
@@ -3010,8 +3276,24 @@ void lvglRefreshChatUi()
     }
 
     for (int i = 0; i < chatMessageCount; ++i) {
-        lv_obj_t *bubble = lv_obj_create(lvglChatList);
-        lv_obj_set_width(bubble, lv_pct(100));
+        lv_obj_t *row = lv_obj_create(lvglChatList);
+        lv_obj_set_width(row, lv_pct(100));
+        lv_obj_set_height(row, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_set_style_pad_row(row, 0, 0);
+        lv_obj_set_style_pad_column(row, 0, 0);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(
+            row,
+            chatMessages[i].outgoing ? LV_FLEX_ALIGN_END : LV_FLEX_ALIGN_START,
+            LV_FLEX_ALIGN_START,
+            LV_FLEX_ALIGN_START);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *bubble = lv_obj_create(row);
+        lv_obj_set_width(bubble, lv_pct(75));
         lv_obj_set_height(bubble, LV_SIZE_CONTENT);
         lv_obj_set_style_bg_color(bubble, chatMessages[i].outgoing ? lv_color_hex(0x254A33) : lv_color_hex(0x213246), 0);
         lv_obj_set_style_border_width(bubble, 0, 0);
@@ -3035,12 +3317,39 @@ void lvglRefreshChatUi()
     lv_obj_scroll_to_view_recursive(lv_obj_get_child(lvglChatList, lv_obj_get_child_cnt(lvglChatList) - 1), LV_ANIM_OFF);
 }
 
+void lvglRefreshChatLayout()
+{
+    if (!lvglChatContactLabel || !lvglChatContacts || !lvglChatList || !lvglChatComposer) return;
+    const bool showingConversation = !currentChatPeerKey.isEmpty();
+    if (!showingConversation) {
+        lv_label_set_text(lvglChatContactLabel, "Contacts");
+        lv_obj_set_size(lvglChatContacts, lv_pct(100), UI_CONTENT_H - 44);
+        lv_obj_align(lvglChatContacts, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y + 60);
+        lv_obj_set_flex_flow(lvglChatContacts, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_scroll_dir(lvglChatContacts, LV_DIR_VER);
+        lv_obj_set_style_pad_all(lvglChatContacts, 6, 0);
+        lv_obj_set_style_pad_row(lvglChatContacts, 6, 0);
+        lv_obj_clear_flag(lvglChatContacts, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(lvglChatList, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(lvglChatComposer, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_label_set_text_fmt(lvglChatContactLabel, "%s", chatDisplayNameForPeerKey(currentChatPeerKey).c_str());
+        lv_obj_add_flag(lvglChatContacts, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(lvglChatList, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(lvglChatComposer, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_size(lvglChatList, lv_pct(100), UI_CONTENT_H - 156);
+        lv_obj_align(lvglChatList, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y + 102);
+        lv_obj_align(lvglChatComposer, LV_ALIGN_BOTTOM_MID, 0, 0);
+    }
+}
+
 void lvglSetChatKeyboardVisible(bool visible)
 {
     if (!lvglChatComposer || !lvglChatList) return;
+    if (currentChatPeerKey.isEmpty()) return;
     const lv_coord_t keyboardH = 120;
     const lv_coord_t composerH = 56;
-    const lv_coord_t topSectionH = 40;
+    const lv_coord_t topSectionH = 102;
 
     if (visible) {
         lv_obj_align(lvglChatComposer, LV_ALIGN_BOTTOM_MID, 0, -keyboardH);
@@ -3048,6 +3357,69 @@ void lvglSetChatKeyboardVisible(bool visible)
     } else {
         lv_obj_align(lvglChatComposer, LV_ALIGN_BOTTOM_MID, 0, 0);
         lv_obj_set_size(lvglChatList, lv_pct(100), UI_CONTENT_H - topSectionH - composerH);
+    }
+}
+
+void lvglRefreshChatContactsUi()
+{
+    lvglRefreshChatLayout();
+    if (!lvglChatContacts) return;
+    lv_obj_clean(lvglChatContacts);
+
+    bool hasContacts = false;
+    for (int i = 0; i < p2pPeerCount; ++i) {
+        if (!p2pPeers[i].enabled) continue;
+        if (p2pPeers[i].pubKeyHex == currentChatPeerKey || chatPeerHasHistory(p2pPeers[i].pubKeyHex)) {
+            hasContacts = true;
+            break;
+        }
+    }
+
+    if (!hasContacts) {
+        lv_obj_t *lbl = lv_label_create(lvglChatContacts);
+        lv_label_set_text(lbl, "No chats yet");
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0xC8CED6), 0);
+        return;
+    }
+
+    auto makeContactBtn = [](lv_obj_t *parent, const char *txt, lv_color_t col, lv_event_cb_t cb, void *ud) -> lv_obj_t * {
+        const bool conversationOpen = !currentChatPeerKey.isEmpty();
+        lv_obj_t *b = lv_btn_create(parent);
+        if (!b) return nullptr;
+        lv_obj_set_size(b, conversationOpen ? LV_SIZE_CONTENT : lv_pct(100), conversationOpen ? 30 : 42);
+        lv_obj_set_style_pad_left(b, 10, 0);
+        lv_obj_set_style_pad_right(b, 10, 0);
+        lv_obj_set_style_radius(b, 10, 0);
+        lv_obj_set_style_border_width(b, 0, 0);
+        lv_obj_set_style_bg_color(b, col, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(b, col, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, ud);
+        lv_obj_t *l = lv_label_create(b);
+        if (l) {
+            lv_label_set_text(l, txt);
+            lv_obj_center(l);
+        }
+        return b;
+    };
+
+    for (int i = 0; i < p2pPeerCount; ++i) {
+        if (!p2pPeers[i].enabled) continue;
+        if (p2pPeers[i].pubKeyHex != currentChatPeerKey && !chatPeerHasHistory(p2pPeers[i].pubKeyHex)) continue;
+        lv_color_t col = p2pPeers[i].pubKeyHex == currentChatPeerKey ? lv_color_hex(0x3A7A3A) : lv_color_hex(0x2F6D86);
+        makeContactBtn(
+            lvglChatContacts,
+            p2pPeers[i].name.isEmpty() ? "Peer" : p2pPeers[i].name.c_str(),
+            col,
+            [](lv_event_t *e) {
+                const int idx = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
+                if (idx < 0 || idx >= p2pPeerCount) return;
+                currentChatPeerKey = p2pPeers[idx].pubKeyHex;
+                chatReloadRecentMessagesFromSd(currentChatPeerKey);
+                lvglRefreshChatLayout();
+                lvglRefreshChatContactsUi();
+                lvglRefreshChatUi();
+            },
+            reinterpret_cast<void *>(static_cast<intptr_t>(i)));
     }
 }
 
@@ -3073,6 +3445,7 @@ void lvglChatPeerActionEvent(lv_event_t *e)
             p2pDiscoveredPeers[idx].pubKeyHex,
             p2pDiscoveredPeers[idx].ip,
             p2pDiscoveredPeers[idx].port);
+        if (ok && currentChatPeerKey.isEmpty()) currentChatPeerKey = p2pDiscoveredPeers[idx].pubKeyHex;
         uiStatusLine = ok ? "Peer paired" : "Pair failed";
     } else if (sub == 2) {
         const int pidx = p2pFindPeerByPubKeyHex(p2pDiscoveredPeers[idx].pubKeyHex);
@@ -3080,21 +3453,32 @@ void lvglChatPeerActionEvent(lv_event_t *e)
             p2pPeers[pidx].enabled = !p2pPeers[pidx].enabled;
             saveP2pConfig();
             p2pDiscoveredPeers[idx].trusted = p2pPeers[pidx].enabled;
+            if (!p2pPeers[pidx].enabled && currentChatPeerKey == p2pPeers[pidx].pubKeyHex) {
+                chatSelectFirstEnabledPeer();
+                chatReloadRecentMessagesFromSd(currentChatPeerKey);
+            }
             uiStatusLine = p2pPeers[pidx].enabled ? "Peer enabled" : "Peer disabled";
         }
     } else if (sub == 3) {
         const int pidx = p2pFindPeerByPubKeyHex(p2pDiscoveredPeers[idx].pubKeyHex);
         if (pidx >= 0) {
+            const String removedKey = p2pPeers[pidx].pubKeyHex;
             for (int i = pidx + 1; i < p2pPeerCount; ++i) p2pPeers[i - 1] = p2pPeers[i];
             p2pPeerCount--;
             saveP2pConfig();
             p2pDiscoveredPeers[idx].trusted = false;
+            if (currentChatPeerKey == removedKey) {
+                chatSelectFirstEnabledPeer();
+                chatReloadRecentMessagesFromSd(currentChatPeerKey);
+            }
             uiStatusLine = "Peer removed";
         }
     }
 
     lvglSyncStatusLine();
     lvglRefreshChatPeerUi();
+    lvglRefreshChatContactsUi();
+    if (uiScreen == UI_CHAT) lvglRefreshChatUi();
 }
 
 void lvglRefreshChatPeerUi()
@@ -3233,6 +3617,8 @@ bool p2pSendChatMessage(const String &text)
 {
     if (!p2pReady) return false;
     if (text.isEmpty()) return false;
+    const int peerIdx = p2pFindPeerByPubKeyHex(currentChatPeerKey);
+    if (peerIdx < 0 || !p2pPeers[peerIdx].enabled || p2pPeers[peerIdx].ip == IPAddress((uint32_t)0)) return false;
 
     JsonDocument doc;
     doc["kind"] = "chat";
@@ -3242,14 +3628,7 @@ bool p2pSendChatMessage(const String &text)
     const size_t plainLen = serializeJson(doc, plain, sizeof(plain));
     if (plainLen == 0) return false;
 
-    bool anyOk = false;
-    for (int i = 0; i < p2pPeerCount; ++i) {
-        if (p2pPeers[i].ip == IPAddress((uint32_t)0)) continue;
-        if (p2pSendPacketToPeer(p2pPeers[i], P2P_PKT_TYPE_CHAT, reinterpret_cast<const uint8_t *>(plain), plainLen)) {
-            anyOk = true;
-        }
-    }
-    return anyOk;
+    return p2pSendPacketToPeer(p2pPeers[peerIdx], P2P_PKT_TYPE_CHAT, reinterpret_cast<const uint8_t *>(plain), plainLen);
 }
 
 void p2pBroadcastDiscover()
@@ -3360,7 +3739,7 @@ void p2pService()
                                         const String text = String(static_cast<const char *>(doc["text"] | ""));
                                         if (!text.isEmpty()) {
                                             p2pTouchPeerSeen(peerIdx, p2pUdp.remoteIP(), p2pUdp.remotePort());
-                                            chatAddMessage(author, text, false);
+                                            chatStoreMessage(p2pPeers[peerIdx].pubKeyHex, author, text, false, CHAT_TRANSPORT_WIFI);
                                             uiStatusLine = "Chat received from " + author;
                                             if (lvglReady) {
                                                 lvglSyncStatusLine();
@@ -3595,9 +3974,14 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
                     String text = raw ? String(raw) : String("");
                     text.trim();
                     if (!text.isEmpty()) {
-                        chatAddMessage("Me", text, true);
+                        if (currentChatPeerKey.isEmpty()) {
+                            uiStatusLine = "Select a contact first";
+                            lvglSyncStatusLine();
+                            return;
+                        }
                         const bool sentLan = p2pSendChatMessage(text);
                         const bool sentGlobal = mqttPublishChatMessage(text);
+                        chatStoreMessage(currentChatPeerKey, "Me", text, true, sentGlobal ? CHAT_TRANSPORT_MQTT : CHAT_TRANSPORT_WIFI);
                         lv_textarea_set_text(lvglChatInputTa, "");
                         lvglSetChatKeyboardVisible(false);
                         uiStatusLine = sentGlobal ? "Chat sent globally" : (sentLan ? "Chat sent to peers" : "Chat saved locally");
@@ -6165,7 +6549,7 @@ bool mqttConnectNow()
         const String text = String(static_cast<const char *>(plainDoc["text"] | ""));
         if (text.isEmpty()) return;
         p2pTouchPeerSeen(peerIdx, p2pPeers[peerIdx].ip, p2pPeers[peerIdx].port);
-        chatAddMessage(author, text, false);
+        chatStoreMessage(senderPubHex, author, text, false, CHAT_TRANSPORT_MQTT);
         uiStatusLine = "Global chat from " + author;
         if (lvglReady) {
             lvglSyncStatusLine();
@@ -6235,6 +6619,8 @@ void mqttPublishAction(const char *action)
 bool mqttPublishChatMessage(const String &text)
 {
     if (!mqttCfg.enabled || !mqttClient.connected() || text.isEmpty()) return false;
+    const int peerIdx = p2pFindPeerByPubKeyHex(currentChatPeerKey);
+    if (peerIdx < 0 || !p2pPeers[peerIdx].enabled) return false;
 
     JsonDocument plainDoc;
     plainDoc["author"] = DEVICE_SHORT_NAME;
@@ -6243,45 +6629,36 @@ bool mqttPublishChatMessage(const String &text)
     const size_t plainLen = serializeJson(plainDoc, plain, sizeof(plain));
     if (plainLen == 0) return false;
 
-    bool anyOk = false;
     const String senderPubHex = p2pPublicKeyHex();
-    for (int i = 0; i < p2pPeerCount; ++i) {
-        if (!p2pPeers[i].enabled) continue;
-        unsigned char peerPk[P2P_PUBLIC_KEY_BYTES] = {0};
-        if (!p2pHexToBytes(p2pPeers[i].pubKeyHex, peerPk, sizeof(peerPk))) continue;
+    unsigned char peerPk[P2P_PUBLIC_KEY_BYTES] = {0};
+    if (!p2pHexToBytes(p2pPeers[peerIdx].pubKeyHex, peerPk, sizeof(peerPk))) return false;
 
-        unsigned char nonce[P2P_NONCE_BYTES] = {0};
-        unsigned char cipher[P2P_MAX_PACKET] = {0};
-        randombytes_buf(nonce, sizeof(nonce));
-        if (crypto_box_curve25519xchacha20poly1305_easy(cipher, reinterpret_cast<const unsigned char *>(plain), plainLen,
-                                                        nonce, peerPk, p2pSecretKey) != 0) {
-            continue;
-        }
-
-        const size_t cipherLen = plainLen + P2P_MAC_BYTES;
-        String nonceHex = p2pBytesToHex(nonce, sizeof(nonce));
-        String cipherHex;
-        {
-            const size_t hexLen = (cipherLen * 2U) + 1U;
-            char *buf = static_cast<char *>(malloc(hexLen));
-            if (!buf) continue;
-            sodium_bin2hex(buf, hexLen, cipher, cipherLen);
-            cipherHex = String(buf);
-            free(buf);
-        }
-        if (cipherHex.isEmpty()) continue;
-
-        JsonDocument doc;
-        doc["sender_pub"] = senderPubHex;
-        doc["nonce"] = nonceHex;
-        doc["cipher"] = cipherHex;
-        String payload;
-        serializeJson(doc, payload);
-
-        const String peerTopic = "esp32/remote/chat/" + mqttCfg.chatRoom + "/inbox/" + p2pPeers[i].pubKeyHex;
-        if (mqttClient.publish(peerTopic.c_str(), payload.c_str(), false)) anyOk = true;
+    unsigned char nonce[P2P_NONCE_BYTES] = {0};
+    unsigned char cipher[P2P_MAX_PACKET] = {0};
+    randombytes_buf(nonce, sizeof(nonce));
+    if (crypto_box_curve25519xchacha20poly1305_easy(cipher, reinterpret_cast<const unsigned char *>(plain), plainLen,
+                                                    nonce, peerPk, p2pSecretKey) != 0) {
+        return false;
     }
-    return anyOk;
+    const size_t cipherLen = plainLen + P2P_MAC_BYTES;
+    String nonceHex = p2pBytesToHex(nonce, sizeof(nonce));
+    const size_t hexLen = (cipherLen * 2U) + 1U;
+    char *buf = static_cast<char *>(malloc(hexLen));
+    if (!buf) return false;
+    sodium_bin2hex(buf, hexLen, cipher, cipherLen);
+    String cipherHex(buf);
+    free(buf);
+    if (cipherHex.isEmpty()) return false;
+
+    JsonDocument doc;
+    doc["sender_pub"] = senderPubHex;
+    doc["nonce"] = nonceHex;
+    doc["cipher"] = cipherHex;
+    String payload;
+    serializeJson(doc, payload);
+
+    const String peerTopic = "esp32/remote/chat/" + mqttCfg.chatRoom + "/inbox/" + p2pPeers[peerIdx].pubKeyHex;
+    return mqttClient.publish(peerTopic.c_str(), payload.c_str(), false);
 }
 
 void mqttPublishButtonAction(int index)
@@ -6385,9 +6762,21 @@ bool pathUnderScreenshots(const String &path)
     return (l == "/screenshots") || l.startsWith("/screenshots/");
 }
 
+bool pathUnderConversations(const String &path)
+{
+    String p = path;
+    if (!p.startsWith("/")) p = "/" + p;
+    String l = p;
+    l.toLowerCase();
+    return (l == "/conversations") || l.startsWith("/conversations/");
+}
+
 bool pathAllowedInRecovery(const String &path)
 {
-    return pathUnderWeb(path) || pathUnderScreenshots(path);
+    String p = path;
+    if (!p.length()) return false;
+    if (!p.startsWith("/")) p = "/" + p;
+    return p.startsWith("/");
 }
 
 void ensureFolderExists(const String &fullPath)
@@ -7524,9 +7913,18 @@ void setupWebRoutes()
             return;
         }
 
-        chatAddMessage("Me", text, true);
+        if (currentChatPeerKey.isEmpty()) {
+            doc["ok"] = false;
+            doc["error"] = "missing_peer";
+            String payload;
+            serializeJson(doc, payload);
+            request->send(400, "application/json", payload);
+            return;
+        }
+
         const bool sentLan = p2pSendChatMessage(text);
         const bool sentGlobal = mqttPublishChatMessage(text);
+        chatStoreMessage(currentChatPeerKey, "Me", text, true, sentGlobal ? CHAT_TRANSPORT_MQTT : CHAT_TRANSPORT_WIFI);
         if (lvglReady) lvglRefreshChatUi();
         uiStatusLine = sentGlobal ? "Chat sent globally" : (sentLan ? "Chat sent to peers" : "Chat saved locally");
         if (lvglReady) lvglSyncStatusLine();
