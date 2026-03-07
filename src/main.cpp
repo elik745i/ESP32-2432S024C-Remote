@@ -316,6 +316,7 @@ void mqttPublishButtonAction(int index);
 void mqttService();
 bool mqttConnectNow();
 void mqttPublishDiscovery();
+bool mqttPublishChatMessage(const String &text);
 void loadMqttConfig();
 void saveMqttConfig();
 void appendUiSettings(JsonDocument &doc);
@@ -335,6 +336,7 @@ bool p2pAddOrUpdateTrustedPeer(const String &name, const String &pubKeyHex, cons
 void setupWifiAndServer();
 void lvglRefreshChatUi();
 void lvglRefreshChatPeerUi();
+void lvglSetChatKeyboardVisible(bool visible);
 void lvglMediaPrevPageEvent(lv_event_t *e);
 void lvglMediaNextPageEvent(lv_event_t *e);
 void lvglQueueMediaRefresh();
@@ -449,6 +451,7 @@ static lv_obj_t *lvglMqttPortTa = nullptr;
 static lv_obj_t *lvglMqttUserTa = nullptr;
 static lv_obj_t *lvglMqttPassTa = nullptr;
 static lv_obj_t *lvglMqttDiscTa = nullptr;
+static lv_obj_t *lvglMqttChatTa = nullptr;
 static lv_obj_t *lvglMqttBtnNameTa = nullptr;
 static lv_obj_t *lvglMqttEnableSw = nullptr;
 static lv_obj_t *lvglMqttCriticalSw = nullptr;
@@ -456,6 +459,7 @@ static lv_obj_t *lvglMqttCtrlList = nullptr;
 static lv_obj_t *lvglChatList = nullptr;
 static lv_obj_t *lvglChatInputTa = nullptr;
 static lv_obj_t *lvglChatEmptyLabel = nullptr;
+static lv_obj_t *lvglChatComposer = nullptr;
 static lv_obj_t *lvglChatPeerList = nullptr;
 static lv_obj_t *lvglChatPeerIdentityLabel = nullptr;
 static lv_obj_t *lvglAirplaneBtn = nullptr;
@@ -932,6 +936,7 @@ struct MqttConfig {
     String username;
     String password;
     String discoveryPrefix = "homeassistant";
+    String chatRoom = "global";
 };
 
 MqttConfig mqttCfg;
@@ -940,6 +945,7 @@ String mqttClientId;
 String mqttNodeId;
 String mqttDeviceName;
 String mqttActionTopic;
+String mqttChatInboxTopic;
 String mqttStatusLine = "Disabled";
 bool mqttDiscoveryPublished = false;
 unsigned long mqttLastReconnectMs = 0;
@@ -2218,17 +2224,17 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_scroll_dir(lvglChatList, LV_DIR_VER);
             lv_obj_set_scrollbar_mode(lvglChatList, LV_SCROLLBAR_MODE_OFF);
 
-            lv_obj_t *chatComposer = lv_obj_create(lvglScrChat);
-            lv_obj_set_size(chatComposer, lv_pct(100), 56);
-            lv_obj_align(chatComposer, LV_ALIGN_BOTTOM_MID, 0, 0);
-            lv_obj_set_style_bg_color(chatComposer, lv_color_hex(0x16212C), 0);
-            lv_obj_set_style_border_width(chatComposer, 0, 0);
-            lv_obj_set_style_pad_all(chatComposer, 8, 0);
-            lv_obj_set_style_pad_column(chatComposer, 8, 0);
-            lv_obj_set_flex_flow(chatComposer, LV_FLEX_FLOW_ROW);
-            lv_obj_clear_flag(chatComposer, LV_OBJ_FLAG_SCROLLABLE);
+            lvglChatComposer = lv_obj_create(lvglScrChat);
+            lv_obj_set_size(lvglChatComposer, lv_pct(100), 56);
+            lv_obj_align(lvglChatComposer, LV_ALIGN_BOTTOM_MID, 0, 0);
+            lv_obj_set_style_bg_color(lvglChatComposer, lv_color_hex(0x16212C), 0);
+            lv_obj_set_style_border_width(lvglChatComposer, 0, 0);
+            lv_obj_set_style_pad_all(lvglChatComposer, 8, 0);
+            lv_obj_set_style_pad_column(lvglChatComposer, 8, 0);
+            lv_obj_set_flex_flow(lvglChatComposer, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(lvglChatComposer, LV_OBJ_FLAG_SCROLLABLE);
 
-            lvglChatInputTa = lv_textarea_create(chatComposer);
+            lvglChatInputTa = lv_textarea_create(lvglChatComposer);
             lv_obj_set_height(lvglChatInputTa, 38);
             lv_obj_set_width(lvglChatInputTa, DISPLAY_WIDTH - 96);
             lv_obj_set_flex_grow(lvglChatInputTa, 1);
@@ -2236,7 +2242,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_textarea_set_placeholder_text(lvglChatInputTa, "Message");
             lv_obj_add_event_cb(lvglChatInputTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
 
-            makeSmallBtn(chatComposer, "Send", 64, 38, lv_color_hex(0x3A7A3A),
+            makeSmallBtn(lvglChatComposer, "Send", 64, 38, lv_color_hex(0x3A7A3A),
                          [](lv_event_t *e) {
                              (void)e;
                              if (!lvglChatInputTa) return;
@@ -2249,9 +2255,11 @@ void lvglEnsureScreenBuilt(UiScreen screen)
                                  return;
                              }
                              chatAddMessage("Me", text, true);
-                             const bool sent = p2pSendChatMessage(text);
+                             const bool sentLan = p2pSendChatMessage(text);
+                             const bool sentGlobal = mqttPublishChatMessage(text);
                              lv_textarea_set_text(lvglChatInputTa, "");
-                             uiStatusLine = sent ? "Chat sent to peers" : "Chat saved locally";
+                             lvglSetChatKeyboardVisible(false);
+                             uiStatusLine = sentGlobal ? "Chat sent globally" : (sentLan ? "Chat sent to peers" : "Chat saved locally");
                              lvglSyncStatusLine();
                              lvglRefreshChatUi();
                          });
@@ -2543,6 +2551,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglMqttUserTa = addTa("Username", false, false);
             lvglMqttPassTa = addTa("Password", true, false);
             lvglMqttDiscTa = addTa("Discovery prefix", false, false);
+            lvglMqttChatTa = addTa("Chat room", false, false);
             lv_obj_t *countRow = lv_obj_create(mqWrap);
             lv_obj_set_size(countRow, lv_pct(100), 34);
             lv_obj_set_style_bg_opa(countRow, LV_OPA_TRANSP, 0);
@@ -3024,6 +3033,22 @@ void lvglRefreshChatUi()
     }
 
     lv_obj_scroll_to_view_recursive(lv_obj_get_child(lvglChatList, lv_obj_get_child_cnt(lvglChatList) - 1), LV_ANIM_OFF);
+}
+
+void lvglSetChatKeyboardVisible(bool visible)
+{
+    if (!lvglChatComposer || !lvglChatList) return;
+    const lv_coord_t keyboardH = 120;
+    const lv_coord_t composerH = 56;
+    const lv_coord_t topSectionH = 40;
+
+    if (visible) {
+        lv_obj_align(lvglChatComposer, LV_ALIGN_BOTTOM_MID, 0, -keyboardH);
+        lv_obj_set_size(lvglChatList, lv_pct(100), UI_CONTENT_H - topSectionH - composerH - keyboardH);
+    } else {
+        lv_obj_align(lvglChatComposer, LV_ALIGN_BOTTOM_MID, 0, 0);
+        lv_obj_set_size(lvglChatList, lv_pct(100), UI_CONTENT_H - topSectionH - composerH);
+    }
 }
 
 void lvglChatPeerActionEvent(lv_event_t *e)
@@ -3571,9 +3596,11 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
                     text.trim();
                     if (!text.isEmpty()) {
                         chatAddMessage("Me", text, true);
-                        const bool sent = p2pSendChatMessage(text);
+                        const bool sentLan = p2pSendChatMessage(text);
+                        const bool sentGlobal = mqttPublishChatMessage(text);
                         lv_textarea_set_text(lvglChatInputTa, "");
-                        uiStatusLine = sent ? "Chat sent to peers" : "Chat saved locally";
+                        lvglSetChatKeyboardVisible(false);
+                        uiStatusLine = sentGlobal ? "Chat sent globally" : (sentLan ? "Chat sent to peers" : "Chat saved locally");
                         lvglSyncStatusLine();
                         lvglRefreshChatUi();
                     }
@@ -3582,6 +3609,7 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
                     lv_keyboard_set_textarea(lvglKb, nullptr);
                     lv_obj_add_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
                 }
+                lvglSetChatKeyboardVisible(false);
             },
             LV_EVENT_ALL,
             nullptr
@@ -3589,6 +3617,7 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
     }
     lv_keyboard_set_textarea(lvglKb, ta);
     lv_obj_clear_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
+    if (ta == lvglChatInputTa) lvglSetChatKeyboardVisible(true);
 }
 
 void lvglWifiPwdCancelEvent(lv_event_t *e)
@@ -3753,6 +3782,10 @@ void lvglMqttSaveEvent(lv_event_t *e)
     mqttCfg.username = lv_textarea_get_text(lvglMqttUserTa);
     mqttCfg.password = lv_textarea_get_text(lvglMqttPassTa);
     mqttCfg.discoveryPrefix = lv_textarea_get_text(lvglMqttDiscTa);
+    mqttCfg.chatRoom = lv_textarea_get_text(lvglMqttChatTa);
+    mqttCfg.chatRoom.trim();
+    if (mqttCfg.chatRoom.isEmpty()) mqttCfg.chatRoom = "global";
+    mqttChatInboxTopic = "esp32/remote/chat/" + mqttCfg.chatRoom + "/inbox/" + p2pPublicKeyHex();
 
     int p = atoi(lv_textarea_get_text(lvglMqttPortTa));
     if (p <= 0 || p > 65535) p = 1883;
@@ -3866,6 +3899,7 @@ void lvglRefreshMqttConfigUi()
     lv_textarea_set_text(lvglMqttUserTa, mqttCfg.username.c_str());
     lv_textarea_set_text(lvglMqttPassTa, mqttCfg.password.c_str());
     lv_textarea_set_text(lvglMqttDiscTa, mqttCfg.discoveryPrefix.c_str());
+    lv_textarea_set_text(lvglMqttChatTa, mqttCfg.chatRoom.c_str());
     lv_textarea_set_text(lvglMqttBtnNameTa, mqttButtonNames[lvglMqttEditIndex].c_str());
     lv_obj_add_state(lvglMqttCriticalSw, mqttButtonCritical[lvglMqttEditIndex] ? LV_STATE_CHECKED : 0);
     lv_obj_clear_state(lvglMqttCriticalSw, mqttButtonCritical[lvglMqttEditIndex] ? 0 : LV_STATE_CHECKED);
@@ -6020,6 +6054,7 @@ void mqttBuildIdentity()
     mqttClientId = "esp32-remote-" + mqttHwId;
     mqttDeviceName = "ESP32 Remote " + mqttHwId;
     mqttActionTopic = "esp32/remote/" + mqttHwId + "/action";
+    mqttChatInboxTopic = "esp32/remote/chat/" + mqttCfg.chatRoom + "/inbox/" + p2pPublicKeyHex();
 }
 
 String mqttDefaultButtonName(int idx)
@@ -6058,6 +6093,7 @@ void loadMqttConfig()
     mqttCfg.username = mqttPrefs.getString("user", "");
     mqttCfg.password = mqttPrefs.getString("pass", "");
     mqttCfg.discoveryPrefix = mqttPrefs.getString("disc", "homeassistant");
+    mqttCfg.chatRoom = mqttPrefs.getString("chat_room", "global");
     mqttButtonCount = mqttPrefs.getInt("btn_count", 4);
     if (mqttButtonCount < 1) mqttButtonCount = 1;
     if (mqttButtonCount > MQTT_MAX_BUTTONS) mqttButtonCount = MQTT_MAX_BUTTONS;
@@ -6070,6 +6106,8 @@ void loadMqttConfig()
     if (mqttCfg.broker.isEmpty()) mqttCfg.broker = "homeassistant.local";
     if (mqttCfg.port == 0) mqttCfg.port = 1883;
     if (mqttCfg.discoveryPrefix.isEmpty()) mqttCfg.discoveryPrefix = "homeassistant";
+    if (mqttCfg.chatRoom.isEmpty()) mqttCfg.chatRoom = "global";
+    mqttChatInboxTopic = "esp32/remote/chat/" + mqttCfg.chatRoom + "/inbox/" + p2pPublicKeyHex();
 }
 
 void saveMqttConfig()
@@ -6081,6 +6119,7 @@ void saveMqttConfig()
     mqttPrefs.putString("user", mqttCfg.username);
     mqttPrefs.putString("pass", mqttCfg.password);
     mqttPrefs.putString("disc", mqttCfg.discoveryPrefix);
+    mqttPrefs.putString("chat_room", mqttCfg.chatRoom);
     mqttPrefs.putInt("btn_count", mqttButtonCount);
     for (int i = 0; i < MQTT_MAX_BUTTONS; i++) {
         mqttPrefs.putString(("btn_" + String(i)).c_str(), mqttButtonNames[i]);
@@ -6100,6 +6139,39 @@ bool mqttConnectNow()
         return false;
     }
     mqttClient.setServer(mqttCfg.broker.c_str(), mqttCfg.port);
+    mqttClient.setCallback([](char *topic, uint8_t *payload, unsigned int length) {
+        if (!topic || !payload || length == 0) return;
+        if (mqttChatInboxTopic.isEmpty() || strcmp(topic, mqttChatInboxTopic.c_str()) != 0) return;
+        JsonDocument doc;
+        if (deserializeJson(doc, payload, length) != DeserializationError::Ok) return;
+        const String senderPubHex = String(static_cast<const char *>(doc["sender_pub"] | ""));
+        const String nonceHex = String(static_cast<const char *>(doc["nonce"] | ""));
+        const String cipherHex = String(static_cast<const char *>(doc["cipher"] | ""));
+        const int peerIdx = p2pFindPeerByPubKeyHex(senderPubHex);
+        if (peerIdx < 0 || !p2pPeers[peerIdx].enabled) return;
+        unsigned char senderPk[P2P_PUBLIC_KEY_BYTES] = {0};
+        unsigned char nonce[P2P_NONCE_BYTES] = {0};
+        unsigned char cipher[P2P_MAX_PACKET] = {0};
+        size_t cipherLen = 0;
+        if (!p2pHexToBytes(senderPubHex, senderPk, sizeof(senderPk))) return;
+        if (!p2pHexToBytes(nonceHex, nonce, sizeof(nonce))) return;
+        if (sodium_hex2bin(cipher, sizeof(cipher), cipherHex.c_str(), cipherHex.length(), nullptr, &cipherLen, nullptr) != 0 ||
+            cipherLen < P2P_MAC_BYTES) return;
+        unsigned char plain[P2P_MAX_PACKET] = {0};
+        if (crypto_box_curve25519xchacha20poly1305_open_easy(plain, cipher, cipherLen, nonce, senderPk, p2pSecretKey) != 0) return;
+        JsonDocument plainDoc;
+        if (deserializeJson(plainDoc, plain, cipherLen - P2P_MAC_BYTES) != DeserializationError::Ok) return;
+        const String author = String(static_cast<const char *>(plainDoc["author"] | "Remote"));
+        const String text = String(static_cast<const char *>(plainDoc["text"] | ""));
+        if (text.isEmpty()) return;
+        p2pTouchPeerSeen(peerIdx, p2pPeers[peerIdx].ip, p2pPeers[peerIdx].port);
+        chatAddMessage(author, text, false);
+        uiStatusLine = "Global chat from " + author;
+        if (lvglReady) {
+            lvglSyncStatusLine();
+            if (uiScreen == UI_CHAT) lvglRefreshChatUi();
+        }
+    });
     const String availabilityTopic = "esp32/remote/" + mqttHwId + "/availability";
     bool ok = false;
     if (mqttCfg.username.length()) {
@@ -6114,6 +6186,7 @@ bool mqttConnectNow()
     }
 
     mqttClient.publish(availabilityTopic.c_str(), "online", true);
+    mqttClient.subscribe(mqttChatInboxTopic.c_str());
     mqttDiscoveryPublished = false;
     mqttStatusLine = "Connected";
     return true;
@@ -6157,6 +6230,58 @@ void mqttPublishAction(const char *action)
 {
     if (!mqttCfg.enabled || !mqttClient.connected()) return;
     mqttClient.publish(mqttActionTopic.c_str(), action, false);
+}
+
+bool mqttPublishChatMessage(const String &text)
+{
+    if (!mqttCfg.enabled || !mqttClient.connected() || text.isEmpty()) return false;
+
+    JsonDocument plainDoc;
+    plainDoc["author"] = DEVICE_SHORT_NAME;
+    plainDoc["text"] = text.substring(0, P2P_MAX_CHAT_TEXT);
+    char plain[P2P_MAX_PACKET] = {0};
+    const size_t plainLen = serializeJson(plainDoc, plain, sizeof(plain));
+    if (plainLen == 0) return false;
+
+    bool anyOk = false;
+    const String senderPubHex = p2pPublicKeyHex();
+    for (int i = 0; i < p2pPeerCount; ++i) {
+        if (!p2pPeers[i].enabled) continue;
+        unsigned char peerPk[P2P_PUBLIC_KEY_BYTES] = {0};
+        if (!p2pHexToBytes(p2pPeers[i].pubKeyHex, peerPk, sizeof(peerPk))) continue;
+
+        unsigned char nonce[P2P_NONCE_BYTES] = {0};
+        unsigned char cipher[P2P_MAX_PACKET] = {0};
+        randombytes_buf(nonce, sizeof(nonce));
+        if (crypto_box_curve25519xchacha20poly1305_easy(cipher, reinterpret_cast<const unsigned char *>(plain), plainLen,
+                                                        nonce, peerPk, p2pSecretKey) != 0) {
+            continue;
+        }
+
+        const size_t cipherLen = plainLen + P2P_MAC_BYTES;
+        String nonceHex = p2pBytesToHex(nonce, sizeof(nonce));
+        String cipherHex;
+        {
+            const size_t hexLen = (cipherLen * 2U) + 1U;
+            char *buf = static_cast<char *>(malloc(hexLen));
+            if (!buf) continue;
+            sodium_bin2hex(buf, hexLen, cipher, cipherLen);
+            cipherHex = String(buf);
+            free(buf);
+        }
+        if (cipherHex.isEmpty()) continue;
+
+        JsonDocument doc;
+        doc["sender_pub"] = senderPubHex;
+        doc["nonce"] = nonceHex;
+        doc["cipher"] = cipherHex;
+        String payload;
+        serializeJson(doc, payload);
+
+        const String peerTopic = "esp32/remote/chat/" + mqttCfg.chatRoom + "/inbox/" + p2pPeers[i].pubKeyHex;
+        if (mqttClient.publish(peerTopic.c_str(), payload.c_str(), false)) anyOk = true;
+    }
+    return anyOk;
 }
 
 void mqttPublishButtonAction(int index)
@@ -7400,13 +7525,14 @@ void setupWebRoutes()
         }
 
         chatAddMessage("Me", text, true);
-        const bool sent = p2pSendChatMessage(text);
+        const bool sentLan = p2pSendChatMessage(text);
+        const bool sentGlobal = mqttPublishChatMessage(text);
         if (lvglReady) lvglRefreshChatUi();
-        uiStatusLine = sent ? "Chat sent to peers" : "Chat saved locally";
+        uiStatusLine = sentGlobal ? "Chat sent globally" : (sentLan ? "Chat sent to peers" : "Chat saved locally");
         if (lvglReady) lvglSyncStatusLine();
 
         doc["ok"] = true;
-        doc["transport"] = sent ? "p2p_udp_encrypted" : "local_only";
+        doc["transport"] = sentGlobal ? "mqtt_global" : (sentLan ? "p2p_udp_encrypted" : "local_only");
         String payload;
         serializeJson(doc, payload);
         request->send(200, "application/json", payload);
@@ -8020,6 +8146,7 @@ void setupWebRoutes()
         doc["user"] = mqttCfg.username;
         doc["pass"] = mqttCfg.password;
         doc["topic_prefix"] = mqttCfg.discoveryPrefix;
+        doc["chat_room"] = mqttCfg.chatRoom;
         String payload;
         serializeJson(doc, payload);
         request->send(200, "application/json", payload);
@@ -8050,8 +8177,11 @@ void setupWebRoutes()
                   mqttCfg.username = String(static_cast<const char *>(obj["user"] | ""));
                   mqttCfg.password = String(static_cast<const char *>(obj["pass"] | ""));
                   mqttCfg.discoveryPrefix = String(static_cast<const char *>(obj["topic_prefix"] | "homeassistant"));
+                  mqttCfg.chatRoom = String(static_cast<const char *>(obj["chat_room"] | "global"));
                   if (mqttCfg.port == 0) mqttCfg.port = 1883;
                   if (mqttCfg.discoveryPrefix.isEmpty()) mqttCfg.discoveryPrefix = "homeassistant";
+                  if (mqttCfg.chatRoom.isEmpty()) mqttCfg.chatRoom = "global";
+                  mqttChatInboxTopic = "esp32/remote/chat/" + mqttCfg.chatRoom + "/inbox/" + p2pPublicKeyHex();
                   saveMqttConfig();
                   mqttDiscoveryPublished = false;
                   mqttLastReconnectMs = 0;
