@@ -171,6 +171,11 @@ Board-specific defaults:
 - The first touch while the display is asleep only wakes the screen; the next separate touch performs the menu action
 - `Config` includes a brightness slider for screen backlight control, and its value is persisted across reboots
 
+### Future UI reference
+
+For future UI experiments, widgets, and layout ideas, keep the upstream LVGL project/demo as a reference:
+- https://github.com/lvgl/lvgl
+
 ## SD Layout Used by Firmware
 
 - `/web` for the primary static UI

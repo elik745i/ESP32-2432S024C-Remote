@@ -11,6 +11,7 @@
 #include <lvgl.h>
 #include <PubSubClient.h>
 #include <WiFi.h>
+#include <WiFiUdp.h>
 #include <Wire.h>
 #include <Audio.h>
 #include <JPEGENC.h>
@@ -28,6 +29,7 @@
 #include <time.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <sodium.h>
 
 #include "generated/recovery_browser_asset.h"
 
@@ -248,6 +250,7 @@ DNSServer dnsServer;
 Audio *audio = nullptr;
 WiFiClient mqttNetClient;
 PubSubClient mqttClient(mqttNetClient);
+WiFiUDP p2pUdp;
 void loadMediaEntries();
 void refreshWifiScan();
 void wifiScanService();
@@ -321,7 +324,17 @@ void loadUiRuntimeConfig();
 void applyAirplaneMode(bool enabled, const char *reason);
 void lvglRefreshConfigUi();
 void cpuLoadService(uint32_t loopStartUs);
+void loadP2pConfig();
+void saveP2pConfig();
+void p2pEnsureUdp();
+void p2pService();
+bool p2pSendChatMessage(const String &text);
+String p2pPublicKeyHex();
+void p2pBroadcastDiscover();
+bool p2pAddOrUpdateTrustedPeer(const String &name, const String &pubKeyHex, const IPAddress &ip, uint16_t port);
 void setupWifiAndServer();
+void lvglRefreshChatUi();
+void lvglRefreshChatPeerUi();
 void lvglMediaPrevPageEvent(lv_event_t *e);
 void lvglMediaNextPageEvent(lv_event_t *e);
 void lvglQueueMediaRefresh();
@@ -384,6 +397,7 @@ static lv_indev_t *lvglTouchIndev = nullptr;
 static bool lvglReady = false;
 static lv_obj_t *lvglScrHome = nullptr;
 static lv_obj_t *lvglScrChat = nullptr;
+static lv_obj_t *lvglScrChatPeers = nullptr;
 static lv_obj_t *lvglScrWifi = nullptr;
 static lv_obj_t *lvglScrMedia = nullptr;
 static lv_obj_t *lvglScrInfo = nullptr;
@@ -439,7 +453,11 @@ static lv_obj_t *lvglMqttBtnNameTa = nullptr;
 static lv_obj_t *lvglMqttEnableSw = nullptr;
 static lv_obj_t *lvglMqttCriticalSw = nullptr;
 static lv_obj_t *lvglMqttCtrlList = nullptr;
-static lv_obj_t *lvglChatLabel = nullptr;
+static lv_obj_t *lvglChatList = nullptr;
+static lv_obj_t *lvglChatInputTa = nullptr;
+static lv_obj_t *lvglChatEmptyLabel = nullptr;
+static lv_obj_t *lvglChatPeerList = nullptr;
+static lv_obj_t *lvglChatPeerIdentityLabel = nullptr;
 static lv_obj_t *lvglAirplaneBtn = nullptr;
 static lv_obj_t *lvglAirplaneBtnLabel = nullptr;
 static lv_obj_t *lvglBrightnessSlider = nullptr;
@@ -703,6 +721,7 @@ bool wakeTouchReleaseGuard = false;
 enum UiScreen : uint8_t {
     UI_HOME,
     UI_CHAT,
+    UI_CHAT_PEERS,
     UI_WIFI_LIST,
     UI_MEDIA,
     UI_INFO,
@@ -731,6 +750,55 @@ struct WifiEntry {
 static constexpr int MAX_WIFI_RESULTS = 20;
 WifiEntry wifiEntries[MAX_WIFI_RESULTS];
 int wifiCount = 0;
+
+struct ChatMessage {
+    String author;
+    String text;
+    bool outgoing;
+    unsigned long tsMs;
+};
+
+static constexpr int MAX_CHAT_MESSAGES = 24;
+ChatMessage chatMessages[MAX_CHAT_MESSAGES];
+int chatMessageCount = 0;
+
+struct P2PPeer {
+    String name;
+    String pubKeyHex;
+    IPAddress ip;
+    uint16_t port;
+    bool enabled;
+    unsigned long lastSeenMs;
+};
+
+static constexpr uint16_t P2P_UDP_PORT = 4210;
+static constexpr uint8_t P2P_PKT_MAGIC_0 = 'P';
+static constexpr uint8_t P2P_PKT_MAGIC_1 = '2';
+static constexpr uint8_t P2P_PKT_VERSION = 1;
+static constexpr uint8_t P2P_PKT_TYPE_CHAT = 1;
+static constexpr uint8_t P2P_PKT_TYPE_DISCOVER = 2;
+static constexpr int MAX_P2P_PEERS = 8;
+static constexpr int MAX_P2P_DISCOVERED = 12;
+static constexpr size_t P2P_PUBLIC_KEY_BYTES = crypto_box_curve25519xchacha20poly1305_PUBLICKEYBYTES;
+static constexpr size_t P2P_SECRET_KEY_BYTES = crypto_box_curve25519xchacha20poly1305_SECRETKEYBYTES;
+static constexpr size_t P2P_NONCE_BYTES = crypto_box_curve25519xchacha20poly1305_NONCEBYTES;
+static constexpr size_t P2P_MAC_BYTES = crypto_box_curve25519xchacha20poly1305_MACBYTES;
+static constexpr size_t P2P_MAX_CHAT_TEXT = 160;
+static constexpr size_t P2P_MAX_PACKET = 512;
+P2PPeer p2pPeers[MAX_P2P_PEERS];
+int p2pPeerCount = 0;
+
+struct P2PDiscoveredPeer {
+    String name;
+    String pubKeyHex;
+    IPAddress ip;
+    uint16_t port;
+    bool trusted;
+    unsigned long lastSeenMs;
+};
+
+P2PDiscoveredPeer p2pDiscoveredPeers[MAX_P2P_DISCOVERED];
+int p2pDiscoveredCount = 0;
 
 static constexpr int SNAKE_COLS = 12;
 static constexpr int SNAKE_ROWS = 14;
@@ -811,6 +879,7 @@ Preferences wifiPrefs;
 Preferences batteryPrefs;
 Preferences mqttPrefs;
 Preferences uiPrefs;
+Preferences p2pPrefs;
 char *serialLogRing = nullptr;
 size_t serialLogHead = 0;
 size_t serialLogCount = 0;
@@ -822,6 +891,11 @@ bool recordTelemetryEnabled = false;
 bool systemSoundsEnabled = true;
 bool wsRebootOnDisconnectEnabled = false;
 bool airplaneModeEnabled = false;
+bool p2pUdpStarted = false;
+bool p2pReady = false;
+unsigned char p2pPublicKey[P2P_PUBLIC_KEY_BYTES] = {0};
+unsigned char p2pSecretKey[P2P_SECRET_KEY_BYTES] = {0};
+unsigned long p2pLastDiscoverAnnounceMs = 0;
 uint32_t telemetryMaxKB = 512;
 String savedStaSsid;
 String savedStaPass;
@@ -1833,6 +1907,132 @@ static void lvglSetInfoBarColor(lv_obj_t *bar, lv_color_t color)
     lv_obj_set_style_bg_color(bar, color, LV_PART_INDICATOR);
 }
 
+static void chatAddMessage(const String &author, const String &text, bool outgoing)
+{
+    if (text.isEmpty()) return;
+    if (chatMessageCount >= MAX_CHAT_MESSAGES) {
+        for (int i = 1; i < chatMessageCount; ++i) chatMessages[i - 1] = chatMessages[i];
+        chatMessageCount = MAX_CHAT_MESSAGES - 1;
+    }
+    chatMessages[chatMessageCount].author = author;
+    chatMessages[chatMessageCount].text = text;
+    chatMessages[chatMessageCount].outgoing = outgoing;
+    chatMessages[chatMessageCount].tsMs = millis();
+    chatMessageCount++;
+}
+
+static bool p2pHexToBytes(const String &hex, unsigned char *out, size_t outLen)
+{
+    if (!out || outLen == 0) return false;
+    size_t binLen = 0;
+    return sodium_hex2bin(out, outLen, hex.c_str(), hex.length(), nullptr, &binLen, nullptr) == 0 && binLen == outLen;
+}
+
+static String p2pBytesToHex(const unsigned char *data, size_t len)
+{
+    if (!data || len == 0) return "";
+    char buf[(P2P_PUBLIC_KEY_BYTES * 2) + 1] = {0};
+    if (len > P2P_PUBLIC_KEY_BYTES) return "";
+    sodium_bin2hex(buf, sizeof(buf), data, len);
+    return String(buf);
+}
+
+String p2pPublicKeyHex()
+{
+    return p2pBytesToHex(p2pPublicKey, sizeof(p2pPublicKey));
+}
+
+static int p2pFindPeerByPubKeyHex(const String &pubKeyHex)
+{
+    for (int i = 0; i < p2pPeerCount; ++i) {
+        if (p2pPeers[i].pubKeyHex.equalsIgnoreCase(pubKeyHex)) return i;
+    }
+    return -1;
+}
+
+static int p2pFindDiscoveredByPubKeyHex(const String &pubKeyHex)
+{
+    for (int i = 0; i < p2pDiscoveredCount; ++i) {
+        if (p2pDiscoveredPeers[i].pubKeyHex.equalsIgnoreCase(pubKeyHex)) return i;
+    }
+    return -1;
+}
+
+static void p2pTouchPeerSeen(int idx, const IPAddress &ip, uint16_t port)
+{
+    if (idx < 0 || idx >= p2pPeerCount) return;
+    p2pPeers[idx].ip = ip;
+    p2pPeers[idx].port = port;
+    p2pPeers[idx].lastSeenMs = millis();
+}
+
+static void p2pTouchDiscoveredSeen(const String &name, const String &pubKeyHex, const IPAddress &ip, uint16_t port)
+{
+    if (pubKeyHex.isEmpty()) return;
+    int idx = p2pFindDiscoveredByPubKeyHex(pubKeyHex);
+    if (idx < 0) {
+        if (p2pDiscoveredCount >= MAX_P2P_DISCOVERED) {
+            for (int i = 1; i < p2pDiscoveredCount; ++i) p2pDiscoveredPeers[i - 1] = p2pDiscoveredPeers[i];
+            p2pDiscoveredCount = MAX_P2P_DISCOVERED - 1;
+        }
+        idx = p2pDiscoveredCount++;
+    }
+    p2pDiscoveredPeers[idx].name = name;
+    p2pDiscoveredPeers[idx].pubKeyHex = pubKeyHex;
+    p2pDiscoveredPeers[idx].ip = ip;
+    p2pDiscoveredPeers[idx].port = port;
+    p2pDiscoveredPeers[idx].trusted = p2pFindPeerByPubKeyHex(pubKeyHex) >= 0;
+    p2pDiscoveredPeers[idx].lastSeenMs = millis();
+    if (lvglReady && uiScreen == UI_CHAT_PEERS) lvglRefreshChatPeerUi();
+}
+
+void saveP2pConfig()
+{
+    p2pPrefs.begin("p2p", false);
+    p2pPrefs.putString("pub", p2pPublicKeyHex());
+    p2pPrefs.putBytes("sec", p2pSecretKey, sizeof(p2pSecretKey));
+    p2pPrefs.putInt("peer_count", p2pPeerCount);
+    for (int i = 0; i < MAX_P2P_PEERS; ++i) {
+        p2pPrefs.putString((String("peer_name_") + i).c_str(), (i < p2pPeerCount) ? p2pPeers[i].name : "");
+        p2pPrefs.putString((String("peer_key_") + i).c_str(), (i < p2pPeerCount) ? p2pPeers[i].pubKeyHex : "");
+        p2pPrefs.putString((String("peer_ip_") + i).c_str(), (i < p2pPeerCount) ? p2pPeers[i].ip.toString() : "");
+        p2pPrefs.putUShort((String("peer_port_") + i).c_str(), (i < p2pPeerCount) ? p2pPeers[i].port : P2P_UDP_PORT);
+        p2pPrefs.putBool((String("peer_en_") + i).c_str(), (i < p2pPeerCount) ? p2pPeers[i].enabled : false);
+    }
+    p2pPrefs.end();
+}
+
+void loadP2pConfig()
+{
+    p2pPeerCount = 0;
+    p2pPrefs.begin("p2p", false);
+
+    String pubHex = p2pPrefs.getString("pub", "");
+    size_t secLen = p2pPrefs.getBytesLength("sec");
+    bool haveKeys = (pubHex.length() == (P2P_PUBLIC_KEY_BYTES * 2U)) && (secLen == sizeof(p2pSecretKey));
+    if (haveKeys) {
+        haveKeys = p2pHexToBytes(pubHex, p2pPublicKey, sizeof(p2pPublicKey));
+        if (haveKeys) p2pPrefs.getBytes("sec", p2pSecretKey, sizeof(p2pSecretKey));
+    }
+    if (!haveKeys) {
+        crypto_box_curve25519xchacha20poly1305_keypair(p2pPublicKey, p2pSecretKey);
+    }
+
+    p2pPeerCount = p2pPrefs.getInt("peer_count", 0);
+    if (p2pPeerCount < 0) p2pPeerCount = 0;
+    if (p2pPeerCount > MAX_P2P_PEERS) p2pPeerCount = MAX_P2P_PEERS;
+    for (int i = 0; i < p2pPeerCount; ++i) {
+        p2pPeers[i].name = p2pPrefs.getString((String("peer_name_") + i).c_str(), "");
+        p2pPeers[i].pubKeyHex = p2pPrefs.getString((String("peer_key_") + i).c_str(), "");
+        p2pPeers[i].ip.fromString(p2pPrefs.getString((String("peer_ip_") + i).c_str(), ""));
+        p2pPeers[i].port = p2pPrefs.getUShort((String("peer_port_") + i).c_str(), P2P_UDP_PORT);
+        p2pPeers[i].enabled = p2pPrefs.getBool((String("peer_en_") + i).c_str(), true);
+        p2pPeers[i].lastSeenMs = 0;
+    }
+    p2pPrefs.end();
+    saveP2pConfig();
+}
+
 void lvglRefreshWifiList();
 void lvglRefreshMediaList();
 void lvglRefreshInfoPanel();
@@ -1849,6 +2049,7 @@ void lvglOpenSnakeEvent(lv_event_t *e);
 void lvglOpenTetrisEvent(lv_event_t *e);
 void lvglOpenMqttCfgEvent(lv_event_t *e);
 void lvglOpenMqttCtrlEvent(lv_event_t *e);
+void lvglOpenChatPeersEvent(lv_event_t *e);
 void lvglStyleHintEvent(lv_event_t *e);
 void lvglAirplaneToggleEvent(lv_event_t *e);
 void lvglScreenshotEvent(lv_event_t *e);
@@ -1879,6 +2080,7 @@ void lvglTetrisMoveLeftEvent(lv_event_t *e);
 void lvglTetrisMoveRightEvent(lv_event_t *e);
 void lvglTetrisRotateEvent(lv_event_t *e);
 void lvglTetrisDropEvent(lv_event_t *e);
+void lvglChatPeerActionEvent(lv_event_t *e);
 
 inline void lvglLoadScreen(lv_obj_t *target, lv_scr_load_anim_t anim)
 {
@@ -1890,6 +2092,7 @@ static bool uiScreenSupportsSwipeBack(UiScreen screen)
 {
     switch (screen) {
         case UI_CHAT:
+        case UI_CHAT_PEERS:
         case UI_WIFI_LIST:
         case UI_MEDIA:
         case UI_INFO:
@@ -1910,6 +2113,7 @@ lv_obj_t *lvglScreenForUi(UiScreen screen)
     switch (screen) {
         case UI_HOME: return lvglScrHome;
         case UI_CHAT: return lvglScrChat;
+        case UI_CHAT_PEERS: return lvglScrChatPeers;
         case UI_WIFI_LIST: return lvglScrWifi;
         case UI_MEDIA: return lvglScrMedia;
         case UI_INFO: return lvglScrInfo;
@@ -1990,15 +2194,110 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglCreateMenuButton(homeWrap, "Web Recovery", lv_color_hex(0xA66A2A), lvglRecoveryHintEvent, nullptr);
             break;
         }
-        case UI_CHAT:
+        case UI_CHAT: {
             lvglScrChat = lvglCreateScreenBase("Chat", true);
-            lvglChatLabel = lv_label_create(lvglScrChat);
-            lv_obj_set_width(lvglChatLabel, lv_pct(94));
-            lv_obj_align(lvglChatLabel, LV_ALIGN_TOP_LEFT, 10, UI_CONTENT_TOP_Y + 8);
-            lv_obj_set_style_text_color(lvglChatLabel, lv_color_hex(0xE5ECF3), 0);
-            lv_label_set_long_mode(lvglChatLabel, LV_LABEL_LONG_WRAP);
-            lv_label_set_text(lvglChatLabel, "Chat screen placeholder.\nUse this slot for future chat UI or backend integration.");
+            lv_obj_t *chatOps = lv_obj_create(lvglScrChat);
+            lv_obj_set_size(chatOps, lv_pct(100), 40);
+            lv_obj_align(chatOps, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
+            lv_obj_set_style_bg_opa(chatOps, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(chatOps, 0, 0);
+            lv_obj_set_style_pad_all(chatOps, 6, 0);
+            lv_obj_set_style_pad_column(chatOps, 6, 0);
+            lv_obj_set_flex_flow(chatOps, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(chatOps, LV_OBJ_FLAG_SCROLLABLE);
+            makeSmallBtn(chatOps, "Peers", 62, 28, lv_color_hex(0x2F6D86), lvglOpenChatPeersEvent);
+
+            lvglChatList = lv_obj_create(lvglScrChat);
+            lv_obj_set_size(lvglChatList, lv_pct(100), UI_CONTENT_H - 96);
+            lv_obj_align(lvglChatList, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y + 40);
+            lv_obj_set_style_bg_color(lvglChatList, lv_color_hex(0x111922), 0);
+            lv_obj_set_style_border_width(lvglChatList, 0, 0);
+            lv_obj_set_style_pad_all(lvglChatList, 8, 0);
+            lv_obj_set_style_pad_row(lvglChatList, 6, 0);
+            lv_obj_set_flex_flow(lvglChatList, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_scroll_dir(lvglChatList, LV_DIR_VER);
+            lv_obj_set_scrollbar_mode(lvglChatList, LV_SCROLLBAR_MODE_OFF);
+
+            lv_obj_t *chatComposer = lv_obj_create(lvglScrChat);
+            lv_obj_set_size(chatComposer, lv_pct(100), 56);
+            lv_obj_align(chatComposer, LV_ALIGN_BOTTOM_MID, 0, 0);
+            lv_obj_set_style_bg_color(chatComposer, lv_color_hex(0x16212C), 0);
+            lv_obj_set_style_border_width(chatComposer, 0, 0);
+            lv_obj_set_style_pad_all(chatComposer, 8, 0);
+            lv_obj_set_style_pad_column(chatComposer, 8, 0);
+            lv_obj_set_flex_flow(chatComposer, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(chatComposer, LV_OBJ_FLAG_SCROLLABLE);
+
+            lvglChatInputTa = lv_textarea_create(chatComposer);
+            lv_obj_set_height(lvglChatInputTa, 38);
+            lv_obj_set_width(lvglChatInputTa, DISPLAY_WIDTH - 96);
+            lv_obj_set_flex_grow(lvglChatInputTa, 1);
+            lv_textarea_set_one_line(lvglChatInputTa, true);
+            lv_textarea_set_placeholder_text(lvglChatInputTa, "Message");
+            lv_obj_add_event_cb(lvglChatInputTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
+
+            makeSmallBtn(chatComposer, "Send", 64, 38, lv_color_hex(0x3A7A3A),
+                         [](lv_event_t *e) {
+                             (void)e;
+                             if (!lvglChatInputTa) return;
+                             const char *raw = lv_textarea_get_text(lvglChatInputTa);
+                             String text = raw ? String(raw) : String("");
+                             text.trim();
+                             if (text.isEmpty()) {
+                                 uiStatusLine = "Type a message first";
+                                 lvglSyncStatusLine();
+                                 return;
+                             }
+                             chatAddMessage("Me", text, true);
+                             const bool sent = p2pSendChatMessage(text);
+                             lv_textarea_set_text(lvglChatInputTa, "");
+                             uiStatusLine = sent ? "Chat sent to peers" : "Chat saved locally";
+                             lvglSyncStatusLine();
+                             lvglRefreshChatUi();
+                         });
+            lvglRefreshChatUi();
             break;
+        }
+        case UI_CHAT_PEERS: {
+            lvglScrChatPeers = lvglCreateScreenBase("Chat Peers", false);
+            lv_obj_t *peerTop = lv_obj_create(lvglScrChatPeers);
+            lv_obj_set_size(peerTop, lv_pct(100), 74);
+            lv_obj_align(peerTop, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
+            lv_obj_set_style_bg_color(peerTop, lv_color_hex(0x16212C), 0);
+            lv_obj_set_style_border_width(peerTop, 0, 0);
+            lv_obj_set_style_pad_all(peerTop, 8, 0);
+            lv_obj_set_style_pad_row(peerTop, 6, 0);
+            lv_obj_set_flex_flow(peerTop, LV_FLEX_FLOW_COLUMN);
+            lv_obj_clear_flag(peerTop, LV_OBJ_FLAG_SCROLLABLE);
+
+            lvglChatPeerIdentityLabel = lv_label_create(peerTop);
+            lv_obj_set_width(lvglChatPeerIdentityLabel, lv_pct(100));
+            lv_label_set_long_mode(lvglChatPeerIdentityLabel, LV_LABEL_LONG_WRAP);
+            lv_obj_set_style_text_color(lvglChatPeerIdentityLabel, lv_color_hex(0xC8D3DD), 0);
+
+            lv_obj_t *peerOps = lv_obj_create(peerTop);
+            lv_obj_set_size(peerOps, lv_pct(100), 30);
+            lv_obj_set_style_bg_opa(peerOps, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(peerOps, 0, 0);
+            lv_obj_set_style_pad_all(peerOps, 0, 0);
+            lv_obj_set_style_pad_column(peerOps, 6, 0);
+            lv_obj_set_flex_flow(peerOps, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(peerOps, LV_OBJ_FLAG_SCROLLABLE);
+            makeSmallBtn(peerOps, "Scan", 54, 26, lv_color_hex(0x2F6D86), lvglChatPeerActionEvent, reinterpret_cast<void *>(static_cast<intptr_t>(0)));
+
+            lvglChatPeerList = lv_obj_create(lvglScrChatPeers);
+            lv_obj_set_size(lvglChatPeerList, lv_pct(100), UI_CONTENT_H - 74);
+            lv_obj_align(lvglChatPeerList, LV_ALIGN_BOTTOM_MID, 0, 0);
+            lv_obj_set_style_bg_color(lvglChatPeerList, lv_color_hex(0x111922), 0);
+            lv_obj_set_style_border_width(lvglChatPeerList, 0, 0);
+            lv_obj_set_style_pad_all(lvglChatPeerList, 8, 0);
+            lv_obj_set_style_pad_row(lvglChatPeerList, 6, 0);
+            lv_obj_set_flex_flow(lvglChatPeerList, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_scroll_dir(lvglChatPeerList, LV_DIR_VER);
+            lv_obj_set_scrollbar_mode(lvglChatPeerList, LV_SCROLLBAR_MODE_OFF);
+            lvglRefreshChatPeerUi();
+            break;
+        }
         case UI_WIFI_LIST: {
             lvglScrWifi = lvglCreateScreenBase("WiFi", true);
             lv_obj_t *wifiOps = lv_obj_create(lvglScrWifi);
@@ -2380,6 +2679,10 @@ void lvglOpenScreen(UiScreen screen, lv_scr_load_anim_t anim)
     if (screen == UI_WIFI_LIST) {
         refreshWifiScan();
         lvglRefreshWifiList();
+    } else if (screen == UI_CHAT) {
+        lvglRefreshChatUi();
+    } else if (screen == UI_CHAT_PEERS) {
+        lvglRefreshChatPeerUi();
     } else if (screen == UI_MEDIA) {
         lvglQueueMediaRefresh();
     } else if (screen == UI_INFO) {
@@ -2401,6 +2704,9 @@ void lvglNavigateBackBySwipe()
         case UI_GAMES:
         case UI_CONFIG:
             lvglOpenScreen(UI_HOME, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
+            break;
+        case UI_CHAT_PEERS:
+            lvglOpenScreen(UI_CHAT, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
             break;
         case UI_WIFI_LIST:
             lvglOpenScreen(UI_CONFIG, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
@@ -2425,6 +2731,14 @@ void lvglHomeNavEvent(lv_event_t *e)
 {
     const UiScreen target = static_cast<UiScreen>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
     lvglOpenScreen(target, LV_SCR_LOAD_ANIM_MOVE_LEFT);
+}
+
+void lvglOpenChatPeersEvent(lv_event_t *e)
+{
+    (void)e;
+    lvglEnsureScreenBuilt(UI_CHAT_PEERS);
+    lvglRefreshChatPeerUi();
+    lvglOpenScreen(UI_CHAT_PEERS, LV_SCR_LOAD_ANIM_MOVE_LEFT);
 }
 
 void lvglRecoveryHintEvent(lv_event_t *e)
@@ -2671,6 +2985,377 @@ void lvglMediaEntryEvent(lv_event_t *e)
     lvglRefreshMediaPlayerUi();
 }
 
+void lvglRefreshChatUi()
+{
+    if (!lvglChatList) return;
+    lv_obj_clean(lvglChatList);
+    lvglChatEmptyLabel = nullptr;
+
+    if (chatMessageCount == 0) {
+        lvglChatEmptyLabel = lv_label_create(lvglChatList);
+        lv_label_set_text(lvglChatEmptyLabel, "No messages yet.\nChat is local-only for now; peer transport comes next.");
+        lv_obj_set_width(lvglChatEmptyLabel, lv_pct(100));
+        lv_obj_set_style_text_color(lvglChatEmptyLabel, lv_color_hex(0xC8CED6), 0);
+        lv_label_set_long_mode(lvglChatEmptyLabel, LV_LABEL_LONG_WRAP);
+        return;
+    }
+
+    for (int i = 0; i < chatMessageCount; ++i) {
+        lv_obj_t *bubble = lv_obj_create(lvglChatList);
+        lv_obj_set_width(bubble, lv_pct(100));
+        lv_obj_set_height(bubble, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_color(bubble, chatMessages[i].outgoing ? lv_color_hex(0x254A33) : lv_color_hex(0x213246), 0);
+        lv_obj_set_style_border_width(bubble, 0, 0);
+        lv_obj_set_style_radius(bubble, 12, 0);
+        lv_obj_set_style_pad_all(bubble, 8, 0);
+        lv_obj_set_style_pad_row(bubble, 4, 0);
+        lv_obj_set_flex_flow(bubble, LV_FLEX_FLOW_COLUMN);
+        lv_obj_clear_flag(bubble, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *hdr = lv_label_create(bubble);
+        lv_label_set_text_fmt(hdr, "%s", chatMessages[i].author.c_str());
+        lv_obj_set_style_text_color(hdr, chatMessages[i].outgoing ? lv_color_hex(0xB6E3C6) : lv_color_hex(0xA9C8E8), 0);
+
+        lv_obj_t *body = lv_label_create(bubble);
+        lv_obj_set_width(body, lv_pct(100));
+        lv_label_set_long_mode(body, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(body, chatMessages[i].text.c_str());
+        lv_obj_set_style_text_color(body, lv_color_hex(0xEDF2F7), 0);
+    }
+
+    lv_obj_scroll_to_view_recursive(lv_obj_get_child(lvglChatList, lv_obj_get_child_cnt(lvglChatList) - 1), LV_ANIM_OFF);
+}
+
+void lvglChatPeerActionEvent(lv_event_t *e)
+{
+    const int action = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
+    if (action == 0) {
+        p2pLastDiscoverAnnounceMs = 0;
+        p2pBroadcastDiscover();
+        uiStatusLine = "Peer scan started";
+        lvglSyncStatusLine();
+        lvglRefreshChatPeerUi();
+        return;
+    }
+
+    const int idx = (action / 10) - 1;
+    const int sub = action % 10;
+    if (idx < 0 || idx >= p2pDiscoveredCount) return;
+
+    if (sub == 1) {
+        const bool ok = p2pAddOrUpdateTrustedPeer(
+            p2pDiscoveredPeers[idx].name.isEmpty() ? String("Peer") : p2pDiscoveredPeers[idx].name,
+            p2pDiscoveredPeers[idx].pubKeyHex,
+            p2pDiscoveredPeers[idx].ip,
+            p2pDiscoveredPeers[idx].port);
+        uiStatusLine = ok ? "Peer paired" : "Pair failed";
+    } else if (sub == 2) {
+        const int pidx = p2pFindPeerByPubKeyHex(p2pDiscoveredPeers[idx].pubKeyHex);
+        if (pidx >= 0) {
+            p2pPeers[pidx].enabled = !p2pPeers[pidx].enabled;
+            saveP2pConfig();
+            p2pDiscoveredPeers[idx].trusted = p2pPeers[pidx].enabled;
+            uiStatusLine = p2pPeers[pidx].enabled ? "Peer enabled" : "Peer disabled";
+        }
+    } else if (sub == 3) {
+        const int pidx = p2pFindPeerByPubKeyHex(p2pDiscoveredPeers[idx].pubKeyHex);
+        if (pidx >= 0) {
+            for (int i = pidx + 1; i < p2pPeerCount; ++i) p2pPeers[i - 1] = p2pPeers[i];
+            p2pPeerCount--;
+            saveP2pConfig();
+            p2pDiscoveredPeers[idx].trusted = false;
+            uiStatusLine = "Peer removed";
+        }
+    }
+
+    lvglSyncStatusLine();
+    lvglRefreshChatPeerUi();
+}
+
+void lvglRefreshChatPeerUi()
+{
+    if (lvglChatPeerIdentityLabel) {
+        const String pub = p2pPublicKeyHex();
+        String shortPub = pub;
+        if (shortPub.length() > 20) shortPub = shortPub.substring(0, 20) + "...";
+        lv_label_set_text_fmt(lvglChatPeerIdentityLabel, "Device: %s\nKey: %s", DEVICE_SHORT_NAME, shortPub.c_str());
+    }
+    if (!lvglChatPeerList) return;
+    lv_obj_clean(lvglChatPeerList);
+
+    if (p2pDiscoveredCount == 0) {
+        lv_obj_t *lbl = lv_label_create(lvglChatPeerList);
+        lv_obj_set_width(lbl, lv_pct(100));
+        lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(lbl, "No peers discovered yet.\nOpen this screen on another device on the same WiFi, then tap Scan.");
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0xC8CED6), 0);
+        return;
+    }
+
+    auto makeSmallBtnLocal = [](lv_obj_t *parent, const char *txt, int w, int h, lv_color_t col, lv_event_cb_t cb, void *ud = nullptr) -> lv_obj_t * {
+        lv_obj_t *b = lv_btn_create(parent);
+        if (!b) return nullptr;
+        lv_obj_set_size(b, w, h);
+        lv_obj_set_style_radius(b, 8, 0);
+        lv_obj_set_style_border_width(b, 0, 0);
+        lv_obj_set_style_bg_color(b, col, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(b, col, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, ud);
+        lv_obj_t *l = lv_label_create(b);
+        if (l) {
+            lv_label_set_text(l, txt);
+            lv_obj_center(l);
+        }
+        return b;
+    };
+
+    for (int i = 0; i < p2pDiscoveredCount; ++i) {
+        const int pidx = p2pFindPeerByPubKeyHex(p2pDiscoveredPeers[i].pubKeyHex);
+        const bool trusted = pidx >= 0;
+        const bool enabled = trusted ? p2pPeers[pidx].enabled : false;
+
+        lv_obj_t *card = lv_obj_create(lvglChatPeerList);
+        lv_obj_set_width(card, lv_pct(100));
+        lv_obj_set_height(card, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_color(card, lv_color_hex(0x16212C), 0);
+        lv_obj_set_style_border_width(card, 0, 0);
+        lv_obj_set_style_radius(card, 12, 0);
+        lv_obj_set_style_pad_all(card, 8, 0);
+        lv_obj_set_style_pad_row(card, 4, 0);
+        lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+        lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *title = lv_label_create(card);
+        lv_label_set_text_fmt(title, "%s  [%s]", p2pDiscoveredPeers[i].name.c_str(), trusted ? (enabled ? "trusted" : "disabled") : "discovered");
+        lv_obj_set_style_text_color(title, lv_color_hex(0xE5ECF3), 0);
+
+        lv_obj_t *info = lv_label_create(card);
+        lv_obj_set_width(info, lv_pct(100));
+        lv_label_set_long_mode(info, LV_LABEL_LONG_WRAP);
+        String key = p2pDiscoveredPeers[i].pubKeyHex;
+        if (key.length() > 16) key = key.substring(0, 16) + "...";
+        lv_label_set_text_fmt(info, "%s:%u\n%s", p2pDiscoveredPeers[i].ip.toString().c_str(),
+                              static_cast<unsigned int>(p2pDiscoveredPeers[i].port), key.c_str());
+        lv_obj_set_style_text_color(info, lv_color_hex(0xB7C4D1), 0);
+
+        lv_obj_t *row = lv_obj_create(card);
+        lv_obj_set_size(row, lv_pct(100), 30);
+        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_set_style_pad_column(row, 6, 0);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+        if (!trusted) {
+            makeSmallBtnLocal(row, "Pair", 54, 26, lv_color_hex(0x3A7A3A), lvglChatPeerActionEvent,
+                              reinterpret_cast<void *>(static_cast<intptr_t>(((i + 1) * 10) + 1)));
+        } else {
+            makeSmallBtnLocal(row, enabled ? "Disable" : "Enable", 64, 26, lv_color_hex(0x2F6D86), lvglChatPeerActionEvent,
+                              reinterpret_cast<void *>(static_cast<intptr_t>(((i + 1) * 10) + 2)));
+            makeSmallBtnLocal(row, "Remove", 58, 26, lv_color_hex(0x8A3A3A), lvglChatPeerActionEvent,
+                              reinterpret_cast<void *>(static_cast<intptr_t>(((i + 1) * 10) + 3)));
+        }
+    }
+}
+
+void p2pEnsureUdp()
+{
+    if (!p2pReady) return;
+    if (p2pUdpStarted) return;
+    if (WiFi.getMode() == WIFI_OFF) return;
+    if (p2pUdp.begin(P2P_UDP_PORT) == 1) {
+        p2pUdpStarted = true;
+        Serial.printf("[P2P] UDP listening on %u\n", static_cast<unsigned int>(P2P_UDP_PORT));
+    }
+}
+
+static bool p2pSendPacketToPeer(const P2PPeer &peer, uint8_t type, const uint8_t *plain, size_t plainLen)
+{
+    if (!peer.enabled || plainLen == 0 || plainLen > (P2P_MAX_PACKET - 64)) return false;
+    unsigned char peerPk[P2P_PUBLIC_KEY_BYTES] = {0};
+    if (!p2pHexToBytes(peer.pubKeyHex, peerPk, sizeof(peerPk))) return false;
+
+    unsigned char nonce[P2P_NONCE_BYTES] = {0};
+    randombytes_buf(nonce, sizeof(nonce));
+    const size_t cipherLen = plainLen + P2P_MAC_BYTES;
+    unsigned char cipher[P2P_MAX_PACKET] = {0};
+    if (crypto_box_curve25519xchacha20poly1305_easy(cipher, plain, plainLen, nonce, peerPk, p2pSecretKey) != 0) return false;
+
+    uint8_t packet[P2P_MAX_PACKET] = {0};
+    size_t pos = 0;
+    packet[pos++] = P2P_PKT_MAGIC_0;
+    packet[pos++] = P2P_PKT_MAGIC_1;
+    packet[pos++] = P2P_PKT_VERSION;
+    packet[pos++] = type;
+    memcpy(packet + pos, p2pPublicKey, sizeof(p2pPublicKey));
+    pos += sizeof(p2pPublicKey);
+    memcpy(packet + pos, nonce, sizeof(nonce));
+    pos += sizeof(nonce);
+    packet[pos++] = static_cast<uint8_t>((cipherLen >> 8) & 0xFFU);
+    packet[pos++] = static_cast<uint8_t>(cipherLen & 0xFFU);
+    memcpy(packet + pos, cipher, cipherLen);
+    pos += cipherLen;
+
+    p2pEnsureUdp();
+    if (!p2pUdpStarted) return false;
+    if (!p2pUdp.beginPacket(peer.ip, peer.port ? peer.port : P2P_UDP_PORT)) return false;
+    p2pUdp.write(packet, pos);
+    return p2pUdp.endPacket() == 1;
+}
+
+bool p2pSendChatMessage(const String &text)
+{
+    if (!p2pReady) return false;
+    if (text.isEmpty()) return false;
+
+    JsonDocument doc;
+    doc["kind"] = "chat";
+    doc["author"] = DEVICE_SHORT_NAME;
+    doc["text"] = text.substring(0, P2P_MAX_CHAT_TEXT);
+    char plain[P2P_MAX_PACKET] = {0};
+    const size_t plainLen = serializeJson(doc, plain, sizeof(plain));
+    if (plainLen == 0) return false;
+
+    bool anyOk = false;
+    for (int i = 0; i < p2pPeerCount; ++i) {
+        if (p2pPeers[i].ip == IPAddress((uint32_t)0)) continue;
+        if (p2pSendPacketToPeer(p2pPeers[i], P2P_PKT_TYPE_CHAT, reinterpret_cast<const uint8_t *>(plain), plainLen)) {
+            anyOk = true;
+        }
+    }
+    return anyOk;
+}
+
+void p2pBroadcastDiscover()
+{
+    if (!p2pReady || !wifiConnectedSafe()) return;
+    p2pEnsureUdp();
+    if (!p2pUdpStarted) return;
+
+    JsonDocument doc;
+    doc["kind"] = "discover";
+    doc["device"] = DEVICE_SHORT_NAME;
+    doc["public_key"] = p2pPublicKeyHex();
+    doc["port"] = P2P_UDP_PORT;
+    char payload[256] = {0};
+    const size_t len = serializeJson(doc, payload, sizeof(payload));
+    if (len == 0) return;
+
+    IPAddress bcast = WiFi.localIP();
+    bcast[3] = 255;
+    if (p2pUdp.beginPacket(bcast, P2P_UDP_PORT)) {
+        p2pUdp.write(reinterpret_cast<const uint8_t *>("\x50\x32\x01\x02"), 4);
+        p2pUdp.write(reinterpret_cast<const uint8_t *>(payload), len);
+        p2pUdp.endPacket();
+    }
+}
+
+bool p2pAddOrUpdateTrustedPeer(const String &name, const String &pubKeyHex, const IPAddress &ip, uint16_t port)
+{
+    unsigned char testPk[P2P_PUBLIC_KEY_BYTES] = {0};
+    if (name.isEmpty() || !p2pHexToBytes(pubKeyHex, testPk, sizeof(testPk))) return false;
+    int idx = p2pFindPeerByPubKeyHex(pubKeyHex);
+    if (idx < 0) {
+        if (p2pPeerCount >= MAX_P2P_PEERS) return false;
+        idx = p2pPeerCount++;
+    }
+    p2pPeers[idx].name = name;
+    p2pPeers[idx].pubKeyHex = pubKeyHex;
+    p2pPeers[idx].ip = ip;
+    p2pPeers[idx].port = (port == 0) ? P2P_UDP_PORT : port;
+    p2pPeers[idx].enabled = true;
+    p2pPeers[idx].lastSeenMs = millis();
+    saveP2pConfig();
+    p2pTouchDiscoveredSeen(name, pubKeyHex, ip, port);
+    return true;
+}
+
+void p2pService()
+{
+    if (!p2pReady) return;
+    p2pEnsureUdp();
+    if (!p2pUdpStarted) return;
+
+    const unsigned long now = millis();
+    if (wifiConnectedSafe() && (now - p2pLastDiscoverAnnounceMs) >= 5000UL) {
+        p2pLastDiscoverAnnounceMs = now;
+        p2pBroadcastDiscover();
+    }
+
+    int packetLen = p2pUdp.parsePacket();
+    while (packetLen > 0) {
+        if (packetLen >= 4 && packetLen <= static_cast<int>(P2P_MAX_PACKET)) {
+            uint8_t packet[P2P_MAX_PACKET] = {0};
+            const int got = p2pUdp.read(packet, sizeof(packet));
+            if (got >= 0) {
+                size_t pos = 0;
+                const bool headerOk = packet[pos++] == P2P_PKT_MAGIC_0 &&
+                                      packet[pos++] == P2P_PKT_MAGIC_1 &&
+                                      packet[pos++] == P2P_PKT_VERSION;
+                const uint8_t type = packet[pos++];
+                if (headerOk && type == P2P_PKT_TYPE_DISCOVER) {
+                    JsonDocument doc;
+                    if (deserializeJson(doc, packet + pos, got - static_cast<int>(pos)) == DeserializationError::Ok) {
+                        const String kind = String(static_cast<const char *>(doc["kind"] | ""));
+                        const String device = String(static_cast<const char *>(doc["device"] | ""));
+                        const String pubKeyHex = String(static_cast<const char *>(doc["public_key"] | ""));
+                        const uint16_t port = static_cast<uint16_t>(doc["port"] | P2P_UDP_PORT);
+                        if (kind == "discover" && !pubKeyHex.equalsIgnoreCase(p2pPublicKeyHex())) {
+                            p2pTouchDiscoveredSeen(device, pubKeyHex, p2pUdp.remoteIP(), port);
+                        }
+                    }
+                } else if (headerOk && type == P2P_PKT_TYPE_CHAT &&
+                           got >= static_cast<int>(4 + P2P_PUBLIC_KEY_BYTES + P2P_NONCE_BYTES + 2)) {
+                    unsigned char senderPk[P2P_PUBLIC_KEY_BYTES] = {0};
+                    unsigned char nonce[P2P_NONCE_BYTES] = {0};
+                    memcpy(senderPk, packet + pos, sizeof(senderPk));
+                    pos += sizeof(senderPk);
+                    memcpy(nonce, packet + pos, sizeof(nonce));
+                    pos += sizeof(nonce);
+                    const size_t cipherLen = (static_cast<size_t>(packet[pos]) << 8) | static_cast<size_t>(packet[pos + 1]);
+                    pos += 2;
+                    if ((pos + cipherLen) <= static_cast<size_t>(got) && cipherLen >= P2P_MAC_BYTES) {
+                        const String senderHex = p2pBytesToHex(senderPk, sizeof(senderPk));
+                        const int peerIdx = p2pFindPeerByPubKeyHex(senderHex);
+                        if (peerIdx >= 0 && p2pPeers[peerIdx].enabled) {
+                            unsigned char plain[P2P_MAX_PACKET] = {0};
+                            if (crypto_box_curve25519xchacha20poly1305_open_easy(
+                                    plain,
+                                    packet + pos,
+                                    cipherLen,
+                                    nonce,
+                                    senderPk,
+                                    p2pSecretKey) == 0) {
+                                JsonDocument doc;
+                                if (deserializeJson(doc, plain, cipherLen - P2P_MAC_BYTES) == DeserializationError::Ok) {
+                                    const String kind = String(static_cast<const char *>(doc["kind"] | ""));
+                                    if (kind == "chat") {
+                                        const String author = String(static_cast<const char *>(doc["author"] | p2pPeers[peerIdx].name.c_str()));
+                                        const String text = String(static_cast<const char *>(doc["text"] | ""));
+                                        if (!text.isEmpty()) {
+                                            p2pTouchPeerSeen(peerIdx, p2pUdp.remoteIP(), p2pUdp.remotePort());
+                                            chatAddMessage(author, text, false);
+                                            uiStatusLine = "Chat received from " + author;
+                                            if (lvglReady) {
+                                                lvglSyncStatusLine();
+                                                if (uiScreen == UI_CHAT) lvglRefreshChatUi();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            while (p2pUdp.available()) p2pUdp.read();
+        }
+        packetLen = p2pUdp.parsePacket();
+    }
+}
+
 void lvglRefreshInfoPanel()
 {
     if (!lvglInfoList) return;
@@ -2880,6 +3565,18 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
                 if (code == LV_EVENT_READY && lvglWifiPwdModal && !lv_obj_has_flag(lvglWifiPwdModal, LV_OBJ_FLAG_HIDDEN) &&
                     lvglWifiPwdTa && lv_keyboard_get_textarea(lvglKb) == lvglWifiPwdTa) {
                     lvglWifiPwdConnectEvent(nullptr);
+                } else if (code == LV_EVENT_READY && lvglChatInputTa && lv_keyboard_get_textarea(lvglKb) == lvglChatInputTa) {
+                    const char *raw = lv_textarea_get_text(lvglChatInputTa);
+                    String text = raw ? String(raw) : String("");
+                    text.trim();
+                    if (!text.isEmpty()) {
+                        chatAddMessage("Me", text, true);
+                        const bool sent = p2pSendChatMessage(text);
+                        lv_textarea_set_text(lvglChatInputTa, "");
+                        uiStatusLine = sent ? "Chat sent to peers" : "Chat saved locally";
+                        lvglSyncStatusLine();
+                        lvglRefreshChatUi();
+                    }
                 }
                 if (lvglKb) {
                     lv_keyboard_set_textarea(lvglKb, nullptr);
@@ -6504,6 +7201,217 @@ void setupWebRoutes()
         request->send(200, "application/json", payload);
     });
 
+    server.on("/api/chat/messages", HTTP_GET, [](AsyncWebServerRequest *request) {
+        JsonDocument doc;
+        JsonArray arr = doc["messages"].to<JsonArray>();
+        for (int i = 0; i < chatMessageCount; ++i) {
+            JsonObject msg = arr.add<JsonObject>();
+            msg["author"] = chatMessages[i].author;
+            msg["text"] = chatMessages[i].text;
+            msg["outgoing"] = chatMessages[i].outgoing;
+            msg["ts_ms"] = static_cast<uint64_t>(chatMessages[i].tsMs);
+        }
+        String payload;
+        serializeJson(doc, payload);
+        request->send(200, "application/json", payload);
+    });
+
+    server.on("/api/chat/identity", HTTP_GET, [](AsyncWebServerRequest *request) {
+        JsonDocument doc;
+        doc["device"] = DEVICE_SHORT_NAME;
+        doc["port"] = P2P_UDP_PORT;
+        doc["public_key"] = p2pPublicKeyHex();
+        String payload;
+        serializeJson(doc, payload);
+        request->send(200, "application/json", payload);
+    });
+
+    server.on("/api/chat/peers", HTTP_GET, [](AsyncWebServerRequest *request) {
+        JsonDocument doc;
+        JsonArray arr = doc["peers"].to<JsonArray>();
+        for (int i = 0; i < p2pPeerCount; ++i) {
+            JsonObject peer = arr.add<JsonObject>();
+            peer["name"] = p2pPeers[i].name;
+            peer["public_key"] = p2pPeers[i].pubKeyHex;
+            peer["ip"] = p2pPeers[i].ip.toString();
+            peer["port"] = p2pPeers[i].port;
+            peer["enabled"] = p2pPeers[i].enabled;
+            peer["last_seen_ms"] = static_cast<uint64_t>(p2pPeers[i].lastSeenMs);
+        }
+        String payload;
+        serializeJson(doc, payload);
+        request->send(200, "application/json", payload);
+    });
+
+    server.on("/api/chat/discovery", HTTP_GET, [](AsyncWebServerRequest *request) {
+        JsonDocument doc;
+        JsonArray arr = doc["discovered"].to<JsonArray>();
+        for (int i = 0; i < p2pDiscoveredCount; ++i) {
+            JsonObject peer = arr.add<JsonObject>();
+            peer["name"] = p2pDiscoveredPeers[i].name;
+            peer["public_key"] = p2pDiscoveredPeers[i].pubKeyHex;
+            peer["ip"] = p2pDiscoveredPeers[i].ip.toString();
+            peer["port"] = p2pDiscoveredPeers[i].port;
+            peer["trusted"] = p2pDiscoveredPeers[i].trusted;
+            peer["last_seen_ms"] = static_cast<uint64_t>(p2pDiscoveredPeers[i].lastSeenMs);
+        }
+        String payload;
+        serializeJson(doc, payload);
+        request->send(200, "application/json", payload);
+    });
+
+    server.on("/api/chat/discovery/pair", HTTP_POST, [](AsyncWebServerRequest *request) {
+        String pubKey;
+        if (request->hasParam("public_key", true)) pubKey = urlDecode(request->getParam("public_key", true)->value());
+        else if (request->hasParam("public_key", false)) pubKey = urlDecode(request->getParam("public_key", false)->value());
+        pubKey.trim();
+
+        JsonDocument doc;
+        const int idx = p2pFindDiscoveredByPubKeyHex(pubKey);
+        if (idx < 0) {
+            doc["ok"] = false;
+            doc["error"] = "peer_not_discovered";
+            String payload;
+            serializeJson(doc, payload);
+            request->send(404, "application/json", payload);
+            return;
+        }
+
+        const bool ok = p2pAddOrUpdateTrustedPeer(
+            p2pDiscoveredPeers[idx].name.isEmpty() ? String("Peer") : p2pDiscoveredPeers[idx].name,
+            p2pDiscoveredPeers[idx].pubKeyHex,
+            p2pDiscoveredPeers[idx].ip,
+            p2pDiscoveredPeers[idx].port);
+        p2pDiscoveredPeers[idx].trusted = ok;
+        doc["ok"] = ok;
+        if (!ok) doc["error"] = "pair_failed";
+        String payload;
+        serializeJson(doc, payload);
+        request->send(ok ? 200 : 409, "application/json", payload);
+    });
+
+    server.on("/api/chat/peers/add", HTTP_POST, [](AsyncWebServerRequest *request) {
+        String name;
+        String pubKey;
+        String ipText;
+        uint16_t port = P2P_UDP_PORT;
+        if (request->hasParam("name", true)) name = urlDecode(request->getParam("name", true)->value());
+        else if (request->hasParam("name", false)) name = urlDecode(request->getParam("name", false)->value());
+        if (request->hasParam("public_key", true)) pubKey = urlDecode(request->getParam("public_key", true)->value());
+        else if (request->hasParam("public_key", false)) pubKey = urlDecode(request->getParam("public_key", false)->value());
+        if (request->hasParam("ip", true)) ipText = urlDecode(request->getParam("ip", true)->value());
+        else if (request->hasParam("ip", false)) ipText = urlDecode(request->getParam("ip", false)->value());
+        if (request->hasParam("port", true)) port = static_cast<uint16_t>(request->getParam("port", true)->value().toInt());
+        else if (request->hasParam("port", false)) port = static_cast<uint16_t>(request->getParam("port", false)->value().toInt());
+        name.trim();
+        pubKey.trim();
+
+        JsonDocument doc;
+        unsigned char testPk[P2P_PUBLIC_KEY_BYTES] = {0};
+        IPAddress ip;
+        if (name.isEmpty() || !p2pHexToBytes(pubKey, testPk, sizeof(testPk)) || !ip.fromString(ipText)) {
+            doc["ok"] = false;
+            doc["error"] = "invalid_peer";
+            String payload;
+            serializeJson(doc, payload);
+            request->send(400, "application/json", payload);
+            return;
+        }
+
+        const bool ok = p2pAddOrUpdateTrustedPeer(name, pubKey, ip, port);
+        doc["ok"] = ok;
+        if (!ok) doc["error"] = "peer_list_full";
+        String payload;
+        serializeJson(doc, payload);
+        request->send(ok ? 200 : 409, "application/json", payload);
+    });
+
+    server.on("/api/chat/peers/toggle", HTTP_POST, [](AsyncWebServerRequest *request) {
+        String pubKey;
+        bool enabled = true;
+        if (request->hasParam("public_key", true)) pubKey = urlDecode(request->getParam("public_key", true)->value());
+        else if (request->hasParam("public_key", false)) pubKey = urlDecode(request->getParam("public_key", false)->value());
+        if (request->hasParam("enabled", true)) enabled = request->getParam("enabled", true)->value().toInt() != 0;
+        else if (request->hasParam("enabled", false)) enabled = request->getParam("enabled", false)->value().toInt() != 0;
+        pubKey.trim();
+
+        JsonDocument doc;
+        const int idx = p2pFindPeerByPubKeyHex(pubKey);
+        if (idx < 0) {
+            doc["ok"] = false;
+            doc["error"] = "peer_not_found";
+            String payload;
+            serializeJson(doc, payload);
+            request->send(404, "application/json", payload);
+            return;
+        }
+        p2pPeers[idx].enabled = enabled;
+        saveP2pConfig();
+        const int didx = p2pFindDiscoveredByPubKeyHex(pubKey);
+        if (didx >= 0) p2pDiscoveredPeers[didx].trusted = enabled;
+        doc["ok"] = true;
+        doc["enabled"] = enabled;
+        String payload;
+        serializeJson(doc, payload);
+        request->send(200, "application/json", payload);
+    });
+
+    server.on("/api/chat/peers/remove", HTTP_POST, [](AsyncWebServerRequest *request) {
+        String pubKey;
+        if (request->hasParam("public_key", true)) pubKey = urlDecode(request->getParam("public_key", true)->value());
+        else if (request->hasParam("public_key", false)) pubKey = urlDecode(request->getParam("public_key", false)->value());
+        pubKey.trim();
+
+        JsonDocument doc;
+        const int idx = p2pFindPeerByPubKeyHex(pubKey);
+        if (idx < 0) {
+            doc["ok"] = false;
+            doc["error"] = "peer_not_found";
+            String payload;
+            serializeJson(doc, payload);
+            request->send(404, "application/json", payload);
+            return;
+        }
+        for (int i = idx + 1; i < p2pPeerCount; ++i) p2pPeers[i - 1] = p2pPeers[i];
+        p2pPeerCount--;
+        saveP2pConfig();
+        const int didx = p2pFindDiscoveredByPubKeyHex(pubKey);
+        if (didx >= 0) p2pDiscoveredPeers[didx].trusted = false;
+        doc["ok"] = true;
+        String payload;
+        serializeJson(doc, payload);
+        request->send(200, "application/json", payload);
+    });
+
+    server.on("/api/chat/send", HTTP_POST, [](AsyncWebServerRequest *request) {
+        String text;
+        if (request->hasParam("text", true)) text = urlDecode(request->getParam("text", true)->value());
+        else if (request->hasParam("text", false)) text = urlDecode(request->getParam("text", false)->value());
+        text.trim();
+
+        JsonDocument doc;
+        if (text.isEmpty()) {
+            doc["ok"] = false;
+            doc["error"] = "missing_text";
+            String payload;
+            serializeJson(doc, payload);
+            request->send(400, "application/json", payload);
+            return;
+        }
+
+        chatAddMessage("Me", text, true);
+        const bool sent = p2pSendChatMessage(text);
+        if (lvglReady) lvglRefreshChatUi();
+        uiStatusLine = sent ? "Chat sent to peers" : "Chat saved locally";
+        if (lvglReady) lvglSyncStatusLine();
+
+        doc["ok"] = true;
+        doc["transport"] = sent ? "p2p_udp_encrypted" : "local_only";
+        String payload;
+        serializeJson(doc, payload);
+        request->send(200, "application/json", payload);
+    });
+
     server.on("/list_sd_files", HTTP_GET, [](AsyncWebServerRequest *request) {
         String path = "/";
         if (request->hasParam("path")) path = urlDecode(request->getParam("path")->value());
@@ -7876,6 +8784,8 @@ void setup()
     analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);
     analogSetPinAttenuation(LIGHT_ADC_PIN, ADC_11db);
     randomSeed(static_cast<unsigned long>(esp_random()));
+    p2pReady = sodium_init() >= 0;
+    if (p2pReady) loadP2pConfig();
     loadUiRuntimeConfig();
     mqttBuildIdentity();
     loadMqttConfig();
@@ -7896,6 +8806,7 @@ void setup()
     Serial.begin(115200);
     Serial.println();
     Serial.printf("%s UI + fallback file manager\n", DEVICE_SHORT_NAME);
+    Serial.printf("[P2P] ready=%d pub=%s\n", p2pReady ? 1 : 0, p2pReady ? p2pPublicKeyHex().c_str() : "-");
 
     tft.init();
     tft.setRotation(TFT_ROTATION);
@@ -7960,6 +8871,7 @@ void loop()
         sdEnsureMounted(true);
     }
     refreshMdnsState();
+    if (p2pReady) p2pService();
     mqttService();
     if (rgbFlashUntilMs != 0 && static_cast<long>(millis() - rgbFlashUntilMs) >= 0) {
         rgbFlashUntilMs = 0;
