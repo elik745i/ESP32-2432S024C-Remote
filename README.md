@@ -26,13 +26,18 @@ Currently supported boards:
 - Buttons now visually react only after a confirmed tap/click is released
 - Edge-swipe back navigation remains enabled on menu-style screens
 - Added asynchronous Wi-Fi scanning with a visible `Searching for access points...` loading state
+- Renamed the Wi-Fi screen to `WiFi Config` and changed it to manual scan-on-demand
+- Added saved-network controls (`Disconnect`, `Forget`) and editable `AP Config` on the same Wi-Fi screen
 - Added in-device Wi-Fi password entry with on-screen keyboard for secured access points
+- Added inline password visibility toggles to the Wi-Fi, AP, and MQTT password fields
 - Updated Wi-Fi submenu back navigation so it returns to `Config`
 - Added a `Config` brightness slider that controls real TFT backlight PWM
 - Brightness is saved in preferences and restored on the next boot
 - The last `20%` of the brightness bar is highlighted red
 - Boot now renders the first screen before enabling the backlight, then fades the backlight in
+- Charging-before-sleep animation now runs a single cycle and cancels immediately on touch
 - Wake touch handling now consumes the wake gesture fully before allowing normal menu taps
+- Shared on-screen keyboard now supports one-shot uppercase, caps lock on double-tap, and dismiss-on-tap-away/swipe
 - Added encrypted peer-to-peer chat over LAN using UDP and public-key cryptography
 - Added encrypted global chat relay over MQTT using per-peer inbox topics
 - Added automatic peer discovery plus a manual `Scan` action in `Chat -> Peers`
@@ -175,16 +180,19 @@ Board-specific defaults:
 ## UI and Gesture Notes
 
 - Vertical swipe scrolls list-style screens
-- Swipe right from the left screen edge navigates back on supported sub-screens
+- Swipe right on supported sub-screens navigates back when a clear horizontal gesture is detected, even when started away from the left edge
 - Screenshot capture is available from the `Config` screen
 - Button color feedback is intentionally delayed until a click is confirmed on release, to avoid false visual tap feedback during swipes
-- `Config -> WiFi` now scans in the background and shows a loading message while APs are discovered
+- `Config -> WiFi Config` shows the saved/current STA network first and starts scanning only when `Scan` is pressed
+- `WiFi Config` also includes editable AP SSID/password fields that are saved across reboots
 - Tapping a secured AP opens an on-device password popup with keyboard support and password visibility toggle
 - Tapping the keyboard `OK`/tick button in the Wi-Fi password popup acts the same as `Save`
+- The AP password field and MQTT password field also include inline eye buttons
 - The first touch while the display is asleep only wakes the screen; the next separate touch performs the menu action
 - `Config` includes a brightness slider for screen backlight control, and its value is persisted across reboots
 - `Config` also includes a device-name field; the saved name persists across reboots
 - When editing the device name, the Config page scrolls the field above the on-screen keyboard
+- Tapping away from the on-screen keyboard or swiping while it is open dismisses it first
 - `Chat` now opens as a contacts list first, then switches to a single conversation after contact selection
 - In conversation view, the contact name is shown in the top bar and swipe-back returns to the contacts list
 - Chat message bubbles are left/right aligned by sender and capped to roughly `75%` width
@@ -322,6 +330,7 @@ Notes:
 - MQTT payloads are end-to-end encrypted per trusted peer using the same peer keys.
 - The broker can relay messages but cannot read chat contents.
 - The `Chat room` is a namespace for routing, not the trust boundary. Trust still comes from pairing.
+- `Config -> MQTT Config` includes an inline eye toggle for the MQTT password field.
 
 ### Peer management
 

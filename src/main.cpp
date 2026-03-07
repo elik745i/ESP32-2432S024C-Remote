@@ -92,6 +92,9 @@ static constexpr unsigned long SD_RECOVERY_MIN_INTERVAL_MS = 10000;
 static constexpr unsigned long SD_AUTORETRY_PERIOD_MS = 30000;
 static constexpr unsigned long SD_STATS_LOG_PERIOD_MS = 30000;
 static constexpr const char *CHAT_LOG_DIR = "/Conversations";
+static constexpr const char *CHAT_OUTBOX_PATH = "/Conversations/.outbox.txt";
+static constexpr unsigned long CHAT_RETRY_INTERVAL_MS = 5000UL;
+static constexpr int MAX_CHAT_PENDING = 6;
 static constexpr uint32_t SD_BOOT_PROBE_FREQ_HZ = SD_SPI_FREQ_SAFE_HZ;
 static constexpr unsigned long BOOT_DEFER_SD_MS = 80UL;
 static constexpr unsigned long BOOT_DEFER_WIFI_MS = 220UL;
@@ -154,7 +157,7 @@ static constexpr int8_t CHARGE_SCORE_ON = 1;
 static constexpr int8_t CHARGE_SCORE_MAX = 6;
 static constexpr unsigned long CHARGE_HOLD_MS = 120000;
 static constexpr bool CHARGE_LOG_TO_SERIAL = false;
-static constexpr uint8_t CHARGE_ANIM_CYCLES = 2;
+static constexpr uint8_t CHARGE_ANIM_CYCLES = 1;
 static constexpr int LIGHT_ADC_SAMPLES = 8;
 static constexpr float LIGHT_FILTER_ALPHA = 0.20f;
 static constexpr bool LIGHT_INVERT = true;
@@ -256,6 +259,8 @@ void loadMediaEntries();
 void refreshWifiScan();
 void wifiScanService();
 void startWifiConnect(const String &ssid, const String &pass);
+void saveStaCreds(const String &ssid, const String &pass);
+void saveApCreds(const String &ssid, const String &pass);
 void tryBootStaReconnect();
 void sampleTopIndicators();
 const char *authName(wifi_auth_mode_t auth);
@@ -284,6 +289,7 @@ String mediaFindAdjacentTrack(const String &sourcePath, bool nextDir);
 void lvglSetMediaPlayerVisible(bool visible);
 void lvglRefreshMediaLayout();
 void lvglRefreshMediaPlayerUi();
+void lvglHideKeyboard();
 void networkSuspendForAudio();
 bool networkResumeAfterAudio();
 void lvglNavigateBackBySwipe();
@@ -318,7 +324,9 @@ void mqttService();
 bool mqttConnectNow();
 void mqttPublishDiscovery();
 bool mqttPublishChatMessage(const String &text);
+bool mqttPublishChatMessageWithId(const String &peerKey, const String &text, const String &messageId);
 bool mqttPublishConversationDelete();
+bool mqttPublishChatAck(const String &peerKey, const String &messageId);
 void loadMqttConfig();
 void saveMqttConfig();
 void appendUiSettings(JsonDocument &doc);
@@ -334,7 +342,9 @@ void saveP2pConfig();
 void p2pEnsureUdp();
 void p2pService();
 bool p2pSendChatMessage(const String &text);
+bool p2pSendChatMessageWithId(const String &peerKey, const String &text, const String &messageId);
 bool p2pSendConversationDelete();
+bool p2pSendChatAck(const String &peerKey, const String &messageId);
 String p2pPublicKeyHex();
 static int p2pFindPeerByPubKeyHex(const String &pubKeyHex);
 void p2pBroadcastDiscover();
@@ -344,10 +354,15 @@ void lvglRefreshChatUi();
 void lvglRefreshChatPeerUi();
 void lvglSetChatKeyboardVisible(bool visible);
 void lvglSyncStatusLine();
+void lvglRefreshTopIndicators();
 void chatReloadRecentMessagesFromSd(const String &peerKey);
 void lvglRefreshChatContactsUi();
 static String chatDisplayNameForPeerKey(const String &peerKey);
 static void chatClearCache();
+static String chatGenerateMessageId();
+static bool chatQueueOutgoingMessage(const String &peerKey, const String &author, const String &text, const String &messageId);
+static bool chatAckOutgoingMessage(const String &peerKey, const String &messageId);
+static void chatPendingService();
 void lvglRefreshChatLayout();
 void lvglSetChatPeerScanButtonStatus(const char *text, uint32_t revertDelayMs = 0);
 void lvglToggleChatMenuEvent(lv_event_t *e);
@@ -442,6 +457,10 @@ static lv_obj_t *lvglInfoTempBar = nullptr;
 static lv_obj_t *lvglInfoSystemLabel = nullptr;
 static lv_obj_t *lvglWifiList = nullptr;
 static lv_obj_t *lvglWifiScanLabel = nullptr;
+static lv_obj_t *lvglWifiApSsidTa = nullptr;
+static lv_obj_t *lvglWifiApPassTa = nullptr;
+static lv_obj_t *lvglWifiApPassShowBtnLabel = nullptr;
+static lv_obj_t *lvglWifiApPassShowBtn = nullptr;
 static lv_obj_t *lvglWifiPwdModal = nullptr;
 static lv_obj_t *lvglWifiPwdTa = nullptr;
 static lv_obj_t *lvglWifiPwdSsidLabel = nullptr;
@@ -466,6 +485,8 @@ static lv_obj_t *lvglMqttBrokerTa = nullptr;
 static lv_obj_t *lvglMqttPortTa = nullptr;
 static lv_obj_t *lvglMqttUserTa = nullptr;
 static lv_obj_t *lvglMqttPassTa = nullptr;
+static lv_obj_t *lvglMqttPassShowBtnLabel = nullptr;
+static lv_obj_t *lvglMqttPassShowBtn = nullptr;
 static lv_obj_t *lvglMqttDiscTa = nullptr;
 static lv_obj_t *lvglMqttChatTa = nullptr;
 static lv_obj_t *lvglMqttBtnNameTa = nullptr;
@@ -500,6 +521,7 @@ static lv_obj_t *lvglTopBarRoot = nullptr;
 static constexpr uint8_t LVGL_MAX_TOP_INDICATORS = 16;
 static lv_obj_t *lvglTopIndicators[LVGL_MAX_TOP_INDICATORS] = {};
 static bool lvglKeyboardShiftOneShot = false;
+static bool lvglKeyboardShiftLocked = false;
 static unsigned long lvglKeyboardShiftLastPressMs = 0;
 static uint8_t lvglTopIndicatorCount = 0;
 static int lvglMqttEditIndex = 0;
@@ -803,6 +825,20 @@ ChatMessage chatMessages[MAX_CHAT_MESSAGES];
 int chatMessageCount = 0;
 String currentChatPeerKey;
 
+struct PendingChatMessage {
+    String peerKey;
+    String author;
+    String text;
+    String messageId;
+    unsigned long createdMs;
+    unsigned long lastAttemptMs;
+    uint8_t attempts;
+};
+
+PendingChatMessage chatPendingMessages[MAX_CHAT_PENDING];
+int chatPendingCount = 0;
+bool chatPendingLoaded = false;
+
 static String sanitizeDeviceShortName(String name)
 {
     name.trim();
@@ -826,6 +862,8 @@ static String chatSafeFileToken(const String &raw);
 static String chatFriendlyLogFilenameForPeer(const String &peerKey);
 static String chatLegacyLogPathForPeer(const String &peerKey);
 static String chatLogPathForPeer(const String &peerKey);
+static bool chatHasUnreadMessages();
+static void chatSetPeerUnread(const String &peerKey, bool unread);
 
 static void lvglHideChatMenu()
 {
@@ -895,6 +933,7 @@ static bool chatApplyConversationDeletion(const String &peerKey, const String &s
 {
     if (peerKey.isEmpty()) return false;
     const bool removed = chatDeleteHistoryForPeer(peerKey);
+    chatSetPeerUnread(peerKey, false);
     if (currentChatPeerKey == peerKey) {
         currentChatPeerKey = "";
         chatClearCache();
@@ -915,6 +954,7 @@ struct P2PPeer {
     IPAddress ip;
     uint16_t port;
     bool enabled;
+    bool unread;
     unsigned long lastSeenMs;
 };
 
@@ -946,6 +986,23 @@ struct P2PDiscoveredPeer {
 
 P2PDiscoveredPeer p2pDiscoveredPeers[MAX_P2P_DISCOVERED];
 int p2pDiscoveredCount = 0;
+
+static bool chatHasUnreadMessages()
+{
+    for (int i = 0; i < p2pPeerCount; ++i) {
+        if (p2pPeers[i].unread) return true;
+    }
+    return false;
+}
+
+static void chatSetPeerUnread(const String &peerKey, bool unread)
+{
+    const int idx = p2pFindPeerByPubKeyHex(peerKey);
+    if (idx < 0) return;
+    if (p2pPeers[idx].unread == unread) return;
+    p2pPeers[idx].unread = unread;
+    if (lvglReady) lvglRefreshTopIndicators();
+}
 
 static constexpr int SNAKE_COLS = 12;
 static constexpr int SNAKE_ROWS = 14;
@@ -1046,6 +1103,8 @@ unsigned long p2pLastDiscoverAnnounceMs = 0;
 uint32_t telemetryMaxKB = 512;
 String savedStaSsid;
 String savedStaPass;
+String savedApSsid = AP_SSID;
+String savedApPass = AP_PASS;
 String pendingSaveSsid;
 String pendingSavePass;
 bool bootStaConnectInProgress = false;
@@ -1646,7 +1705,7 @@ void lvglTouchReadCb(lv_indev_drv_t *indev, lv_indev_data_t *data)
             lvglSwipeLastX = x;
             lvglSwipeLastY = y;
             lvglSwipeStartMs = millis();
-            lvglSwipeCandidate = uiScreenSupportsSwipeBack(uiScreen) && (x <= SWIPE_EDGE_START_MAX_X);
+            lvglSwipeCandidate = uiScreenSupportsSwipeBack(uiScreen);
             lvglSwipeHorizontalLocked = false;
         } else {
             lvglSwipeLastX = x;
@@ -1860,7 +1919,28 @@ void lvglTopIndicatorsDrawEvent(lv_event_t *e)
         lvglDrawRectSolid(drawCtx, mx + 9, my + 12, 8, 8, mqttCol, LV_OPA_90);
     }
 
+    const bool conversationOpen = (uiScreen == UI_CHAT) && !currentChatPeerKey.isEmpty();
+    const bool showUnreadMail = chatHasUnreadMessages() && !conversationOpen;
     const int battX = ox + ow - 54;
+    if (showUnreadMail) {
+        const lv_color_t mailCol = lv_color_hex(0xF2C35E);
+        const int mailX = battX - 28;
+        const int mailY = topY + 5;
+        lv_draw_rect_dsc_t mailFrame;
+        lv_draw_rect_dsc_init(&mailFrame);
+        mailFrame.bg_opa = LV_OPA_TRANSP;
+        mailFrame.border_width = 1;
+        mailFrame.border_color = mailCol;
+        mailFrame.radius = 2;
+        lv_area_t mailA;
+        mailA.x1 = static_cast<lv_coord_t>(mailX);
+        mailA.y1 = static_cast<lv_coord_t>(mailY);
+        mailA.x2 = static_cast<lv_coord_t>(mailX + 19);
+        mailA.y2 = static_cast<lv_coord_t>(mailY + 13);
+        lv_draw_rect(drawCtx, &mailFrame, &mailA);
+        lvglDrawLineSeg(drawCtx, mailX + 1, mailY + 1, mailX + 10, mailY + 7, mailCol, 1);
+        lvglDrawLineSeg(drawCtx, mailX + 18, mailY + 1, mailX + 10, mailY + 7, mailCol, 1);
+    }
 
     lv_draw_rect_dsc_t frame;
     lv_draw_rect_dsc_init(&frame);
@@ -1887,7 +1967,7 @@ void lvglTopIndicatorsDrawEvent(lv_event_t *e)
     lv_area_t nameA;
     nameA.x1 = static_cast<lv_coord_t>(ox + 56);
     nameA.y1 = static_cast<lv_coord_t>(topY + 1);
-    nameA.x2 = static_cast<lv_coord_t>(battX - 8);
+    nameA.x2 = static_cast<lv_coord_t>(battX - (showUnreadMail ? 34 : 8));
     nameA.y2 = static_cast<lv_coord_t>(topY + 24);
     lv_draw_label(drawCtx, &labelDsc, &nameA, topName.c_str(), nullptr);
     lv_area_t nameABold = nameA;
@@ -1949,6 +2029,14 @@ lv_obj_t *lvglCreateScreenBase(const char *title, bool backToHome = false)
     lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_VER, 0);
     lv_obj_set_style_border_width(scr, 0, 0);
     lv_obj_set_style_pad_all(scr, 0, 0);
+    lv_obj_add_event_cb(
+        scr,
+        [](lv_event_t *e) {
+            if (lv_event_get_target(e) != lv_event_get_current_target(e)) return;
+            if (lvglKb && !lv_obj_has_flag(lvglKb, LV_OBJ_FLAG_HIDDEN)) lvglHideKeyboard();
+        },
+        LV_EVENT_CLICKED,
+        nullptr);
     (void)title;
     (void)backToHome;
     return scr;
@@ -2174,6 +2262,117 @@ static String chatDisplayNameForPeerKey(const String &peerKey)
     return shortKey;
 }
 
+static String chatGenerateMessageId()
+{
+    char buf[33];
+    snprintf(buf, sizeof(buf), "%08lx%08lx",
+             static_cast<unsigned long>(millis()),
+             static_cast<unsigned long>(esp_random()));
+    return String(buf);
+}
+
+static bool chatSavePendingOutbox()
+{
+    if (!sdEnsureMounted(true)) return false;
+    fsWriteBegin();
+    bool ok = false;
+    if (sdLock()) {
+        if (!SD.exists(CHAT_LOG_DIR)) SD.mkdir(CHAT_LOG_DIR);
+        if (chatPendingCount == 0) {
+            SD.remove(CHAT_OUTBOX_PATH);
+            ok = true;
+        } else {
+            SD.remove(CHAT_OUTBOX_PATH);
+            File f = SD.open(CHAT_OUTBOX_PATH, FILE_WRITE);
+            if (f) {
+                ok = true;
+                for (int i = 0; i < chatPendingCount; ++i) {
+                    const PendingChatMessage &msg = chatPendingMessages[i];
+                    const String line = chatEscapeLogField(msg.messageId) + "\t" +
+                                        chatEscapeLogField(msg.peerKey) + "\t" +
+                                        chatEscapeLogField(msg.author) + "\t" +
+                                        chatEscapeLogField(msg.text) + "\t" +
+                                        String(msg.createdMs) + "\n";
+                    if (f.print(line) <= 0) ok = false;
+                }
+                f.close();
+            } else {
+                ok = false;
+            }
+        }
+        sdUnlock();
+    }
+    fsWriteEnd();
+    return ok;
+}
+
+static void chatLoadPendingOutbox()
+{
+    chatPendingCount = 0;
+    chatPendingLoaded = true;
+    if (!sdEnsureMounted()) return;
+    if (!sdLock()) return;
+    File f = SD.open(CHAT_OUTBOX_PATH, FILE_READ);
+    if (f) {
+        while (f.available() && chatPendingCount < MAX_CHAT_PENDING) {
+            String line = f.readStringUntil('\n');
+            line.trim();
+            if (line.isEmpty()) continue;
+            const int p1 = line.indexOf('\t');
+            const int p2 = (p1 >= 0) ? line.indexOf('\t', p1 + 1) : -1;
+            const int p3 = (p2 >= 0) ? line.indexOf('\t', p2 + 1) : -1;
+            const int p4 = (p3 >= 0) ? line.indexOf('\t', p3 + 1) : -1;
+            if (p1 <= 0 || p2 <= p1 || p3 <= p2 || p4 <= p3) continue;
+            PendingChatMessage &msg = chatPendingMessages[chatPendingCount++];
+            msg.messageId = chatUnescapeLogField(line.substring(0, p1));
+            msg.peerKey = chatUnescapeLogField(line.substring(p1 + 1, p2));
+            msg.author = chatUnescapeLogField(line.substring(p2 + 1, p3));
+            msg.text = chatUnescapeLogField(line.substring(p3 + 1, p4));
+            msg.createdMs = static_cast<unsigned long>(strtoul(line.substring(p4 + 1).c_str(), nullptr, 10));
+            msg.lastAttemptMs = 0;
+            msg.attempts = 0;
+        }
+        f.close();
+    }
+    sdUnlock();
+}
+
+static int chatFindPendingIndex(const String &peerKey, const String &messageId)
+{
+    for (int i = 0; i < chatPendingCount; ++i) {
+        if (chatPendingMessages[i].peerKey == peerKey && chatPendingMessages[i].messageId == messageId) return i;
+    }
+    return -1;
+}
+
+static bool chatHasLoggedMessageId(const String &peerKey, const String &messageId)
+{
+    if (peerKey.isEmpty() || messageId.isEmpty()) return false;
+    if (!sdEnsureMounted()) return false;
+    if (!sdLock()) return false;
+    bool found = false;
+    File f = SD.open(chatLogPathForPeer(peerKey), FILE_READ);
+    if (f) {
+        while (f.available() && !found) {
+            String line = f.readStringUntil('\n');
+            line.trim();
+            if (line.isEmpty()) continue;
+            const int p1 = line.indexOf('\t');
+            const int p2 = (p1 >= 0) ? line.indexOf('\t', p1 + 1) : -1;
+            const int p3 = (p2 >= 0) ? line.indexOf('\t', p2 + 1) : -1;
+            const int p4 = (p3 >= 0) ? line.indexOf('\t', p3 + 1) : -1;
+            const int p5 = (p4 >= 0) ? line.indexOf('\t', p4 + 1) : -1;
+            if (p5 > p4) {
+                const String loggedId = chatUnescapeLogField(line.substring(p5 + 1));
+                if (loggedId == messageId) found = true;
+            }
+        }
+        f.close();
+    }
+    sdUnlock();
+    return found;
+}
+
 static void chatClearCache()
 {
     for (int i = 0; i < chatMessageCount; ++i) {
@@ -2183,8 +2382,9 @@ static void chatClearCache()
     chatMessageCount = 0;
 }
 
-static void chatAddMessage(const String &author, const String &text, bool outgoing, ChatTransport transport)
+static void chatAddMessage(const String &author, const String &text, bool outgoing, ChatTransport transport, const String &messageId = "")
 {
+    (void)messageId;
     if (text.isEmpty()) return;
     if (chatMessageCount >= MAX_CHAT_MESSAGES) {
         for (int i = 1; i < chatMessageCount; ++i) chatMessages[i - 1] = chatMessages[i];
@@ -2198,7 +2398,7 @@ static void chatAddMessage(const String &author, const String &text, bool outgoi
     chatMessageCount++;
 }
 
-static bool chatAppendMessageToSd(const String &peerKey, ChatTransport transport, const String &author, const String &text, bool outgoing, unsigned long tsMs)
+static bool chatAppendMessageToSd(const String &peerKey, ChatTransport transport, const String &author, const String &text, bool outgoing, unsigned long tsMs, const String &messageId = "")
 {
     if (peerKey.isEmpty()) return false;
     if (!sdEnsureMounted(true)) return false;
@@ -2217,7 +2417,8 @@ static bool chatAppendMessageToSd(const String &peerKey, ChatTransport transport
                                 (outgoing ? "out" : "in") + "\t" +
                                 String(static_cast<int>(transport)) + "\t" +
                                 chatEscapeLogField(author) + "\t" +
-                                chatEscapeLogField(text) + "\n";
+                                chatEscapeLogField(text) + "\t" +
+                                chatEscapeLogField(messageId) + "\n";
             ok = f.print(line) > 0;
             f.close();
         }
@@ -2227,11 +2428,67 @@ static bool chatAppendMessageToSd(const String &peerKey, ChatTransport transport
     return ok;
 }
 
-static void chatStoreMessage(const String &peerKey, const String &author, const String &text, bool outgoing, ChatTransport transport)
+static void chatStoreMessage(const String &peerKey, const String &author, const String &text, bool outgoing, ChatTransport transport, const String &messageId = "")
 {
     const unsigned long nowMs = millis();
-    chatAppendMessageToSd(peerKey, transport, author, text, outgoing, nowMs);
-    if (currentChatPeerKey == peerKey) chatAddMessage(author, text, outgoing, transport);
+    if (!messageId.isEmpty() && !outgoing && chatHasLoggedMessageId(peerKey, messageId)) return;
+    chatAppendMessageToSd(peerKey, transport, author, text, outgoing, nowMs, messageId);
+    const bool conversationOpen = (uiScreen == UI_CHAT) && (currentChatPeerKey == peerKey);
+    if (conversationOpen) {
+        chatSetPeerUnread(peerKey, false);
+        chatAddMessage(author, text, outgoing, transport, messageId);
+    } else if (!outgoing) {
+        chatSetPeerUnread(peerKey, true);
+    }
+}
+
+static bool chatQueueOutgoingMessage(const String &peerKey, const String &author, const String &text, const String &messageId)
+{
+    if (peerKey.isEmpty() || text.isEmpty() || messageId.isEmpty()) return false;
+    const int existing = chatFindPendingIndex(peerKey, messageId);
+    if (existing >= 0) return true;
+    if (chatPendingCount >= MAX_CHAT_PENDING) return false;
+    PendingChatMessage &msg = chatPendingMessages[chatPendingCount++];
+    msg.peerKey = peerKey;
+    msg.author = author;
+    msg.text = text;
+    msg.messageId = messageId;
+    msg.createdMs = millis();
+    msg.lastAttemptMs = 0;
+    msg.attempts = 0;
+    return chatSavePendingOutbox();
+}
+
+static bool chatAckOutgoingMessage(const String &peerKey, const String &messageId)
+{
+    const int idx = chatFindPendingIndex(peerKey, messageId);
+    if (idx < 0) return false;
+    for (int i = idx + 1; i < chatPendingCount; ++i) chatPendingMessages[i - 1] = chatPendingMessages[i];
+    chatPendingCount--;
+    chatSavePendingOutbox();
+    return true;
+}
+
+static void chatPendingService()
+{
+    if (!chatPendingLoaded) {
+        if (sdMounted || sdEnsureMounted()) chatLoadPendingOutbox();
+        else return;
+    }
+
+    const unsigned long now = millis();
+    for (int i = 0; i < chatPendingCount; ++i) {
+        PendingChatMessage &msg = chatPendingMessages[i];
+        if (msg.peerKey.isEmpty() || msg.messageId.isEmpty() || msg.text.isEmpty()) continue;
+        if (msg.lastAttemptMs != 0 && static_cast<unsigned long>(now - msg.lastAttemptMs) < CHAT_RETRY_INTERVAL_MS) continue;
+        bool attempted = false;
+        if (p2pSendChatMessageWithId(msg.peerKey, msg.text, msg.messageId)) attempted = true;
+        if (mqttPublishChatMessageWithId(msg.peerKey, msg.text, msg.messageId)) attempted = true;
+        if (attempted) {
+            msg.lastAttemptMs = now;
+            if (msg.attempts < 255) msg.attempts++;
+        }
+    }
 }
 
 static void chatSelectFirstEnabledPeer()
@@ -2268,13 +2525,14 @@ void chatReloadRecentMessagesFromSd(const String &peerKey)
             const int p2 = (p1 >= 0) ? line.indexOf('\t', p1 + 1) : -1;
             const int p3 = (p2 >= 0) ? line.indexOf('\t', p2 + 1) : -1;
             const int p4 = (p3 >= 0) ? line.indexOf('\t', p3 + 1) : -1;
+            const int p5 = (p4 >= 0) ? line.indexOf('\t', p4 + 1) : -1;
             if (p1 <= 0 || p2 <= p1 || p3 <= p2 || p4 <= p3) continue;
             ChatMessage msg;
             msg.tsMs = static_cast<unsigned long>(strtoul(line.substring(0, p1).c_str(), nullptr, 10));
             msg.outgoing = line.substring(p1 + 1, p2) == "out";
             msg.transport = static_cast<ChatTransport>(atoi(line.substring(p2 + 1, p3).c_str()));
             msg.author = chatUnescapeLogField(line.substring(p3 + 1, p4));
-            msg.text = chatUnescapeLogField(line.substring(p4 + 1));
+            msg.text = chatUnescapeLogField((p5 > p4) ? line.substring(p4 + 1, p5) : line.substring(p4 + 1));
             if (msg.text.isEmpty()) continue;
             if (chatMessageCount < MAX_CHAT_MESSAGES) {
                 chatMessages[chatMessageCount++] = msg;
@@ -2429,6 +2687,7 @@ void loadP2pConfig()
         p2pPeers[i].ip.fromString(p2pPrefs.getString((String("peer_ip_") + i).c_str(), ""));
         p2pPeers[i].port = p2pPrefs.getUShort((String("peer_port_") + i).c_str(), P2P_UDP_PORT);
         p2pPeers[i].enabled = p2pPrefs.getBool((String("peer_en_") + i).c_str(), true);
+        p2pPeers[i].unread = false;
         p2pPeers[i].lastSeenMs = 0;
     }
     p2pPrefs.end();
@@ -2446,6 +2705,9 @@ void lvglMediaVolumeStepEvent(lv_event_t *e);
 void lvglHomeNavEvent(lv_event_t *e);
 void lvglRecoveryHintEvent(lv_event_t *e);
 void lvglWifiRescanEvent(lv_event_t *e);
+void lvglWifiDisconnectEvent(lv_event_t *e);
+void lvglWifiForgetEvent(lv_event_t *e);
+void lvglWifiApSaveEvent(lv_event_t *e);
 void lvglMediaRefreshEvent(lv_event_t *e);
 void lvglOpenSnakeEvent(lv_event_t *e);
 void lvglOpenTetrisEvent(lv_event_t *e);
@@ -2457,9 +2719,11 @@ void lvglAirplaneToggleEvent(lv_event_t *e);
 void lvglScreenshotEvent(lv_event_t *e);
 void lvglBrightnessEvent(lv_event_t *e);
 void lvglTextAreaFocusEvent(lv_event_t *e);
+void lvglWifiApShowToggleEvent(lv_event_t *e);
 void lvglWifiPwdCancelEvent(lv_event_t *e);
 void lvglWifiPwdConnectEvent(lv_event_t *e);
 void lvglWifiPwdShowToggleEvent(lv_event_t *e);
+void lvglMqttPassShowToggleEvent(lv_event_t *e);
 void lvglOpenWifiPasswordDialog(const String &ssid);
 void lvglMqttCountMinusEvent(lv_event_t *e);
 void lvglMqttCountPlusEvent(lv_event_t *e);
@@ -2711,9 +2975,11 @@ void lvglEnsureScreenBuilt(UiScreen screen)
                                 lvglSyncStatusLine();
                                 return;
                             }
-                            const bool sentLan = p2pSendChatMessage(text);
-                            const bool sentGlobal = mqttPublishChatMessage(text);
-                            chatStoreMessage(currentChatPeerKey, "Me", text, true, sentGlobal ? CHAT_TRANSPORT_MQTT : CHAT_TRANSPORT_WIFI);
+                            const String messageId = chatGenerateMessageId();
+                            chatQueueOutgoingMessage(currentChatPeerKey, deviceShortNameValue(), text, messageId);
+                            const bool sentLan = p2pSendChatMessageWithId(currentChatPeerKey, text, messageId);
+                            const bool sentGlobal = mqttPublishChatMessageWithId(currentChatPeerKey, text, messageId);
+                            chatStoreMessage(currentChatPeerKey, "Me", text, true, sentGlobal ? CHAT_TRANSPORT_MQTT : CHAT_TRANSPORT_WIFI, messageId);
                              lv_textarea_set_text(lvglChatInputTa, "");
                              if (lvglKb) {
                                  lv_keyboard_set_textarea(lvglKb, nullptr);
@@ -2769,21 +3035,11 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             break;
         }
         case UI_WIFI_LIST: {
-            lvglScrWifi = lvglCreateScreenBase("WiFi", true);
-            lv_obj_t *wifiOps = lv_obj_create(lvglScrWifi);
-            lv_obj_set_size(wifiOps, lv_pct(100), 50);
-            lv_obj_align(wifiOps, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
-            lv_obj_set_style_bg_opa(wifiOps, LV_OPA_TRANSP, 0);
-            lv_obj_set_style_border_width(wifiOps, 0, 0);
-            lv_obj_set_style_pad_all(wifiOps, 8, 0);
-            lv_obj_set_style_pad_column(wifiOps, 8, 0);
-            lv_obj_set_flex_flow(wifiOps, LV_FLEX_FLOW_ROW);
-            lv_obj_set_scrollbar_mode(wifiOps, LV_SCROLLBAR_MODE_OFF);
-            lvglCreateMenuButton(wifiOps, "Rescan", lv_color_hex(0x2F6D86), lvglWifiRescanEvent, nullptr);
+            lvglScrWifi = lvglCreateScreenBase("WiFi Config", true);
             lvglWifiList = lv_obj_create(lvglScrWifi);
             lv_obj_set_size(lvglWifiList, lv_pct(100), UI_CONTENT_H);
-            lv_obj_align(lvglWifiList, LV_ALIGN_BOTTOM_MID, 0, 0);
-            lv_obj_set_style_bg_color(lvglWifiList, lv_color_hex(0x111922), 0);
+            lv_obj_align(lvglWifiList, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
+            lv_obj_set_style_bg_opa(lvglWifiList, LV_OPA_TRANSP, 0);
             lv_obj_set_style_border_width(lvglWifiList, 0, 0);
             lv_obj_set_style_pad_all(lvglWifiList, 8, 0);
             lv_obj_set_style_pad_row(lvglWifiList, 6, 0);
@@ -2935,7 +3191,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_style_pad_row(lvglConfigWrap, 10, 0);
             lv_obj_set_flex_flow(lvglConfigWrap, LV_FLEX_FLOW_COLUMN);
             lv_obj_set_scrollbar_mode(lvglConfigWrap, LV_SCROLLBAR_MODE_OFF);
-            lvglCreateMenuButton(lvglConfigWrap, "WiFi", lv_color_hex(0x3A8F4B), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_WIFI_LIST)));
+            lvglCreateMenuButton(lvglConfigWrap, "WiFi Config", lv_color_hex(0x3A8F4B), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_WIFI_LIST)));
             lvglAirplaneBtn = lvglCreateMenuButton(lvglConfigWrap, "Airplane: OFF", lv_color_hex(0x8A5A25), lvglAirplaneToggleEvent, nullptr);
             if (lvglAirplaneBtn) lvglAirplaneBtnLabel = lv_obj_get_child(lvglAirplaneBtn, 0);
             lvglCreateMenuButton(lvglConfigWrap, "Style", lv_color_hex(0x2D6D8E), lvglStyleHintEvent, nullptr);
@@ -3013,6 +3269,8 @@ void lvglEnsureScreenBuilt(UiScreen screen)
         }
         case UI_CONFIG_MQTT_CONFIG: {
             lvglScrMqttCfg = lvglCreateScreenBase("MQTT Config", false);
+            lvglMqttPassShowBtnLabel = nullptr;
+            lvglMqttPassShowBtn = nullptr;
             lv_obj_t *mqWrap = lv_obj_create(lvglScrMqttCfg);
             lv_obj_set_size(mqWrap, lv_pct(100), UI_CONTENT_H);
             lv_obj_align(mqWrap, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
@@ -3045,7 +3303,36 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglMqttBrokerTa = addTa("Broker", false, false);
             lvglMqttPortTa = addTa("Port", false, true);
             lvglMqttUserTa = addTa("Username", false, false);
-            lvglMqttPassTa = addTa("Password", true, false);
+
+            lv_obj_t *mqttPwdRow = lv_obj_create(mqWrap);
+            lv_obj_set_size(mqttPwdRow, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(mqttPwdRow, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(mqttPwdRow, 0, 0);
+            lv_obj_set_style_pad_all(mqttPwdRow, 0, 0);
+            lv_obj_set_style_pad_column(mqttPwdRow, 6, 0);
+            lv_obj_set_flex_flow(mqttPwdRow, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(mqttPwdRow, LV_OBJ_FLAG_SCROLLABLE);
+
+            lvglMqttPassTa = lv_textarea_create(mqttPwdRow);
+            lv_obj_set_width(lvglMqttPassTa, lv_pct(100));
+            lv_obj_set_flex_grow(lvglMqttPassTa, 1);
+            lv_textarea_set_one_line(lvglMqttPassTa, true);
+            lv_textarea_set_placeholder_text(lvglMqttPassTa, "Password");
+            lv_textarea_set_password_mode(lvglMqttPassTa, true);
+            lv_obj_add_event_cb(lvglMqttPassTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
+
+            lvglMqttPassShowBtn = lv_btn_create(mqttPwdRow);
+            lv_obj_set_size(lvglMqttPassShowBtn, 34, 34);
+            lv_obj_set_style_radius(lvglMqttPassShowBtn, 8, 0);
+            lv_obj_set_style_border_width(lvglMqttPassShowBtn, 0, 0);
+            lv_obj_set_style_bg_color(lvglMqttPassShowBtn, lv_color_hex(0x3F4A57), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_color(lvglMqttPassShowBtn, lv_color_hex(0x526274), LV_PART_MAIN | LV_STATE_PRESSED);
+            lv_obj_set_style_shadow_width(lvglMqttPassShowBtn, 0, 0);
+            lv_obj_add_event_cb(lvglMqttPassShowBtn, lvglMqttPassShowToggleEvent, LV_EVENT_CLICKED, nullptr);
+            lvglMqttPassShowBtnLabel = lv_label_create(lvglMqttPassShowBtn);
+            lv_label_set_text(lvglMqttPassShowBtnLabel, LV_SYMBOL_EYE_CLOSE);
+            lv_obj_center(lvglMqttPassShowBtnLabel);
+
             lvglMqttDiscTa = addTa("Discovery prefix", false, false);
             lvglMqttChatTa = addTa("Chat room", false, false);
             lv_obj_t *countRow = lv_obj_create(mqWrap);
@@ -3184,7 +3471,6 @@ void lvglOpenScreen(UiScreen screen, lv_scr_load_anim_t anim)
     uiScreen = screen;
     if (prevScreen == UI_CHAT && screen != UI_CHAT) chatClearCache();
     if (screen == UI_WIFI_LIST) {
-        refreshWifiScan();
         lvglRefreshWifiList();
     } else if (screen == UI_CHAT) {
         currentChatPeerKey = "";
@@ -3201,6 +3487,7 @@ void lvglOpenScreen(UiScreen screen, lv_scr_load_anim_t anim)
     } else if (screen == UI_CONFIG) {
         lvglRefreshConfigUi();
     }
+    lvglRefreshTopIndicators();
     lvglLoadScreen(target, anim);
 }
 
@@ -3273,6 +3560,63 @@ void lvglWifiRescanEvent(lv_event_t *e)
 {
     (void)e;
     refreshWifiScan();
+    lvglRefreshWifiList();
+}
+
+void lvglWifiDisconnectEvent(lv_event_t *e)
+{
+    (void)e;
+    pendingSaveCreds = false;
+    pendingSaveSsid = "";
+    pendingSavePass = "";
+    WiFi.disconnect(false, false);
+    ensureApOnline("manual_disconnect");
+    uiStatusLine = "WiFi disconnected";
+    lvglSyncStatusLine();
+    lvglRefreshWifiList();
+}
+
+void lvglWifiForgetEvent(lv_event_t *e)
+{
+    (void)e;
+    pendingSaveCreds = false;
+    pendingSaveSsid = "";
+    pendingSavePass = "";
+    saveStaCreds("", "");
+    WiFi.disconnect(false, false);
+    ensureApOnline("manual_forget");
+    uiStatusLine = "Saved WiFi forgotten";
+    lvglSyncStatusLine();
+    lvglRefreshWifiList();
+}
+
+void lvglWifiApSaveEvent(lv_event_t *e)
+{
+    (void)e;
+    if (!lvglWifiApSsidTa || !lvglWifiApPassTa) return;
+    String nextSsid = lv_textarea_get_text(lvglWifiApSsidTa);
+    String nextPass = lv_textarea_get_text(lvglWifiApPassTa);
+    nextSsid.trim();
+    nextPass.trim();
+    if (nextSsid.isEmpty()) {
+        uiStatusLine = "AP name cannot be empty";
+        lvglSyncStatusLine();
+        return;
+    }
+    if (!nextPass.isEmpty() && nextPass.length() < 8) {
+        uiStatusLine = "AP password must be 8+ chars";
+        lvglSyncStatusLine();
+        return;
+    }
+    saveApCreds(nextSsid, nextPass);
+    if (apModeActive) {
+        stopDnsForAp();
+        WiFi.softAPdisconnect(true);
+        apModeActive = false;
+    }
+    ensureApOnline("ap_config_saved");
+    uiStatusLine = "AP config saved";
+    lvglSyncStatusLine();
     lvglRefreshWifiList();
 }
 
@@ -3690,18 +4034,13 @@ void lvglRefreshChatContactsUi()
         lv_obj_set_style_bg_color(b, col, LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_bg_color(b, col, LV_PART_MAIN | LV_STATE_PRESSED);
         lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, ud);
-        lv_obj_t *l = lv_label_create(b);
-        if (l) {
-            lv_label_set_text(l, txt);
-            lv_obj_center(l);
-        }
         return b;
     };
 
     for (int i = 0; i < p2pPeerCount; ++i) {
         if (!p2pPeers[i].enabled) continue;
         lv_color_t col = p2pPeers[i].pubKeyHex == currentChatPeerKey ? lv_color_hex(0x3A7A3A) : lv_color_hex(0x2F6D86);
-        makeContactBtn(
+        lv_obj_t *btn = makeContactBtn(
             lvglChatContacts,
             p2pPeers[i].name.isEmpty() ? "Peer" : p2pPeers[i].name.c_str(),
             col,
@@ -3709,12 +4048,33 @@ void lvglRefreshChatContactsUi()
                 const int idx = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
                 if (idx < 0 || idx >= p2pPeerCount) return;
                 currentChatPeerKey = p2pPeers[idx].pubKeyHex;
+                chatSetPeerUnread(currentChatPeerKey, false);
                 chatReloadRecentMessagesFromSd(currentChatPeerKey);
                 lvglRefreshChatLayout();
                 lvglRefreshChatContactsUi();
                 lvglRefreshChatUi();
+                lvglRefreshTopIndicators();
             },
             reinterpret_cast<void *>(static_cast<intptr_t>(i)));
+        if (!btn) continue;
+
+        lv_obj_t *nameLabel = lv_label_create(btn);
+        if (nameLabel) {
+            lv_label_set_text(nameLabel, p2pPeers[i].name.isEmpty() ? "Peer" : p2pPeers[i].name.c_str());
+            lv_obj_align(nameLabel, LV_ALIGN_LEFT_MID, 10, 0);
+        }
+
+        if (p2pPeers[i].unread) {
+            lv_obj_t *dot = lv_obj_create(btn);
+            if (dot) {
+                lv_obj_set_size(dot, 10, 10);
+                lv_obj_align(dot, LV_ALIGN_RIGHT_MID, -10, 0);
+                lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+                lv_obj_set_style_bg_color(dot, lv_color_hex(0x66DD77), 0);
+                lv_obj_set_style_border_width(dot, 0, 0);
+                lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+            }
+        }
     }
 }
 
@@ -4025,17 +4385,41 @@ static bool p2pSendPacketToPeer(const P2PPeer &peer, uint8_t type, const uint8_t
     return p2pUdp.endPacket() == 1;
 }
 
-bool p2pSendChatMessage(const String &text)
+bool p2pSendChatMessageWithId(const String &peerKey, const String &text, const String &messageId)
 {
     if (!p2pReady) return false;
-    if (text.isEmpty()) return false;
-    const int peerIdx = p2pFindPeerByPubKeyHex(currentChatPeerKey);
+    if (peerKey.isEmpty() || text.isEmpty() || messageId.isEmpty()) return false;
+    const int peerIdx = p2pFindPeerByPubKeyHex(peerKey);
     if (peerIdx < 0 || !p2pPeers[peerIdx].enabled || p2pPeers[peerIdx].ip == IPAddress((uint32_t)0)) return false;
 
     JsonDocument doc;
     doc["kind"] = "chat";
+    doc["id"] = messageId;
     doc["author"] = deviceShortNameValue();
     doc["text"] = text.substring(0, P2P_MAX_CHAT_TEXT);
+    char plain[P2P_MAX_PACKET] = {0};
+    const size_t plainLen = serializeJson(doc, plain, sizeof(plain));
+    if (plainLen == 0) return false;
+
+    return p2pSendPacketToPeer(p2pPeers[peerIdx], P2P_PKT_TYPE_CHAT, reinterpret_cast<const uint8_t *>(plain), plainLen);
+}
+
+bool p2pSendChatMessage(const String &text)
+{
+    if (currentChatPeerKey.isEmpty()) return false;
+    const String messageId = chatGenerateMessageId();
+    return p2pSendChatMessageWithId(currentChatPeerKey, text, messageId);
+}
+
+bool p2pSendChatAck(const String &peerKey, const String &messageId)
+{
+    if (!p2pReady || peerKey.isEmpty() || messageId.isEmpty()) return false;
+    const int peerIdx = p2pFindPeerByPubKeyHex(peerKey);
+    if (peerIdx < 0 || !p2pPeers[peerIdx].enabled || p2pPeers[peerIdx].ip == IPAddress((uint32_t)0)) return false;
+
+    JsonDocument doc;
+    doc["kind"] = "ack";
+    doc["ack_id"] = messageId;
     char plain[P2P_MAX_PACKET] = {0};
     const size_t plainLen = serializeJson(doc, plain, sizeof(plain));
     if (plainLen == 0) return false;
@@ -4097,6 +4481,7 @@ bool p2pAddOrUpdateTrustedPeer(const String &name, const String &pubKeyHex, cons
     p2pPeers[idx].ip = ip;
     p2pPeers[idx].port = (port == 0) ? P2P_UDP_PORT : port;
     p2pPeers[idx].enabled = true;
+    p2pPeers[idx].unread = false;
     p2pPeers[idx].lastSeenMs = millis();
     saveP2pConfig();
     p2pTouchDiscoveredSeen(name, pubKeyHex, ip, port);
@@ -4164,17 +4549,24 @@ void p2pService()
                                     const String kind = String(static_cast<const char *>(doc["kind"] | ""));
                                     const String author = String(static_cast<const char *>(doc["author"] | p2pPeers[peerIdx].name.c_str()));
                                     if (kind == "chat") {
+                                        const String messageId = String(static_cast<const char *>(doc["id"] | ""));
                                         const String text = String(static_cast<const char *>(doc["text"] | ""));
                                         if (!text.isEmpty()) {
                                             p2pRefreshTrustedPeerIdentity(p2pPeers[peerIdx].pubKeyHex, author, p2pUdp.remoteIP(), p2pUdp.remotePort());
                                             p2pTouchPeerSeen(peerIdx, p2pUdp.remoteIP(), p2pUdp.remotePort());
-                                            chatStoreMessage(p2pPeers[peerIdx].pubKeyHex, author, text, false, CHAT_TRANSPORT_WIFI);
-                                            uiStatusLine = "Chat received from " + author;
-                                            if (lvglReady) {
-                                                lvglSyncStatusLine();
-                                                if (uiScreen == UI_CHAT) lvglRefreshChatUi();
+                                            if (messageId.isEmpty() || !chatHasLoggedMessageId(p2pPeers[peerIdx].pubKeyHex, messageId)) {
+                                                chatStoreMessage(p2pPeers[peerIdx].pubKeyHex, author, text, false, CHAT_TRANSPORT_WIFI, messageId);
+                                                uiStatusLine = "Chat received from " + author;
+                                                if (lvglReady) {
+                                                    lvglSyncStatusLine();
+                                                    if (uiScreen == UI_CHAT) lvglRefreshChatUi();
+                                                }
                                             }
+                                            if (!messageId.isEmpty()) p2pSendChatAck(p2pPeers[peerIdx].pubKeyHex, messageId);
                                         }
+                                    } else if (kind == "ack") {
+                                        const String ackId = String(static_cast<const char *>(doc["ack_id"] | ""));
+                                        if (!ackId.isEmpty()) chatAckOutgoingMessage(p2pPeers[peerIdx].pubKeyHex, ackId);
                                     } else if (kind == "delete_conversation") {
                                         p2pRefreshTrustedPeerIdentity(p2pPeers[peerIdx].pubKeyHex, author, p2pUdp.remoteIP(), p2pUdp.remotePort());
                                         p2pTouchPeerSeen(peerIdx, p2pUdp.remoteIP(), p2pUdp.remotePort());
@@ -4228,7 +4620,7 @@ void lvglRefreshInfoPanel()
     if (lvglInfoWifiValueLabel) lv_label_set_text_fmt(lvglInfoWifiValueLabel, connected ? "%u%%" : "Offline", wifiQuality);
     if (lvglInfoWifiSubLabel) {
         if (connected) lv_label_set_text_fmt(lvglInfoWifiSubLabel, "%s  |  %s  |  %ddBm", ssid.c_str(), ip.c_str(), rssi);
-        else lv_label_set_text_fmt(lvglInfoWifiSubLabel, "AP %s  |  Touch to Config > WiFi to connect", AP_SSID);
+        else lv_label_set_text_fmt(lvglInfoWifiSubLabel, "AP %s  |  Touch to Config > WiFi Config to connect", savedApSsid.c_str());
     }
 
     if (lvglInfoLightValueLabel) lv_label_set_text_fmt(lvglInfoLightValueLabel, "%u%%", lightPercent);
@@ -4288,6 +4680,72 @@ void lvglRefreshWifiList()
     if (!lvglWifiList) return;
     lv_obj_clean(lvglWifiList);
     lvglWifiScanLabel = nullptr;
+    lvglWifiApSsidTa = nullptr;
+    lvglWifiApPassTa = nullptr;
+    lvglWifiApPassShowBtnLabel = nullptr;
+    lvglWifiApPassShowBtn = nullptr;
+
+    auto makeCard = [&](const char *title) -> lv_obj_t * {
+        lv_obj_t *card = lv_obj_create(lvglWifiList);
+        if (!card) return nullptr;
+        lv_obj_set_width(card, lv_pct(100));
+        lv_obj_set_height(card, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_color(card, lv_color_hex(0x16212C), 0);
+        lv_obj_set_style_border_width(card, 0, 0);
+        lv_obj_set_style_radius(card, 12, 0);
+        lv_obj_set_style_pad_all(card, 8, 0);
+        lv_obj_set_style_pad_row(card, 6, 0);
+        lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+        lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_t *lbl = lv_label_create(card);
+        if (lbl) {
+            lv_label_set_text(lbl, title);
+            lv_obj_set_style_text_color(lbl, lv_color_hex(0xE5ECF3), 0);
+        }
+        return card;
+    };
+
+    auto makeBtn = [](lv_obj_t *parent, const char *txt, int32_t w, int32_t h, lv_color_t col, lv_event_cb_t cb, void *ud = nullptr) -> lv_obj_t * {
+        lv_obj_t *btn = lv_btn_create(parent);
+        if (!btn) return nullptr;
+        lv_obj_set_size(btn, w, h);
+        lv_obj_set_style_radius(btn, 8, 0);
+        lv_obj_set_style_border_width(btn, 0, 0);
+        lv_obj_set_style_bg_color(btn, col, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(btn, col, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, ud);
+        lv_obj_t *lbl = lv_label_create(btn);
+        if (lbl) {
+            lv_label_set_text(lbl, txt);
+            lv_obj_center(lbl);
+        }
+        return btn;
+    };
+
+    lv_obj_t *staCard = makeCard("WiFi Config");
+    if (staCard) {
+        lv_obj_t *info = lv_label_create(staCard);
+        lv_obj_set_width(info, lv_pct(100));
+        lv_label_set_long_mode(info, LV_LABEL_LONG_WRAP);
+        String staLine = savedStaSsid.isEmpty() ? String("Saved network: none") : ("Saved network: " + savedStaSsid);
+        if (wifiConnectedSafe()) staLine += "\nConnected: " + wifiSsidSafe() + "  |  " + wifiIpSafe();
+        else staLine += "\nStatus: disconnected";
+        lv_label_set_text(info, staLine.c_str());
+        lv_obj_set_style_text_color(info, lv_color_hex(0xB7C4D1), 0);
+
+        lv_obj_t *row = lv_obj_create(staCard);
+        lv_obj_set_size(row, lv_pct(100), 34);
+        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_set_style_pad_column(row, 6, 0);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        makeBtn(row, "Disconnect", 82, 28, lv_color_hex(0x2F6D86), lvglWifiDisconnectEvent);
+        makeBtn(row, "Forget", 64, 28, lv_color_hex(0x8A3A3A), lvglWifiForgetEvent);
+    }
+
+    makeBtn(lvglWifiList, "Scan", 92, 30, lv_color_hex(0x2F6D86), lvglWifiRescanEvent);
 
     if (wifiScanInProgress) {
         lvglWifiScanLabel = lv_label_create(lvglWifiList);
@@ -4297,24 +4755,75 @@ void lvglRefreshWifiList()
             lv_obj_set_style_text_align(lvglWifiScanLabel, LV_TEXT_ALIGN_CENTER, 0);
             lv_obj_set_style_text_color(lvglWifiScanLabel, lv_color_hex(0xC8CED6), 0);
         }
-        return;
+    } else if (wifiCount > 0) {
+        lv_obj_t *sec = lv_label_create(lvglWifiList);
+        lv_label_set_text(sec, "Discovered Networks");
+        lv_obj_set_style_text_color(sec, lv_color_hex(0xE5ECF3), 0);
+        for (int i = 0; i < wifiCount; i++) {
+            char line[96];
+            snprintf(line, sizeof(line), "%s (%ddBm) [%s]", wifiEntries[i].ssid.c_str(), static_cast<int>(wifiEntries[i].rssi), authName(wifiEntries[i].auth));
+            lvglCreateMenuButton(
+                lvglWifiList,
+                line,
+                (wifiEntries[i].auth == WIFI_AUTH_OPEN) ? lv_color_hex(0x357A38) : lv_color_hex(0x375A7A),
+                lvglWifiEntryEvent,
+                reinterpret_cast<void *>(static_cast<intptr_t>(i))
+            );
+        }
+    } else {
+        lv_obj_t *lbl = lv_label_create(lvglWifiList);
+        lv_label_set_text(lbl, "No scan started yet. Tap Scan.");
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0xC8CED6), 0);
     }
 
-    for (int i = 0; i < wifiCount; i++) {
-        char line[96];
-        snprintf(line, sizeof(line), "%s (%ddBm) [%s]", wifiEntries[i].ssid.c_str(), static_cast<int>(wifiEntries[i].rssi), authName(wifiEntries[i].auth));
-        lvglCreateMenuButton(
-            lvglWifiList,
-            line,
-            (wifiEntries[i].auth == WIFI_AUTH_OPEN) ? lv_color_hex(0x357A38) : lv_color_hex(0x375A7A),
-            lvglWifiEntryEvent,
-            reinterpret_cast<void *>(static_cast<intptr_t>(i))
-        );
-    }
-    if (wifiCount == 0) {
-        lv_obj_t *lbl = lv_label_create(lvglWifiList);
-        lv_label_set_text(lbl, "No access points found. Tap Rescan.");
-        lv_obj_set_style_text_color(lbl, lv_color_hex(0xC8CED6), 0);
+    lv_obj_t *apCard = makeCard("AP Config");
+    if (apCard) {
+        lv_obj_t *hint = lv_label_create(apCard);
+        lv_obj_set_width(hint, lv_pct(100));
+        lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+        lv_label_set_text_fmt(hint, "Current AP: %s", savedApSsid.c_str());
+        lv_obj_set_style_text_color(hint, lv_color_hex(0xB7C4D1), 0);
+
+        auto addTa = [&](lv_obj_t *parent, const char *ph, const char *value, bool pass) -> lv_obj_t * {
+            lv_obj_t *ta = lv_textarea_create(parent ? parent : apCard);
+            lv_obj_set_width(ta, lv_pct(100));
+            lv_textarea_set_one_line(ta, true);
+            lv_textarea_set_placeholder_text(ta, ph);
+            lv_textarea_set_password_mode(ta, pass);
+            lv_textarea_set_text(ta, value ? value : "");
+            lv_obj_add_event_cb(ta, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
+            return ta;
+        };
+
+        lvglWifiApSsidTa = addTa(apCard, "AP name", savedApSsid.c_str(), false);
+
+        lv_obj_t *pwdRow = lv_obj_create(apCard);
+        lv_obj_set_size(pwdRow, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(pwdRow, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(pwdRow, 0, 0);
+        lv_obj_set_style_pad_all(pwdRow, 0, 0);
+        lv_obj_set_style_pad_column(pwdRow, 6, 0);
+        lv_obj_set_flex_flow(pwdRow, LV_FLEX_FLOW_ROW);
+        lv_obj_clear_flag(pwdRow, LV_OBJ_FLAG_SCROLLABLE);
+
+        lvglWifiApPassTa = addTa(pwdRow, "AP password", savedApPass.c_str(), true);
+        lv_obj_set_width(lvglWifiApPassTa, lv_pct(100));
+        lv_obj_set_flex_grow(lvglWifiApPassTa, 1);
+        lv_obj_set_height(lvglWifiApPassTa, 38);
+
+        lvglWifiApPassShowBtn = lv_btn_create(pwdRow);
+        lv_obj_set_size(lvglWifiApPassShowBtn, 34, 34);
+        lv_obj_set_style_radius(lvglWifiApPassShowBtn, 8, 0);
+        lv_obj_set_style_border_width(lvglWifiApPassShowBtn, 0, 0);
+        lv_obj_set_style_bg_color(lvglWifiApPassShowBtn, lv_color_hex(0x3F4A57), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(lvglWifiApPassShowBtn, lv_color_hex(0x526274), LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_shadow_width(lvglWifiApPassShowBtn, 0, 0);
+        lv_obj_add_event_cb(lvglWifiApPassShowBtn, lvglWifiApShowToggleEvent, LV_EVENT_CLICKED, nullptr);
+        lvglWifiApPassShowBtnLabel = lv_label_create(lvglWifiApPassShowBtn);
+        lv_label_set_text(lvglWifiApPassShowBtnLabel, LV_SYMBOL_EYE_CLOSE);
+        lv_obj_center(lvglWifiApPassShowBtnLabel);
+
+        makeBtn(apCard, "Save AP Config", 120, 30, lv_color_hex(0x3A7A3A), lvglWifiApSaveEvent);
     }
 }
 
@@ -4385,6 +4894,19 @@ void lvglStatusPush(const String &line)
     if (lvglMqttStatusLabel) lv_label_set_text_fmt(lvglMqttStatusLabel, "MQTT: %s", mqttStatusLine.c_str());
 }
 
+void lvglHideKeyboard()
+{
+    if (lvglKb) {
+        lv_keyboard_set_textarea(lvglKb, nullptr);
+        lv_obj_add_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
+    }
+    lvglKeyboardShiftOneShot = false;
+    lvglKeyboardShiftLocked = false;
+    lvglKeyboardShiftLastPressMs = 0;
+    lvglSetChatKeyboardVisible(false);
+    lvglSetConfigKeyboardVisible(false);
+}
+
 void lvglTextAreaFocusEvent(lv_event_t *e)
 {
     lv_obj_t *ta = lv_event_get_target(e);
@@ -4401,25 +4923,40 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
                 if (code == LV_EVENT_VALUE_CHANGED && lvglKb) {
                     const uint16_t btn = lv_btnmatrix_get_selected_btn(lvglKb);
                     const char *txt = lv_btnmatrix_get_btn_text(lvglKb, btn);
-                    const lv_keyboard_mode_t mode = lv_keyboard_get_mode(lvglKb);
-                    const bool isShiftKey = txt && ((strcmp(txt, "ABC") == 0) || (strcmp(txt, "Abc") == 0) || (strcmp(txt, "abc") == 0));
-                    if (isShiftKey && mode == LV_KEYBOARD_MODE_TEXT_LOWER) {
+                    const bool isShiftKey = txt &&
+                                            ((strcmp(txt, "ABC") == 0) ||
+                                             (strcmp(txt, "Abc") == 0) ||
+                                             (strcmp(txt, "abc") == 0) ||
+                                             (strcmp(txt, LV_SYMBOL_UP) == 0));
+                    if (isShiftKey) {
                         const unsigned long now = millis();
                         const bool doubleTap = (now - lvglKeyboardShiftLastPressMs) <= 450UL;
+                        if (lvglKeyboardShiftLocked) {
+                            lvglKeyboardShiftLocked = false;
+                            lvglKeyboardShiftOneShot = false;
+                            lvglKeyboardShiftLastPressMs = 0;
+                            lv_keyboard_set_mode(lvglKb, LV_KEYBOARD_MODE_TEXT_LOWER);
+                            return;
+                        }
+                        if (doubleTap) {
+                            lvglKeyboardShiftLocked = true;
+                            lvglKeyboardShiftOneShot = false;
+                            lvglKeyboardShiftLastPressMs = 0;
+                            lv_keyboard_set_mode(lvglKb, LV_KEYBOARD_MODE_TEXT_UPPER);
+                            return;
+                        }
+                        lvglKeyboardShiftLocked = false;
+                        lvglKeyboardShiftOneShot = true;
                         lvglKeyboardShiftLastPressMs = now;
-                        lvglKeyboardShiftOneShot = !doubleTap;
                         lv_keyboard_set_mode(lvglKb, LV_KEYBOARD_MODE_TEXT_UPPER);
-                        return;
-                    }
-                    if (isShiftKey && mode == LV_KEYBOARD_MODE_TEXT_UPPER) {
-                        lvglKeyboardShiftOneShot = false;
-                        lv_keyboard_set_mode(lvglKb, LV_KEYBOARD_MODE_TEXT_LOWER);
                         return;
                     }
                     if (lvglKeyboardShiftOneShot && txt && strlen(txt) == 1) {
                         const char c = txt[0];
                         if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
                             lvglKeyboardShiftOneShot = false;
+                            lvglKeyboardShiftLocked = false;
+                            lvglKeyboardShiftLastPressMs = 0;
                             lv_keyboard_set_mode(lvglKb, LV_KEYBOARD_MODE_TEXT_LOWER);
                         }
                     }
@@ -4441,9 +4978,11 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
                             lvglSyncStatusLine();
                             return;
                         }
-                        const bool sentLan = p2pSendChatMessage(text);
-                        const bool sentGlobal = mqttPublishChatMessage(text);
-                        chatStoreMessage(currentChatPeerKey, "Me", text, true, sentGlobal ? CHAT_TRANSPORT_MQTT : CHAT_TRANSPORT_WIFI);
+                        const String messageId = chatGenerateMessageId();
+                        chatQueueOutgoingMessage(currentChatPeerKey, deviceShortNameValue(), text, messageId);
+                        const bool sentLan = p2pSendChatMessageWithId(currentChatPeerKey, text, messageId);
+                        const bool sentGlobal = mqttPublishChatMessageWithId(currentChatPeerKey, text, messageId);
+                        chatStoreMessage(currentChatPeerKey, "Me", text, true, sentGlobal ? CHAT_TRANSPORT_MQTT : CHAT_TRANSPORT_WIFI, messageId);
                         lv_textarea_set_text(lvglChatInputTa, "");
                         lvglSetChatKeyboardVisible(false);
                         uiStatusLine = sentGlobal ? "Chat sent globally" : (sentLan ? "Chat sent to peers" : "Chat saved locally");
@@ -4451,19 +4990,16 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
                         lvglRefreshChatUi();
                     }
                 }
-                if (lvglKb) {
-                    lv_keyboard_set_textarea(lvglKb, nullptr);
-                    lv_obj_add_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
-                }
-                lvglKeyboardShiftOneShot = false;
-                lvglSetChatKeyboardVisible(false);
-                lvglSetConfigKeyboardVisible(false);
+                lvglHideKeyboard();
             },
             LV_EVENT_ALL,
             nullptr
         );
     }
     lvglKeyboardShiftOneShot = false;
+    lvglKeyboardShiftLocked = false;
+    lvglKeyboardShiftLastPressMs = 0;
+    lv_keyboard_set_mode(lvglKb, LV_KEYBOARD_MODE_TEXT_LOWER);
     lv_keyboard_set_textarea(lvglKb, ta);
     lv_obj_clear_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
     if (ta == lvglChatInputTa) lvglSetChatKeyboardVisible(true);
@@ -4473,10 +5009,7 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
 void lvglWifiPwdCancelEvent(lv_event_t *e)
 {
     (void)e;
-    if (lvglKb) {
-        lv_keyboard_set_textarea(lvglKb, nullptr);
-        lv_obj_add_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
-    }
+    lvglHideKeyboard();
     if (lvglWifiPwdModal) lv_obj_add_flag(lvglWifiPwdModal, LV_OBJ_FLAG_HIDDEN);
     lvglWifiPwdConnectPending = false;
     lvglWifiPendingSsid = "";
@@ -4494,6 +5027,15 @@ void lvglWifiPwdConnectEvent(lv_event_t *e)
     lvglSyncStatusLine();
 }
 
+void lvglWifiApShowToggleEvent(lv_event_t *e)
+{
+    lv_obj_t *btn = lv_event_get_target(e);
+    if (!btn || !lvglWifiApPassTa) return;
+    const bool makeVisible = lv_textarea_get_password_mode(lvglWifiApPassTa);
+    lv_textarea_set_password_mode(lvglWifiApPassTa, makeVisible ? false : true);
+    if (lvglWifiApPassShowBtnLabel) lv_label_set_text(lvglWifiApPassShowBtnLabel, makeVisible ? LV_SYMBOL_EYE_OPEN : LV_SYMBOL_EYE_CLOSE);
+}
+
 void lvglWifiPwdShowToggleEvent(lv_event_t *e)
 {
     lv_obj_t *btn = lv_event_get_target(e);
@@ -4501,6 +5043,15 @@ void lvglWifiPwdShowToggleEvent(lv_event_t *e)
     const bool makeVisible = lv_textarea_get_password_mode(lvglWifiPwdTa);
     lv_textarea_set_password_mode(lvglWifiPwdTa, makeVisible ? false : true);
     if (lvglWifiPwdShowBtnLabel) lv_label_set_text(lvglWifiPwdShowBtnLabel, makeVisible ? LV_SYMBOL_EYE_OPEN : LV_SYMBOL_EYE_CLOSE);
+}
+
+void lvglMqttPassShowToggleEvent(lv_event_t *e)
+{
+    lv_obj_t *btn = lv_event_get_target(e);
+    if (!btn || !lvglMqttPassTa) return;
+    const bool makeVisible = lv_textarea_get_password_mode(lvglMqttPassTa);
+    lv_textarea_set_password_mode(lvglMqttPassTa, makeVisible ? false : true);
+    if (lvglMqttPassShowBtnLabel) lv_label_set_text(lvglMqttPassShowBtnLabel, makeVisible ? LV_SYMBOL_EYE_OPEN : LV_SYMBOL_EYE_CLOSE);
 }
 
 void lvglOpenWifiPasswordDialog(const String &ssid)
@@ -5152,7 +5703,8 @@ void lvglService()
     if (!lvglReady) return;
     if (lvglSwipeBackPending) {
         lvglSwipeBackPending = false;
-        lvglNavigateBackBySwipe();
+        if (lvglKb && !lv_obj_has_flag(lvglKb, LV_OBJ_FLAG_HIDDEN)) lvglHideKeyboard();
+        else lvglNavigateBackBySwipe();
     }
     if (lvglMediaRefreshPending) {
         lvglMediaRefreshPending = false;
@@ -5366,7 +5918,7 @@ uint16_t scaleColor565(uint16_t color, uint8_t level)
     return static_cast<uint16_t>((r << 11) | (g << 5) | b);
 }
 
-void animateChargingBeforeSleep()
+bool animateChargingBeforeSleep()
 {
     displayBacklightSet(TFT_BL_LEVEL_ON);
     const int16_t w = min<int16_t>(220, max<int16_t>(140, DISPLAY_WIDTH - 90));
@@ -5379,15 +5931,30 @@ void animateChargingBeforeSleep()
     drawChargingCableDecor(x, y, w, h, TFT_DARKGREY);
     tft.setTextColor(TFT_GREEN, TFT_BLACK);
     tft.drawCentreString("Charging", DISPLAY_CENTER_X, titleY, 4);
+
+    auto interruptedByTouch = [&]() -> bool {
+        int16_t tx = 0;
+        int16_t ty = 0;
+        if (!readScreenTouch(tx, ty)) return false;
+        lastUserActivityMs = millis();
+        displaySetAwake(true);
+        return true;
+    };
+
     for (uint8_t cycle = 0; cycle < CHARGE_ANIM_CYCLES; cycle++) {
         for (int p = 0; p <= 100; p += 3) {
+            if (interruptedByTouch()) return false;
             tft.fillRect(x + 2, y + 2, w - 4, h - 4, TFT_BLACK);
             int innerW = ((w - 4) * p) / 100;
             tft.fillRoundRect(x + 2, y + 2, innerW, h - 4, 5, TFT_GREEN);
             drawChargingCableDecor(x, y, w, h, scaleColor565(TFT_GREEN, 180));
-            delay(55);
+            for (uint8_t waitStep = 0; waitStep < 11; ++waitStep) {
+                if (interruptedByTouch()) return false;
+                delay(5);
+            }
         }
     }
+    return true;
 }
 
 void displayBacklightInit()
@@ -6425,7 +6992,10 @@ void loadSavedStaCreds()
     wifiPrefs.begin("wifi", true);
     savedStaSsid = wifiPrefs.getString("sta_ssid", "");
     savedStaPass = wifiPrefs.getString("sta_pass", "");
+    savedApSsid = wifiPrefs.getString("ap_ssid", AP_SSID);
+    savedApPass = wifiPrefs.getString("ap_pass", AP_PASS);
     wifiPrefs.end();
+    if (savedApSsid.isEmpty()) savedApSsid = AP_SSID;
 }
 
 bool loadBatterySnapshot(float &vbatOut)
@@ -6455,6 +7025,16 @@ void saveStaCreds(const String &ssid, const String &pass)
     wifiPrefs.end();
     savedStaSsid = ssid;
     savedStaPass = pass;
+}
+
+void saveApCreds(const String &ssid, const String &pass)
+{
+    wifiPrefs.begin("wifi", false);
+    wifiPrefs.putString("ap_ssid", ssid);
+    wifiPrefs.putString("ap_pass", pass);
+    wifiPrefs.end();
+    savedApSsid = ssid;
+    savedApPass = pass;
 }
 
 static bool parseIntMessageValue(const char *value, int &out)
@@ -6893,7 +7473,9 @@ void ensureApOnline(const char *reason)
     if (networkSuspendedForAudio || airplaneModeEnabled) return;
     if (apModeActive) return;
     if (WiFi.getMode() != WIFI_AP_STA) WiFi.mode(WIFI_AP_STA);
-    if (!WiFi.softAP(AP_SSID, AP_PASS)) {
+    const char *apSsid = savedApSsid.length() ? savedApSsid.c_str() : AP_SSID;
+    const char *apPass = savedApPass.length() ? savedApPass.c_str() : AP_PASS;
+    if (!WiFi.softAP(apSsid, apPass)) {
         Serial.printf("[WIFI] AP start failed reason=%s\n", reason ? reason : "-");
         return;
     }
@@ -7066,14 +7648,23 @@ bool mqttConnectNow()
             chatApplyConversationDeletion(senderPubHex, "Conversation deleted by " + author);
             return;
         }
+        if (kind == "ack") {
+            const String ackId = String(static_cast<const char *>(plainDoc["ack_id"] | ""));
+            if (!ackId.isEmpty()) chatAckOutgoingMessage(senderPubHex, ackId);
+            return;
+        }
+        const String messageId = String(static_cast<const char *>(plainDoc["id"] | ""));
         const String text = String(static_cast<const char *>(plainDoc["text"] | ""));
         if (text.isEmpty()) return;
-        chatStoreMessage(senderPubHex, author, text, false, CHAT_TRANSPORT_MQTT);
-        uiStatusLine = "Global chat from " + author;
-        if (lvglReady) {
-            lvglSyncStatusLine();
-            if (uiScreen == UI_CHAT) lvglRefreshChatUi();
+        if (messageId.isEmpty() || !chatHasLoggedMessageId(senderPubHex, messageId)) {
+            chatStoreMessage(senderPubHex, author, text, false, CHAT_TRANSPORT_MQTT, messageId);
+            uiStatusLine = "Global chat from " + author;
+            if (lvglReady) {
+                lvglSyncStatusLine();
+                if (uiScreen == UI_CHAT) lvglRefreshChatUi();
+            }
         }
+        if (!messageId.isEmpty()) mqttPublishChatAck(senderPubHex, messageId);
     });
     const String availabilityTopic = "esp32/remote/" + mqttHwId + "/availability";
     bool ok = false;
@@ -7137,13 +7728,15 @@ void mqttPublishAction(const char *action)
     mqttClient.publish(mqttActionTopic.c_str(), action, false);
 }
 
-bool mqttPublishChatMessage(const String &text)
+bool mqttPublishChatMessageWithId(const String &peerKey, const String &text, const String &messageId)
 {
-    if (!mqttCfg.enabled || !mqttClient.connected() || text.isEmpty()) return false;
-    const int peerIdx = p2pFindPeerByPubKeyHex(currentChatPeerKey);
+    if (!mqttCfg.enabled || !mqttClient.connected() || peerKey.isEmpty() || text.isEmpty() || messageId.isEmpty()) return false;
+    const int peerIdx = p2pFindPeerByPubKeyHex(peerKey);
     if (peerIdx < 0 || !p2pPeers[peerIdx].enabled) return false;
 
     JsonDocument plainDoc;
+    plainDoc["kind"] = "chat";
+    plainDoc["id"] = messageId;
     plainDoc["author"] = deviceShortNameValue();
     plainDoc["text"] = text.substring(0, P2P_MAX_CHAT_TEXT);
     char plain[P2P_MAX_PACKET] = {0};
@@ -7182,6 +7775,13 @@ bool mqttPublishChatMessage(const String &text)
     return mqttClient.publish(peerTopic.c_str(), payload.c_str(), false);
 }
 
+bool mqttPublishChatMessage(const String &text)
+{
+    if (currentChatPeerKey.isEmpty()) return false;
+    const String messageId = chatGenerateMessageId();
+    return mqttPublishChatMessageWithId(currentChatPeerKey, text, messageId);
+}
+
 bool mqttPublishConversationDelete()
 {
     if (!mqttCfg.enabled || !mqttClient.connected() || currentChatPeerKey.isEmpty()) return false;
@@ -7191,6 +7791,51 @@ bool mqttPublishConversationDelete()
     JsonDocument plainDoc;
     plainDoc["kind"] = "delete_conversation";
     plainDoc["author"] = deviceShortNameValue();
+    char plain[P2P_MAX_PACKET] = {0};
+    const size_t plainLen = serializeJson(plainDoc, plain, sizeof(plain));
+    if (plainLen == 0) return false;
+
+    const String senderPubHex = p2pPublicKeyHex();
+    unsigned char peerPk[P2P_PUBLIC_KEY_BYTES] = {0};
+    if (!p2pHexToBytes(p2pPeers[peerIdx].pubKeyHex, peerPk, sizeof(peerPk))) return false;
+
+    unsigned char nonce[P2P_NONCE_BYTES] = {0};
+    unsigned char cipher[P2P_MAX_PACKET] = {0};
+    randombytes_buf(nonce, sizeof(nonce));
+    if (crypto_box_curve25519xchacha20poly1305_easy(cipher, reinterpret_cast<const unsigned char *>(plain), plainLen,
+                                                    nonce, peerPk, p2pSecretKey) != 0) {
+        return false;
+    }
+    const size_t cipherLen = plainLen + P2P_MAC_BYTES;
+    String nonceHex = p2pBytesToHex(nonce, sizeof(nonce));
+    const size_t hexLen = (cipherLen * 2U) + 1U;
+    char *buf = static_cast<char *>(malloc(hexLen));
+    if (!buf) return false;
+    sodium_bin2hex(buf, hexLen, cipher, cipherLen);
+    String cipherHex(buf);
+    free(buf);
+    if (cipherHex.isEmpty()) return false;
+
+    JsonDocument doc;
+    doc["sender_pub"] = senderPubHex;
+    doc["nonce"] = nonceHex;
+    doc["cipher"] = cipherHex;
+    String payload;
+    serializeJson(doc, payload);
+
+    const String peerTopic = "esp32/remote/chat/" + mqttCfg.chatRoom + "/inbox/" + p2pPeers[peerIdx].pubKeyHex;
+    return mqttClient.publish(peerTopic.c_str(), payload.c_str(), false);
+}
+
+bool mqttPublishChatAck(const String &peerKey, const String &messageId)
+{
+    if (!mqttCfg.enabled || !mqttClient.connected() || peerKey.isEmpty() || messageId.isEmpty()) return false;
+    const int peerIdx = p2pFindPeerByPubKeyHex(peerKey);
+    if (peerIdx < 0 || !p2pPeers[peerIdx].enabled) return false;
+
+    JsonDocument plainDoc;
+    plainDoc["kind"] = "ack";
+    plainDoc["ack_id"] = messageId;
     char plain[P2P_MAX_PACKET] = {0};
     const size_t plainLen = serializeJson(plainDoc, plain, sizeof(plain));
     if (plainLen == 0) return false;
@@ -8494,9 +9139,11 @@ void setupWebRoutes()
             return;
         }
 
-        const bool sentLan = p2pSendChatMessage(text);
-        const bool sentGlobal = mqttPublishChatMessage(text);
-        chatStoreMessage(currentChatPeerKey, "Me", text, true, sentGlobal ? CHAT_TRANSPORT_MQTT : CHAT_TRANSPORT_WIFI);
+        const String messageId = chatGenerateMessageId();
+        chatQueueOutgoingMessage(currentChatPeerKey, deviceShortNameValue(), text, messageId);
+        const bool sentLan = p2pSendChatMessageWithId(currentChatPeerKey, text, messageId);
+        const bool sentGlobal = mqttPublishChatMessageWithId(currentChatPeerKey, text, messageId);
+        chatStoreMessage(currentChatPeerKey, "Me", text, true, sentGlobal ? CHAT_TRANSPORT_MQTT : CHAT_TRANSPORT_WIFI, messageId);
         if (lvglReady) lvglRefreshChatUi();
         uiStatusLine = sentGlobal ? "Chat sent globally" : (sentLan ? "Chat sent to peers" : "Chat saved locally");
         if (lvglReady) lvglSyncStatusLine();
@@ -9869,6 +10516,7 @@ void setupSd()
     sdUnlock();
     if (ok) Serial.printf("SD mounted (boot probe @ %lu Hz)\n", static_cast<unsigned long>(SD_BOOT_PROBE_FREQ_HZ));
     else Serial.printf("SD mount deferred (boot probe failed @ %lu Hz)\n", static_cast<unsigned long>(SD_BOOT_PROBE_FREQ_HZ));
+    if (ok) chatLoadPendingOutbox();
 }
 
 void setup()
@@ -9973,6 +10621,7 @@ void loop()
     refreshMdnsState();
     if (p2pReady) p2pService();
     mqttService();
+    chatPendingService();
     if (rgbFlashUntilMs != 0 && static_cast<long>(millis() - rgbFlashUntilMs) >= 0) {
         rgbFlashUntilMs = 0;
         rgbApplyNow(rgbPersistR, rgbPersistG, rgbPersistB);
@@ -10012,8 +10661,9 @@ void loop()
     if (!displayAwake && (millis() - lastUserActivityMs >= LCD_IDLE_TIMEOUT_MS)) {
         // Keep state as-is while sleeping.
     } else if (displayAwake && (millis() - lastUserActivityMs >= LCD_IDLE_TIMEOUT_MS)) {
-        if (batteryCharging) animateChargingBeforeSleep();
-        displaySetAwake(false);
+        bool allowSleep = true;
+        if (batteryCharging) allowSleep = animateChargingBeforeSleep();
+        if (allowSleep) displaySetAwake(false);
     }
 
     if (!displayAwake) {
