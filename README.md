@@ -25,6 +25,9 @@ Supported boards:
 - Encrypted peer-to-peer LAN chat over UDP
 - Encrypted global chat relay over MQTT
 - On-device peer discovery, pairing, unpair, enable/disable, unread markers, and conversation actions
+- `Info` screen with battery, Wi-Fi, light, CPU, SRAM, PSRAM, and SD usage indicators
+- S3 build uses PSRAM-first allocation for major UI/work buffers to reduce internal SRAM pressure
+- Swipe-back and scroll gestures are filtered to avoid triggering button clicks while navigating lists and menus
 
 ## Supported Hardware
 
@@ -214,6 +217,7 @@ Notes:
 - After removing the conflicting RGB output, the S3 build now boots through the normal Wi-Fi and SD initialization flow again, including saved STA reconnect, fallback AP behavior, web server startup, and SD-backed file manager access.
 - The initially remapped RGB pins (`35`, `36`, `37`) collide with `ESP32-S3-WROOM-1-N16R8` octal PSRAM/flash bus pins. On this module variant, those pins must not be driven for general GPIO use, so RGB output is disabled in the S3 firmware build.
 - After removing RGB output on the S3 build, boot Wi-Fi, Wi-Fi scan/connect, server startup, and SD boot mount became stable again. This points to the RGB-to-PSRAM pin conflict as the main cause of the earlier watchdog resets.
+- The S3 build now uses PSRAM-first allocation for LVGL draw buffers, serial log storage, screenshot/JPEG workspace, OTA download buffers, and selected SD copy buffers.
 
 ## Defaults
 

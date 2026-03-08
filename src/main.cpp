@@ -45,7 +45,11 @@ static constexpr int DISPLAY_CENTER_Y = DISPLAY_HEIGHT / 2;
 
 static constexpr uint32_t TOUCH_I2C_HZ = 400000U;
 static constexpr bool TOUCH_USE_IRQ = false;
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+static constexpr unsigned long TOUCH_POLL_INTERVAL_MS = 4UL;
+#else
 static constexpr unsigned long TOUCH_POLL_INTERVAL_MS = 6UL;
+#endif
 static constexpr uint8_t WAKE_TOUCH_RELEASE_STABLE_POLLS = 3;
 static constexpr uint16_t TOUCH_REINIT_FAIL_THRESHOLD = 40;
 static constexpr unsigned long TOUCH_REINIT_MIN_INTERVAL_MS = 8000UL;
@@ -219,6 +223,25 @@ static constexpr uint32_t WS_TELEMETRY_MIN_FREE_HEAP = 50000U;
 void serialLogPushLine(const char *line, bool sendWs = true);
 void executeSerialCommand(String input);
 decltype(::Serial) &serialHw = ::Serial;
+
+static inline bool boardHasUsablePsram()
+{
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+    return psramFound();
+#else
+    return false;
+#endif
+}
+
+static void *allocPreferPsram(size_t bytes, uint32_t fallbackCaps = MALLOC_CAP_8BIT)
+{
+    if (bytes == 0) return nullptr;
+    if (boardHasUsablePsram()) {
+        void *ptr = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (ptr) return ptr;
+    }
+    return heap_caps_malloc(bytes, fallbackCaps);
+}
 
 class MirroredSerialPort {
 public:
@@ -459,9 +482,15 @@ uint32_t sdStatsLastLoggedRemountAttempts = 0;
 uint32_t sdStatsLastLoggedRemountSuccess = 0;
 uint32_t sdStatsLastLoggedRemountFailure = 0;
 
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+static constexpr uint16_t LVGL_BUF_LINES_MIN = 40;
+static constexpr uint16_t LVGL_BUF_LINES_MAX = 80;
+static constexpr uint16_t UI_ANIM_MS = 88;
+#else
 static constexpr uint16_t LVGL_BUF_LINES_MIN = 32;
 static constexpr uint16_t LVGL_BUF_LINES_MAX = 48;
 static constexpr uint16_t UI_ANIM_MS = 72;
+#endif
 static constexpr uint16_t UI_BUTTON_CLICK_FLASH_MS = 90;
 static constexpr lv_opa_t UI_BUTTON_CLICK_FLASH_MIX = 64;
 static constexpr int16_t UI_TOP_BAR_H = 30;
@@ -479,6 +508,7 @@ static constexpr unsigned long SWIPE_BACK_MAX_MS = 550;
 static constexpr int16_t DOUBLE_TAP_MAX_MOVE = 12;
 static constexpr int16_t DOUBLE_TAP_MAX_GAP = 350;
 static constexpr unsigned long DOUBLE_TAP_MAX_TAP_MS = 240;
+static constexpr unsigned long CLICK_SUPPRESS_AFTER_GESTURE_MS = 180UL;
 static lv_color_t *lvglDrawPixels = nullptr;
 static uint16_t lvglBufLinesActive = 0;
 static lv_disp_draw_buf_t lvglDrawBuf;
@@ -506,12 +536,10 @@ static lv_obj_t *lvglInfoWifiValueLabel = nullptr;
 static lv_obj_t *lvglInfoWifiSubLabel = nullptr;
 static lv_obj_t *lvglInfoLightValueLabel = nullptr;
 static lv_obj_t *lvglInfoLightSubLabel = nullptr;
-static lv_obj_t *lvglInfoCpuValueLabel = nullptr;
-static lv_obj_t *lvglInfoCpuSubLabel = nullptr;
-static lv_obj_t *lvglInfoCpuBar = nullptr;
-static lv_obj_t *lvglInfoTempValueLabel = nullptr;
-static lv_obj_t *lvglInfoTempSubLabel = nullptr;
-static lv_obj_t *lvglInfoTempBar = nullptr;
+static lv_obj_t *lvglInfoCpuCard = nullptr;
+static lv_obj_t *lvglInfoSramCard = nullptr;
+static lv_obj_t *lvglInfoPsramCard = nullptr;
+static lv_obj_t *lvglInfoTempCard = nullptr;
 static lv_obj_t *lvglInfoSystemLabel = nullptr;
 static lv_obj_t *lvglWifiList = nullptr;
 static lv_obj_t *lvglWifiScanLabel = nullptr;
@@ -598,6 +626,7 @@ static unsigned long lvglSwipeStartMs = 0;
 static bool lvglSwipeBackPending = false;
 static bool lvglSwipeCandidate = false;
 static bool lvglSwipeHorizontalLocked = false;
+static unsigned long lvglClickSuppressUntilMs = 0;
 static unsigned long lvglLastTapReleaseMs = 0;
 static int16_t lvglLastTapReleaseX = 0;
 static int16_t lvglLastTapReleaseY = 0;
@@ -1760,6 +1789,39 @@ static inline void lvglResetGestureTracking()
     lvglSwipeHorizontalLocked = false;
 }
 
+static inline bool lvglClickSuppressed()
+{
+    return static_cast<long>(lvglClickSuppressUntilMs - millis()) > 0;
+}
+
+static inline void lvglSuppressClicksAfterGesture()
+{
+    lvglClickSuppressUntilMs = millis() + CLICK_SUPPRESS_AFTER_GESTURE_MS;
+}
+
+static void lvglClickFilterEvent(lv_event_t *e)
+{
+    if (!lvglClickSuppressed()) return;
+    lv_event_stop_processing(e);
+}
+
+static void lvglFilteredClickFlashEvent(lv_event_t *e)
+{
+    lv_obj_t *obj = lv_event_get_target(e);
+    if (!obj) return;
+    lv_obj_add_state(obj, LV_STATE_CHECKED);
+    lv_timer_t *timer = lv_timer_create(
+        [](lv_timer_t *timer) {
+            lv_obj_t *target = static_cast<lv_obj_t *>(timer ? timer->user_data : nullptr);
+            if (target) lv_obj_clear_state(target, LV_STATE_CHECKED);
+            if (timer) lv_timer_del(timer);
+        },
+        UI_BUTTON_CLICK_FLASH_MS,
+        obj);
+    if (timer) lv_timer_set_repeat_count(timer, 1);
+}
+
+
 void lvglTouchReadCb(lv_indev_drv_t *indev, lv_indev_data_t *data)
 {
     (void)indev;
@@ -2076,6 +2138,7 @@ void lvglTopIndicatorsDrawEvent(lv_event_t *e)
 void lvglTopIndicatorsTapEvent(lv_event_t *e)
 {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    if (lvglClickSuppressed()) return;
     lv_obj_t *obj = lv_event_get_target(e);
     if (!obj || !displayAwake) return;
 
@@ -2101,6 +2164,7 @@ void lvglTopIndicatorsTapEvent(lv_event_t *e)
 void lvglTopUnreadTapEvent(lv_event_t *e)
 {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    if (lvglClickSuppressed()) return;
     if (!displayAwake) return;
     if (lvglKb && !lv_obj_has_flag(lvglKb, LV_OBJ_FLAG_HIDDEN)) lvglHideKeyboard();
     chatOpenFirstUnreadConversation();
@@ -2184,6 +2248,7 @@ lv_obj_t *lvglCreateScreenBase(const char *title, bool backToHome = false)
     lv_obj_add_event_cb(
         scr,
         [](lv_event_t *e) {
+            if (lvglClickSuppressed()) return;
             if (lv_event_get_target(e) != lv_event_get_current_target(e)) return;
             if (lvglKb && !lv_obj_has_flag(lvglKb, LV_OBJ_FLAG_HIDDEN)) lvglHideKeyboard();
         },
@@ -2214,24 +2279,8 @@ lv_obj_t *lvglCreateMenuButton(lv_obj_t *parent, const char *txt, lv_color_t col
     lv_obj_set_style_bg_color(btn, color, LV_PART_MAIN | LV_STATE_PRESSED);
     lv_obj_set_style_bg_color(btn, flashColor, LV_PART_MAIN | LV_STATE_CHECKED);
     lv_obj_set_style_bg_color(btn, flashColor, LV_PART_MAIN | LV_STATE_CHECKED | LV_STATE_PRESSED);
-    lv_obj_add_event_cb(
-        btn,
-        [](lv_event_t *e) {
-            lv_obj_t *obj = lv_event_get_target(e);
-            if (!obj) return;
-            lv_obj_add_state(obj, LV_STATE_CHECKED);
-            lv_timer_t *timer = lv_timer_create(
-                [](lv_timer_t *timer) {
-                    lv_obj_t *target = static_cast<lv_obj_t *>(timer ? timer->user_data : nullptr);
-                    if (target) lv_obj_clear_state(target, LV_STATE_CHECKED);
-                    if (timer) lv_timer_del(timer);
-                },
-                UI_BUTTON_CLICK_FLASH_MS,
-                obj);
-            if (timer) lv_timer_set_repeat_count(timer, 1);
-        },
-        LV_EVENT_CLICKED,
-        nullptr);
+    lv_obj_add_event_cb(btn, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
+    lv_obj_add_event_cb(btn, lvglFilteredClickFlashEvent, LV_EVENT_CLICKED, nullptr);
     lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, user);
     lv_obj_t *lbl = lv_label_create(btn);
     if (lbl) {
@@ -2312,6 +2361,39 @@ static void lvglSetInfoBarColor(lv_obj_t *bar, lv_color_t color)
 {
     if (!bar) return;
     lv_obj_set_style_bg_color(bar, color, LV_PART_INDICATOR);
+}
+
+static lv_obj_t *lvglInfoCardValueLabel(lv_obj_t *card)
+{
+    lv_obj_t *top = card ? lv_obj_get_child(card, 0) : nullptr;
+    return top ? lv_obj_get_child(top, 2) : nullptr;
+}
+
+static lv_obj_t *lvglInfoCardSubLabel(lv_obj_t *card)
+{
+    return card ? lv_obj_get_child(card, 1) : nullptr;
+}
+
+static lv_obj_t *lvglInfoCardBar(lv_obj_t *card)
+{
+    return card ? lv_obj_get_child(card, 2) : nullptr;
+}
+
+static lv_obj_t *lvglFindInfoCardByTitle(const char *title)
+{
+    if (!lvglInfoList || !title) return nullptr;
+    const uint32_t childCount = lv_obj_get_child_cnt(lvglInfoList);
+    for (uint32_t i = 0; i < childCount; ++i) {
+        lv_obj_t *card = lv_obj_get_child(lvglInfoList, i);
+        if (!card) continue;
+        lv_obj_t *top = lv_obj_get_child(card, 0);
+        if (!top) continue;
+        lv_obj_t *name = lv_obj_get_child(top, 1);
+        if (!name) continue;
+        const char *text = lv_label_get_text(name);
+        if (text && strcmp(text, title) == 0) return card;
+    }
+    return nullptr;
 }
 
 static String chatEscapeLogField(String text)
@@ -3232,24 +3314,9 @@ void lvglEnsureScreenBuilt(UiScreen screen)
         lv_obj_set_style_bg_color(b, col, LV_PART_MAIN | LV_STATE_PRESSED);
         lv_obj_set_style_bg_color(b, flashColor, LV_PART_MAIN | LV_STATE_CHECKED);
         lv_obj_set_style_bg_color(b, flashColor, LV_PART_MAIN | LV_STATE_CHECKED | LV_STATE_PRESSED);
-        lv_obj_add_event_cb(
-            b,
-            [](lv_event_t *e) {
-                lv_obj_t *obj = lv_event_get_target(e);
-                if (!obj) return;
-                lv_obj_add_state(obj, LV_STATE_CHECKED);
-                lv_timer_t *timer = lv_timer_create(
-                    [](lv_timer_t *timer) {
-                        lv_obj_t *target = static_cast<lv_obj_t *>(timer ? timer->user_data : nullptr);
-                        if (target) lv_obj_clear_state(target, LV_STATE_CHECKED);
-                        if (timer) lv_timer_del(timer);
-                    },
-                    UI_BUTTON_CLICK_FLASH_MS,
-                    obj);
-                if (timer) lv_timer_set_repeat_count(timer, 1);
-            },
-            LV_EVENT_CLICKED,
-            nullptr);
+        lv_obj_add_event_cb(b, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
+        lv_obj_add_event_cb(b, lvglFilteredClickFlashEvent, LV_EVENT_CLICKED, nullptr);
+        lv_obj_add_event_cb(b, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
         lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, ud);
         lv_obj_t *l = lv_label_create(b);
         if (l) {
@@ -3561,10 +3628,25 @@ void lvglEnsureScreenBuilt(UiScreen screen)
                                &lvglInfoWifiValueLabel, &lvglInfoWifiSubLabel);
             lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_EYE_OPEN, "Lighting", lv_color_hex(0xF4B942),
                                &lvglInfoLightValueLabel, &lvglInfoLightSubLabel);
-            lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_CHARGE, "Processor Load", lv_color_hex(0x7BC96F),
-                               &lvglInfoCpuValueLabel, &lvglInfoCpuSubLabel, &lvglInfoCpuBar);
-            lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_WARNING, "Chip Temperature", lv_color_hex(0xF2C35E),
-                               &lvglInfoTempValueLabel, &lvglInfoTempSubLabel, &lvglInfoTempBar);
+            {
+                lv_obj_t *tmp = nullptr;
+                lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_SD_CARD, "SD Card", lv_color_hex(0xE59F45),
+                                   nullptr, nullptr, &tmp);
+            }
+            {
+                lv_obj_t *tmp = nullptr;
+                lvglInfoSramCard = lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_DIRECTORY, "SRAM", lv_color_hex(0x3FA7D6),
+                                                      nullptr, nullptr, &tmp);
+                lvglInfoPsramCard = lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_DRIVE, "PSRAM", lv_color_hex(0x9B7CF2),
+                                                       nullptr, nullptr, &tmp);
+            }
+            {
+                lv_obj_t *tmp = nullptr;
+                lvglInfoCpuCard = lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_CHARGE, "Processor Load", lv_color_hex(0x7BC96F),
+                                                     nullptr, nullptr, &tmp);
+                lvglInfoTempCard = lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_WARNING, "Chip Temperature", lv_color_hex(0xF2C35E),
+                                                      nullptr, nullptr, &tmp);
+            }
 
             lv_obj_t *systemCard = lv_obj_create(lvglInfoList);
             lv_obj_set_width(systemCard, lv_pct(100));
@@ -3937,7 +4019,6 @@ void lvglOpenScreen(UiScreen screen, lv_scr_load_anim_t anim)
     } else if (screen == UI_CHAT_PEERS) {
         lvglRefreshChatPeerUi();
     } else if (screen == UI_MEDIA) {
-        mediaEnsureStorageReadyForUi();
         lvglQueueMediaRefresh();
     } else if (screen == UI_INFO) {
         lvglRefreshInfoPanel();
@@ -4588,6 +4669,7 @@ void lvglRefreshChatContactsUi()
         lv_obj_set_style_border_width(b, 0, 0);
         lv_obj_set_style_bg_color(b, col, LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_bg_color(b, col, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_add_event_cb(b, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
         lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, ud);
         return b;
     };
@@ -4763,6 +4845,7 @@ void lvglRefreshChatPeerUi()
         lv_obj_set_style_border_width(b, 0, 0);
         lv_obj_set_style_bg_color(b, col, LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_bg_color(b, col, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_add_event_cb(b, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
         lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, ud);
         lv_obj_t *l = lv_label_create(b);
         if (l) {
@@ -5218,7 +5301,14 @@ void lvglRefreshInfoPanel()
         tempBarValue = static_cast<uint8_t>(clamped + 0.5f);
     }
     const uint32_t freeHeap = static_cast<uint32_t>(ESP.getFreeHeap());
+    const uint32_t heapTotal = static_cast<uint32_t>(ESP.getHeapSize());
     const uint32_t largest8 = static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    const uint32_t psramFree = boardHasUsablePsram()
+                                   ? static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM))
+                                   : 0U;
+    const uint32_t psramTotal = boardHasUsablePsram()
+                                    ? static_cast<uint32_t>(heap_caps_get_total_size(MALLOC_CAP_SPIRAM))
+                                    : 0U;
     char batteryBuf[40];
     const int batteryCentivolts = static_cast<int>(batteryVoltage * 100.0f + 0.5f);
     snprintf(batteryBuf, sizeof(batteryBuf), "%d.%02dV  |  %s",
@@ -5245,47 +5335,144 @@ void lvglRefreshInfoPanel()
                               static_cast<unsigned int>(lightRawAdc));
     }
 
-    if (lvglInfoCpuValueLabel) lv_label_set_text_fmt(lvglInfoCpuValueLabel, "%u%%", static_cast<unsigned int>(cpuLoadPercent));
-    if (lvglInfoCpuSubLabel) {
-        lv_label_set_text_fmt(lvglInfoCpuSubLabel, "Approx. main-loop load  |  Free heap %lu KB", static_cast<unsigned long>(freeHeap / 1024U));
+    lv_obj_t *sdCard = lvglFindInfoCardByTitle("SD Card");
+    uint64_t sdTotal = 0;
+    uint64_t sdUsed = 0;
+    if (sdMounted) {
+        sdTotal = SD.totalBytes();
+        sdUsed = SD.usedBytes();
     }
-    if (lvglInfoCpuBar) {
-        lv_bar_set_value(lvglInfoCpuBar, static_cast<int32_t>(cpuLoadPercent), LV_ANIM_OFF);
+    const uint8_t sdPct = (sdTotal > 0) ? static_cast<uint8_t>((sdUsed * 100ULL) / sdTotal) : 0U;
+    if (lv_obj_t *sdValue = lvglInfoCardValueLabel(sdCard)) {
+        if (sdTotal > 0) lv_label_set_text_fmt(sdValue, "%u%%", static_cast<unsigned int>(sdPct));
+        else lv_label_set_text(sdValue, sdMounted ? "--" : "Off");
+    }
+    if (lv_obj_t *sdSub = lvglInfoCardSubLabel(sdCard)) {
+        if (sdTotal > 0) {
+            lv_label_set_text_fmt(sdSub, "Used %llu / %llu MB  |  Free %llu MB",
+                                  static_cast<unsigned long long>(sdUsed / (1024ULL * 1024ULL)),
+                                  static_cast<unsigned long long>(sdTotal / (1024ULL * 1024ULL)),
+                                  static_cast<unsigned long long>((sdTotal - sdUsed) / (1024ULL * 1024ULL)));
+        } else {
+            lv_label_set_text(sdSub, sdMounted ? "Capacity unavailable" : "Card offline");
+        }
+    }
+    if (lv_obj_t *sdBar = lvglInfoCardBar(sdCard)) {
+        lv_bar_set_value(sdBar, static_cast<int32_t>(sdTotal > 0 ? sdPct : 0U), LV_ANIM_ON);
+        lv_color_t sdColor = lv_color_hex(0xE59F45);
+        if (sdPct >= 90) sdColor = lv_color_hex(0xD95C5C);
+        else if (sdPct >= 75) sdColor = lv_color_hex(0xF2C35E);
+        lvglSetInfoBarColor(sdBar, sdTotal > 0 ? sdColor : lv_color_hex(0x3A4150));
+    }
+
+    const uint32_t sramUsed = (heapTotal >= freeHeap) ? (heapTotal - freeHeap) : 0U;
+    const uint8_t sramPct = (heapTotal > 0) ? static_cast<uint8_t>((static_cast<uint64_t>(sramUsed) * 100ULL) / heapTotal) : 0U;
+    if (lv_obj_t *sramValue = lvglInfoCardValueLabel(lvglInfoSramCard)) {
+        lv_label_set_text_fmt(sramValue, "%u%%", static_cast<unsigned int>(sramPct));
+    }
+    if (lv_obj_t *sramSub = lvglInfoCardSubLabel(lvglInfoSramCard)) {
+        lv_label_set_text_fmt(sramSub, "Used %lu / %lu KB  |  Free %lu KB",
+                              static_cast<unsigned long>(sramUsed / 1024U),
+                              static_cast<unsigned long>(heapTotal / 1024U),
+                              static_cast<unsigned long>(freeHeap / 1024U));
+    }
+    if (lv_obj_t *sramBar = lvglInfoCardBar(lvglInfoSramCard)) {
+        lv_bar_set_value(sramBar, static_cast<int32_t>(sramPct), LV_ANIM_ON);
+        lv_color_t sramColor = lv_color_hex(0x4FC3F7);
+        if (sramPct >= 85) sramColor = lv_color_hex(0xD95C5C);
+        else if (sramPct >= 65) sramColor = lv_color_hex(0xF2C35E);
+        lvglSetInfoBarColor(sramBar, sramColor);
+    }
+
+    const uint32_t psramUsed = (psramTotal >= psramFree) ? (psramTotal - psramFree) : 0U;
+    const uint8_t psramPct = (psramTotal > 0) ? static_cast<uint8_t>((static_cast<uint64_t>(psramUsed) * 100ULL) / psramTotal) : 0U;
+    if (lv_obj_t *psramValue = lvglInfoCardValueLabel(lvglInfoPsramCard)) {
+        if (psramTotal > 0) lv_label_set_text_fmt(psramValue, "%u%%", static_cast<unsigned int>(psramPct));
+        else lv_label_set_text(psramValue, "--");
+    }
+    if (lv_obj_t *psramSub = lvglInfoCardSubLabel(lvglInfoPsramCard)) {
+        if (psramTotal > 0) {
+            lv_label_set_text_fmt(psramSub, "Used %lu / %lu KB  |  Free %lu KB",
+                                  static_cast<unsigned long>(psramUsed / 1024U),
+                                  static_cast<unsigned long>(psramTotal / 1024U),
+                                  static_cast<unsigned long>(psramFree / 1024U));
+        } else {
+            lv_label_set_text(psramSub, "Not available on this board");
+        }
+    }
+    if (lv_obj_t *psramBar = lvglInfoCardBar(lvglInfoPsramCard)) {
+        lv_bar_set_value(psramBar, static_cast<int32_t>(psramTotal > 0 ? psramPct : 0U), LV_ANIM_ON);
+        lv_color_t psramColor = lv_color_hex(0x9B7CF2);
+        if (psramPct >= 85) psramColor = lv_color_hex(0xD95C5C);
+        else if (psramPct >= 65) psramColor = lv_color_hex(0xF2C35E);
+        lvglSetInfoBarColor(psramBar, psramTotal > 0 ? psramColor : lv_color_hex(0x3A4150));
+    }
+
+    if (lv_obj_t *cpuValue = lvglInfoCardValueLabel(lvglInfoCpuCard)) lv_label_set_text_fmt(cpuValue, "%u%%", static_cast<unsigned int>(cpuLoadPercent));
+    if (lv_obj_t *cpuSub = lvglInfoCardSubLabel(lvglInfoCpuCard)) {
+        if (psramTotal > 0) {
+            lv_label_set_text_fmt(cpuSub,
+                                  "Approx. main-loop load  |  SRAM %lu KB  |  PSRAM %lu KB",
+                                  static_cast<unsigned long>(freeHeap / 1024U),
+                                  static_cast<unsigned long>(psramFree / 1024U));
+        } else {
+            lv_label_set_text_fmt(cpuSub, "Approx. main-loop load  |  SRAM %lu KB",
+                                  static_cast<unsigned long>(freeHeap / 1024U));
+        }
+    }
+    if (lv_obj_t *cpuBar = lvglInfoCardBar(lvglInfoCpuCard)) {
+        lv_bar_set_value(cpuBar, static_cast<int32_t>(cpuLoadPercent), LV_ANIM_OFF);
         lv_color_t cpuColor = lv_color_hex(0x52B788);
         if (cpuLoadPercent >= 85) cpuColor = lv_color_hex(0xD95C5C);
         else if (cpuLoadPercent >= 65) cpuColor = lv_color_hex(0xF2C35E);
-        lvglSetInfoBarColor(lvglInfoCpuBar, cpuColor);
+        lvglSetInfoBarColor(cpuBar, cpuColor);
     }
 
-    if (lvglInfoTempValueLabel) {
+    if (lv_obj_t *tempValue = lvglInfoCardValueLabel(lvglInfoTempCard)) {
         if (!isnan(tempC) && tempC > 0.0f) {
             char tempBuf[16];
             const int tempTenths = static_cast<int>(tempC * 10.0f + 0.5f);
             snprintf(tempBuf, sizeof(tempBuf), "%d.%dC", tempTenths / 10, abs(tempTenths % 10));
-            lv_label_set_text(lvglInfoTempValueLabel, tempBuf);
+            lv_label_set_text(tempValue, tempBuf);
         } else {
-            lv_label_set_text(lvglInfoTempValueLabel, "--");
+            lv_label_set_text(tempValue, "--");
         }
     }
-    if (lvglInfoTempSubLabel) lv_label_set_text_fmt(lvglInfoTempSubLabel, "ESP32 die temp  |  target range under %uC", INFO_TEMP_WARN_C);
-    if (lvglInfoTempBar) {
-        lv_bar_set_value(lvglInfoTempBar, static_cast<int32_t>(tempBarValue), LV_ANIM_OFF);
+    if (lv_obj_t *tempSub = lvglInfoCardSubLabel(lvglInfoTempCard)) lv_label_set_text_fmt(tempSub, "ESP32 die temp  |  target range under %uC", INFO_TEMP_WARN_C);
+    if (lv_obj_t *tempBar = lvglInfoCardBar(lvglInfoTempCard)) {
+        lv_bar_set_value(tempBar, static_cast<int32_t>(tempBarValue), LV_ANIM_OFF);
         lv_color_t tempColor = lv_color_hex(0x4FC3F7);
         if (tempBarValue >= INFO_TEMP_HOT_C) tempColor = lv_color_hex(0xD95C5C);
         else if (tempBarValue >= INFO_TEMP_WARN_C) tempColor = lv_color_hex(0xF2C35E);
-        lvglSetInfoBarColor(lvglInfoTempBar, tempColor);
+        lvglSetInfoBarColor(tempBar, tempColor);
     }
 
     if (lvglInfoSystemLabel) {
-        lv_label_set_text_fmt(
-            lvglInfoSystemLabel,
-            "Model: %s\nFirmware: %s\nSoftAP: %s\nLargest 8-bit block: %lu KB\nSD: %s\nMedia: %s",
-            deviceShortNameValue().c_str(),
-            FW_VERSION,
-            AP_SSID,
-            static_cast<unsigned long>(largest8 / 1024U),
-            sdMounted ? "mounted" : "offline",
-            mediaIsPlaying ? mediaNowPlaying.c_str() : "stopped");
+        if (psramTotal > 0) {
+            lv_label_set_text_fmt(
+                lvglInfoSystemLabel,
+                "Model: %s\nDevice name: %s\nFirmware: %s\nSoftAP: %s\nLargest 8-bit block: %lu KB\nPSRAM: %lu / %lu KB free\nSD: %s\nMedia: %s",
+                DEVICE_MODEL,
+                deviceShortNameValue().c_str(),
+                FW_VERSION,
+                AP_SSID,
+                static_cast<unsigned long>(largest8 / 1024U),
+                static_cast<unsigned long>(psramFree / 1024U),
+                static_cast<unsigned long>(psramTotal / 1024U),
+                sdMounted ? "mounted" : "offline",
+                mediaIsPlaying ? mediaNowPlaying.c_str() : "stopped");
+        } else {
+            lv_label_set_text_fmt(
+                lvglInfoSystemLabel,
+                "Model: %s\nDevice name: %s\nFirmware: %s\nSoftAP: %s\nLargest 8-bit block: %lu KB\nSD: %s\nMedia: %s",
+                DEVICE_MODEL,
+                deviceShortNameValue().c_str(),
+                FW_VERSION,
+                AP_SSID,
+                static_cast<unsigned long>(largest8 / 1024U),
+                sdMounted ? "mounted" : "offline",
+                mediaIsPlaying ? mediaNowPlaying.c_str() : "stopped");
+        }
     }
 }
 
@@ -5327,6 +5514,7 @@ void lvglRefreshWifiList()
         lv_obj_set_style_border_width(btn, 0, 0);
         lv_obj_set_style_bg_color(btn, col, LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_bg_color(btn, col, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_add_event_cb(btn, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
         lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, ud);
         lv_obj_t *lbl = lv_label_create(btn);
         if (lbl) {
@@ -5473,6 +5661,7 @@ void lvglRefreshMediaList()
 {
     if (!lvglMediaList) return;
     lv_obj_clean(lvglMediaList);
+    mediaEnsureStorageReadyForUi();
     loadMediaEntries();
 
     if (mediaOffset > 0) {
@@ -5740,6 +5929,7 @@ void lvglOpenWifiPasswordDialog(const String &ssid)
             lv_obj_set_style_border_width(btn, 0, 0);
             lv_obj_set_style_bg_color(btn, color, LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_obj_set_style_bg_color(btn, color, LV_PART_MAIN | LV_STATE_PRESSED);
+            lv_obj_add_event_cb(btn, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
             lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, nullptr);
             lv_obj_t *lbl = lv_label_create(btn);
             if (lbl) {
@@ -5948,6 +6138,7 @@ void lvglRefreshMqttControlsUi()
         lv_obj_set_style_border_width(b, 0, 0);
         lv_obj_set_style_bg_color(b, col, LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_bg_color(b, col, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_add_event_cb(b, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
         lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, ud);
         lv_obj_t *l = lv_label_create(b);
         if (l) {
@@ -6385,23 +6576,23 @@ void lvglInitUi()
         if (lines > LVGL_BUF_LINES_MAX) lines = LVGL_BUF_LINES_MAX;
         while (lines >= 2) {
             const size_t pxCount = static_cast<size_t>(horRes) * static_cast<size_t>(lines);
+            const size_t allocBytes = pxCount * sizeof(lv_color_t);
             Serial.printf("[LVGL] alloc try lines=%u bytes=%u\n",
                           static_cast<unsigned int>(lines),
-                          static_cast<unsigned int>(pxCount * sizeof(lv_color_t)));
+                          static_cast<unsigned int>(allocBytes));
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
-            lv_color_t *candidate = static_cast<lv_color_t *>(heap_caps_malloc(
-                pxCount * sizeof(lv_color_t),
-                MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT
-            ));
+            lv_color_t *candidate = static_cast<lv_color_t *>(allocPreferPsram(allocBytes,
+                MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
 #else
-            lv_color_t *candidate = static_cast<lv_color_t *>(malloc(pxCount * sizeof(lv_color_t)));
+            lv_color_t *candidate = static_cast<lv_color_t *>(malloc(allocBytes));
 #endif
             if (candidate) {
                 lvglDrawPixels = candidate;
                 lvglBufLinesActive = lines;
-                Serial.printf("[LVGL] alloc ok lines=%u ptr=%p\n",
+                Serial.printf("[LVGL] alloc ok lines=%u ptr=%p psram=%d\n",
                               static_cast<unsigned int>(lines),
-                              static_cast<void *>(candidate));
+                              static_cast<void *>(candidate),
+                              boardHasUsablePsram() && esp_ptr_external_ram(candidate) ? 1 : 0);
                 break;
             }
             Serial.printf("[LVGL] alloc fail lines=%u\n", static_cast<unsigned int>(lines));
@@ -6534,12 +6725,14 @@ void lvglService()
             dx > (abs(dy) * 2) &&
             dt <= SWIPE_BACK_MAX_MS) {
             lvglSwipeBackPending = true;
+            lvglSuppressClicksAfterGesture();
             lvglLastTapReleaseMs = 0;
         } else if (tapCandidate) {
             lvglLastTapReleaseMs = now;
             lvglLastTapReleaseX = lvglLastTouchX;
             lvglLastTapReleaseY = lvglLastTouchY;
         } else {
+            if (abs(dx) >= SWIPE_LOCK_MIN_DX || abs(dy) >= SWIPE_CANCEL_VERTICAL_DY) lvglSuppressClicksAfterGesture();
             lvglLastTapReleaseMs = 0;
         }
         lvglSwipeCandidate = false;
@@ -7483,9 +7676,17 @@ bool audioFlacSupportedNow(uint32_t *freeHeapOut, uint32_t *largestOut)
 
 bool copyFileToPath(const String &srcPath, const String &dstPath)
 {
+    uint8_t *buf = reinterpret_cast<uint8_t *>(allocPreferPsram(1024));
+    if (!buf) return false;
     for (int attempt = 0; attempt < 2; attempt++) {
-        if (!sdEnsureMounted(attempt > 0)) return false;
-        if (!sdLock()) return false;
+        if (!sdEnsureMounted(attempt > 0)) {
+            free(buf);
+            return false;
+        }
+        if (!sdLock()) {
+            free(buf);
+            return false;
+        }
 
         bool ok = true;
         File src = SD.open(srcPath, FILE_READ);
@@ -7502,9 +7703,8 @@ bool copyFileToPath(const String &srcPath, const String &dstPath)
         }
 
         if (ok) {
-            uint8_t buf[1024];
             while (src.available()) {
-                int n = src.read(buf, sizeof(buf));
+                int n = src.read(buf, 1024);
                 if (n <= 0) break;
                 if (dst.write(buf, n) != static_cast<size_t>(n)) {
                     ok = false;
@@ -7522,10 +7722,14 @@ bool copyFileToPath(const String &srcPath, const String &dstPath)
         if (!ok && SD.exists(dstPath)) SD.remove(dstPath);
         sdUnlock();
 
-        if (ok) return true;
+        if (ok) {
+            free(buf);
+            return true;
+        }
         sdMarkFault("copyFileToPath");
         delay(15);
     }
+    free(buf);
     return false;
 }
 
@@ -8127,11 +8331,14 @@ static bool initSerialLogStorage()
 {
     if (serialLogRing) return true;
     const size_t bytes = SERIAL_LOG_RING_SIZE * (SERIAL_LOG_LINE_MAX + 1);
-    serialLogRing = static_cast<char *>(heap_caps_malloc(bytes, MALLOC_CAP_8BIT));
+    serialLogRing = static_cast<char *>(allocPreferPsram(bytes));
     if (!serialLogRing) return false;
     memset(serialLogRing, 0, bytes);
     serialLogHead = 0;
     serialLogCount = 0;
+    Serial.printf("[SERIAL] log ring alloc bytes=%u psram=%d\n",
+                  static_cast<unsigned int>(bytes),
+                  boardHasUsablePsram() && esp_ptr_external_ram(serialLogRing) ? 1 : 0);
     return true;
 }
 
@@ -9115,7 +9322,13 @@ bool otaDownloadAndApplyFromUrl(const String &url, String &errorOut)
         return false;
     }
 
-    uint8_t buf[2048];
+    uint8_t *buf = reinterpret_cast<uint8_t *>(allocPreferPsram(2048));
+    if (!buf) {
+        errorOut = "oom_buffer";
+        Update.abort();
+        http.end();
+        return false;
+    }
     int remaining = totalLen;
     while (http.connected() && (remaining > 0 || remaining == -1)) {
         const size_t avail = static_cast<size_t>(stream->available());
@@ -9133,12 +9346,14 @@ bool otaDownloadAndApplyFromUrl(const String &url, String &errorOut)
             errorOut = "update_write_failed";
             Update.abort();
             http.end();
+            free(buf);
             return false;
         }
         if (remaining > 0) remaining -= n;
         delay(0);
     }
     http.end();
+    free(buf);
 
     if (!Update.end(true)) {
         errorOut = "update_end_failed";
@@ -9425,7 +9640,7 @@ bool captureScreenToJpeg(String &savedPathOut, String &errorOut)
     const int mcuW = state.cx;
     const int mcuH = state.cy;
     const size_t mcuBytes = static_cast<size_t>(mcuW) * static_cast<size_t>(mcuH) * 2U;
-    uint8_t *mcuBuf = reinterpret_cast<uint8_t *>(malloc(mcuBytes));
+    uint8_t *mcuBuf = reinterpret_cast<uint8_t *>(allocPreferPsram(mcuBytes));
     if (!mcuBuf) {
         encoder.close();
         if (SD.exists(path)) SD.remove(path);
@@ -9433,6 +9648,9 @@ bool captureScreenToJpeg(String &savedPathOut, String &errorOut)
         errorOut = "oom_mcu";
         return false;
     }
+    Serial.printf("[JPEG] MCU buffer bytes=%u psram=%d\n",
+                  static_cast<unsigned int>(mcuBytes),
+                  boardHasUsablePsram() && esp_ptr_external_ram(mcuBuf) ? 1 : 0);
 
     bool ok = true;
     const unsigned long startedMs = millis();
