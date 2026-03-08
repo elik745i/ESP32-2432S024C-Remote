@@ -7,6 +7,7 @@ Current firmware version: **`0.1.2`**
 Supported boards:
 - `ESP32-2432S024C` (`240x320`, `ILI9341`, `CST820`)
 - `ESP32-3248S035` (`320x480`, `ST7796`, `GT911`)
+- `ESP32-S3-3248S035-N16R8` (`320x480`, `ST7796`, `GT911`, `ESP32-S3-WROOM-1-N16R8`)
 
 ![ESP32 Remote Render](3D_Models/render1.jpeg)
 
@@ -53,9 +54,26 @@ Board references used while adding `ESP32-3248S035` support:
 - https://homeding.github.io/boards/esp32/panel-3248S035.htm
 - https://github.com/ardnew/ESP32-3248S035
 
-## Shared Pin Mapping
+### `ESP32-S3-3248S035-N16R8`
 
-### Display
+This firmware also supports swapping the original `ESP32-WROOM-32` controller for an `ESP32-S3-WROOM-1-N16R8` (`16 MB flash`, `8 MB PSRAM`) on the `3248S035` hardware.
+
+Build target:
+- `esp32-s3-3248s035-n16r8`
+
+Custom PlatformIO board file:
+- [`boards/esp32-s3-devkitc1-n16r8.json`](boards/esp32-s3-devkitc1-n16r8.json)
+
+Swap photos:
+
+![ESP32-S3 N16R8 swap 1](documents/Swap_to_ESP32_S3_N16R8_1.jpg)
+![ESP32-S3 N16R8 swap 2](documents/Swap_to_ESP32_S3_N16R8_2.jpg)
+
+## Pin Mapping
+
+### `ESP32-2432S024C`
+
+Display:
 
 | Signal | GPIO |
 |---|---|
@@ -67,7 +85,7 @@ Board references used while adding `ESP32-3248S035` support:
 | `TFT_BL` | 27 |
 | `TFT_RST` | `-1` |
 
-### Touch
+Touch:
 
 | Signal | GPIO |
 |---|---|
@@ -76,7 +94,49 @@ Board references used while adding `ESP32-3248S035` support:
 | `TOUCH_RST` | 25 |
 | `TOUCH_IRQ` | 21 |
 
-### SD Card
+SD Card:
+
+| Signal | GPIO |
+|---|---|
+| `SD_CS` | 5 |
+| `SD_MOSI` | 23 |
+| `SD_MISO` | 19 |
+| `SD_SCK` | 18 |
+
+Audio, LEDs, Sensors:
+
+| Function | GPIO / Value |
+|---|---|
+| Audio DAC left (I2S port 0) | 26 |
+| RGB R | 4 |
+| RGB G | 17 |
+| RGB B | 16 |
+| RGB mode | active-low |
+| Battery ADC | 35 |
+| Light ADC | 34 |
+
+### `ESP32-3248S035`
+
+| Signal | GPIO |
+|---|---|
+| `TFT_MOSI` | 13 |
+| `TFT_MISO` | 12 |
+| `TFT_SCLK` | 14 |
+| `TFT_CS` | 15 |
+| `TFT_DC` | 2 |
+| `TFT_BL` | 27 |
+| `TFT_RST` | `-1` |
+
+Touch:
+
+| Signal | GPIO |
+|---|---|
+| `TOUCH_SDA` | 33 |
+| `TOUCH_SCL` | 32 |
+| `TOUCH_RST` | 25 |
+| `TOUCH_IRQ` | 21 |
+
+SD Card:
 
 | Signal | GPIO |
 |---|---|
@@ -90,7 +150,7 @@ Mount/recovery SPI speeds:
 - `4 MHz`
 - `1 MHz`
 
-### Audio, LEDs, Sensors
+Audio, LEDs, Sensors:
 
 | Function | GPIO / Value |
 |---|---|
@@ -103,6 +163,55 @@ Mount/recovery SPI speeds:
 | Light ADC | 34 |
 
 Note: RGB logical red/green are swapped in software to match the wiring used by this project.
+
+### `ESP32-S3-3248S035-N16R8`
+
+The `ESP32-S3` swap keeps the same panel and touch controller, but remaps the controller-side wiring in firmware.
+
+Display:
+
+| Signal | Original ESP32 | ESP32-S3 |
+|---|---:|---:|
+| `TFT_SCLK` | 14 | 19 |
+| `TFT_DC` | 2 | 48 |
+| `TFT_CS` | 15 | 47 |
+| `TFT_MOSI` | 13 | 9 |
+| `TFT_MISO` | 12 | 20 |
+| `TFT_BL` | 27 | 8 |
+| `TFT_RST` | `-1` | `-1` |
+
+Touch:
+
+| Signal | Original ESP32 | ESP32-S3 |
+|---|---:|---:|
+| `TOUCH_IRQ` | 21 | 42 |
+| `TOUCH_RST` | 25 | 17 |
+| `TOUCH_SCL` | 32 | 15 |
+| `TOUCH_SDA` | 33 | 16 |
+
+SD Card:
+
+| Signal | Original ESP32 | ESP32-S3 |
+|---|---:|---:|
+| `SD_CS` | 5 | 38 |
+| `SD_MOSI` | 23 | 1 |
+| `SD_SCK` | 18 | 39 |
+| `SD_MISO` | 19 | 40 |
+
+Audio, LEDs, Sensors:
+
+| Function | Original ESP32 | ESP32-S3 |
+|---|---:|---:|
+| Audio output pin | 26 | 18 |
+| RGB R | 4 | 36 |
+| RGB G | 17 | 35 |
+| RGB B | 16 | 37 |
+| Battery ADC | 35 | 7 |
+| Light ADC | 34 | 6 |
+
+Notes:
+- `ESP32-S3` audio is currently disabled in firmware because the existing backend uses ESP32 internal DAC mode, which is not available on `ESP32-S3`.
+- Boot-time Wi-Fi and SD are kept conservative on the S3 build while the swap is being stabilized. Wi-Fi is enabled from explicit UI actions, and SD is mounted on demand from `Media`.
 
 ## Defaults
 
@@ -117,6 +226,7 @@ Board-specific defaults:
 |---|---|---|
 | `ESP32-2432S024C` | `ESP32-2432S024C-FM` | `esp32-2432s024c` |
 | `ESP32-3248S035` | `ESP32-3248S035-FM` | `esp32-3248s035` |
+| `ESP32-S3-3248S035-N16R8` | `ESP32-S3-3248S035-FM` | `esp32-s3-3248s035` |
 
 ### MQTT
 

@@ -43,11 +43,6 @@ static constexpr int DISPLAY_HEIGHT = TFT_HEIGHT;
 static constexpr int DISPLAY_CENTER_X = DISPLAY_WIDTH / 2;
 static constexpr int DISPLAY_CENTER_Y = DISPLAY_HEIGHT / 2;
 
-// Sunton ESP32 panels share these board-level pins across the supported variants.
-static constexpr int TOUCH_SDA = 33;
-static constexpr int TOUCH_SCL = 32;
-static constexpr int TOUCH_RST = 25;
-static constexpr int TOUCH_IRQ = 21;
 static constexpr uint32_t TOUCH_I2C_HZ = 400000U;
 static constexpr bool TOUCH_USE_IRQ = false;
 static constexpr unsigned long TOUCH_POLL_INTERVAL_MS = 6UL;
@@ -56,7 +51,22 @@ static constexpr uint16_t TOUCH_REINIT_FAIL_THRESHOLD = 40;
 static constexpr unsigned long TOUCH_REINIT_MIN_INTERVAL_MS = 8000UL;
 static constexpr uint8_t TFT_ROTATION = 0;
 
-#if defined(BOARD_ESP32_3248S035)
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+static constexpr int TOUCH_SDA = 16;
+static constexpr int TOUCH_SCL = 15;
+static constexpr int TOUCH_RST = 17;
+static constexpr int TOUCH_IRQ = 42;
+static constexpr TouchControllerType TOUCH_CONTROLLER = TOUCH_CTRL_GT911;
+static constexpr uint8_t TOUCH_ROTATION_OFFSET = 0;
+static constexpr const char *DEVICE_MODEL = "ESP32-S3-3248S035 N16R8 Touch Remote";
+static constexpr const char *DEVICE_SHORT_NAME = "ESP32-S3-3248S035";
+static constexpr const char *AP_SSID = "ESP32-S3-3248S035-FM";
+static constexpr const char *MDNS_HOST = "esp32-s3-3248s035";
+#elif defined(BOARD_ESP32_3248S035)
+static constexpr int TOUCH_SDA = 33;
+static constexpr int TOUCH_SCL = 32;
+static constexpr int TOUCH_RST = 25;
+static constexpr int TOUCH_IRQ = 21;
 static constexpr TouchControllerType TOUCH_CONTROLLER = TOUCH_CTRL_GT911;
 static constexpr uint8_t TOUCH_ROTATION_OFFSET = 0;
 static constexpr const char *DEVICE_MODEL = "ESP32-3248S035 Touch Remote";
@@ -64,6 +74,10 @@ static constexpr const char *DEVICE_SHORT_NAME = "ESP32-3248S035";
 static constexpr const char *AP_SSID = "ESP32-3248S035-FM";
 static constexpr const char *MDNS_HOST = "esp32-3248s035";
 #else
+static constexpr int TOUCH_SDA = 33;
+static constexpr int TOUCH_SCL = 32;
+static constexpr int TOUCH_RST = 25;
+static constexpr int TOUCH_IRQ = 21;
 static constexpr TouchControllerType TOUCH_CONTROLLER = TOUCH_CTRL_CST820;
 static constexpr uint8_t TOUCH_ROTATION_OFFSET = 0;
 static constexpr const char *DEVICE_MODEL = "ESP32-2432S024C Touch Remote";
@@ -79,11 +93,17 @@ static constexpr uint16_t GT911_REG_PRODUCT_ID = 0x8140;
 static constexpr uint16_t GT911_REG_STATUS = 0x814E;
 static constexpr uint16_t GT911_REG_POINT1 = 0x814F;
 
-// User-provided TF card pins.
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+static constexpr int SD_CS = 38;
+static constexpr int SD_MOSI = 1;
+static constexpr int SD_SCK = 39;
+static constexpr int SD_MISO = 40;
+#else
 static constexpr int SD_CS = 5;
 static constexpr int SD_MOSI = 23;
 static constexpr int SD_SCK = 18;
 static constexpr int SD_MISO = 19;
+#endif
 static constexpr uint32_t SD_SPI_FREQ_HZ = 8000000U;
 static constexpr uint32_t SD_SPI_FREQ_RECOVERY_HZ = 4000000U;
 static constexpr uint32_t SD_SPI_FREQ_SAFE_HZ = 1000000U;
@@ -107,15 +127,22 @@ static_assert(TOUCH_RST != SD_CS && TOUCH_RST != SD_MOSI && TOUCH_RST != SD_SCK 
 static_assert(TOUCH_IRQ != SD_CS && TOUCH_IRQ != SD_MOSI && TOUCH_IRQ != SD_SCK && TOUCH_IRQ != SD_MISO,
               "Pin conflict: TOUCH_IRQ overlaps SD SPI pin");
 
-// User-provided speaker pin (SC8002B related, reserved for I2S usage).
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+static constexpr bool AUDIO_BACKEND_SUPPORTED = false;
+static constexpr int I2S_SPK_PIN = 18;
+#else
+static constexpr bool AUDIO_BACKEND_SUPPORTED = true;
 static constexpr int I2S_SPK_PIN = 26;
+#endif
 static constexpr uint8_t AUDIO_I2S_PORT = I2S_NUM_0;
 static constexpr uint8_t AUDIO_VOLUME_TARGET = 21;
 static constexpr bool AUDIO_FORCE_MONO_INTERNAL_DAC = true;
+#if !defined(BOARD_ESP32S3_3248S035_N16R8)
 // ESP32-audioI2S uses LEFT_EN (value 2) for DAC2 on GPIO26.
 // Keep TOUCH_RST on GPIO25 untouched (DAC1 / RIGHT_EN must stay disabled).
 static constexpr uint8_t AUDIO_INTERNAL_DAC_CHANNEL = static_cast<uint8_t>(I2S_DAC_CHANNEL_LEFT_EN);
 static_assert(I2S_DAC_CHANNEL_LEFT_EN == 2, "Unexpected DAC enum mapping: GPIO26 output would be unsafe");
+#endif
 static constexpr int AUDIO_INPUT_RAM_BUFFER_BYTES = 2048;
 static constexpr uint32_t AUDIO_PREEMPTIVE_NET_SUSPEND_LARGEST_8BIT = 28000U;
 static constexpr unsigned long AUDIO_NETWORK_RESUME_RETRY_MS = 2000UL;
@@ -124,22 +151,34 @@ static constexpr uint32_t AUDIO_INIT_MIN_DMA_BLOCK = 12000U;
 static constexpr unsigned long AUDIO_INIT_RETRY_MS = 1200UL;
 static constexpr uint32_t AUDIO_FLAC_MIN_FREE_HEAP = 120000U;
 static constexpr uint32_t AUDIO_FLAC_MIN_LARGEST_8BIT = 45000U;
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+static constexpr int RGB_PIN_R = 36;
+static constexpr int RGB_PIN_G = 35;
+static constexpr int RGB_PIN_B = 37;
+#else
 static constexpr int RGB_PIN_R = 4;
 static constexpr int RGB_PIN_G = 17;
 static constexpr int RGB_PIN_B = 16;
+#endif
 static constexpr bool RGB_ACTIVE_LOW = true;
 static constexpr uint8_t TFT_BL_LEDC_CHANNEL = 0;
 static constexpr uint16_t TFT_BL_LEDC_FREQ = 5000;
 static constexpr uint8_t TFT_BL_LEDC_RES = 8;
 static constexpr uint8_t TFT_BL_LEVEL_ON = 255;
 static constexpr uint8_t TFT_BL_LEVEL_OFF = 0;
+static constexpr bool DISPLAY_BACKLIGHT_PWM_SUPPORTED = true;
 static constexpr unsigned long LCD_IDLE_TIMEOUT_MS = 120000;
 static constexpr unsigned long SENSOR_SAMPLE_PERIOD_MS = 2000;
 static constexpr unsigned long LIGHT_SLEEP_AFTER_IDLE_MS = 20000;
 static constexpr bool LIGHT_SLEEP_TIMER_FALLBACK = false;
 static constexpr uint64_t LIGHT_SLEEP_TIMER_US = 5000000ULL;
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+static constexpr int BATTERY_ADC_PIN = 7;
+static constexpr int LIGHT_ADC_PIN = 6;
+#else
 static constexpr int BATTERY_ADC_PIN = 35;
 static constexpr int LIGHT_ADC_PIN = 34;
+#endif
 static constexpr float BATTERY_DIVIDER_R_TOP = 220000.0f;
 static constexpr float BATTERY_DIVIDER_R_BOTTOM = 100000.0f;
 static constexpr float BATTERY_CAL_FACTOR = 0.96f;
@@ -177,7 +216,7 @@ static constexpr uint32_t WS_TELEMETRY_MIN_FREE_HEAP = 50000U;
 
 void serialLogPushLine(const char *line, bool sendWs = true);
 void executeSerialCommand(String input);
-HardwareSerial &serialHw = ::Serial;
+decltype(::Serial) &serialHw = ::Serial;
 
 class MirroredSerialPort {
 public:
@@ -247,7 +286,11 @@ struct OtaUploadCtx {
 };
 
 TFT_eSPI tft;
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+SPIClass sdSpi(FSPI);
+#else
 SPIClass sdSpi(HSPI);
+#endif
 AsyncWebServer server(80);
 AsyncWebSocket wsCarInput("/CarInput");
 DNSServer dnsServer;
@@ -280,6 +323,7 @@ int32_t wifiRssiSafe();
 String wifiSsidSafe();
 String wifiIpSafe();
 void registerWifiEvents();
+static void wifiEnsureRuntimeEnabled(const char *reason, wifi_mode_t mode);
 void ensureApOnline(const char *reason);
 void disableApWhenStaConnected(const char *reason);
 static void stopDnsForAp();
@@ -355,6 +399,7 @@ static int p2pFindPeerByPubKeyHex(const String &pubKeyHex);
 void p2pBroadcastDiscover();
 bool p2pAddOrUpdateTrustedPeer(const String &name, const String &pubKeyHex, const IPAddress &ip, uint16_t port);
 void setupWifiAndServer();
+void setupWebRoutes();
 void lvglRefreshChatUi();
 void lvglRefreshChatPeerUi();
 void lvglSetChatKeyboardVisible(bool visible);
@@ -1125,6 +1170,10 @@ bool wsRebootOnDisconnectEnabled = false;
 bool airplaneModeEnabled = false;
 bool p2pUdpStarted = false;
 bool p2pReady = false;
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+static int p2pUdpLastParseError = 0;
+static unsigned long p2pUdpLastParseErrorMs = 0;
+#endif
 unsigned char p2pPublicKey[P2P_PUBLIC_KEY_BYTES] = {0};
 unsigned char p2pSecretKey[P2P_SECRET_KEY_BYTES] = {0};
 unsigned long p2pLastDiscoverAnnounceMs = 0;
@@ -3074,6 +3123,7 @@ void lvglWifiDisconnectEvent(lv_event_t *e);
 void lvglWifiForgetEvent(lv_event_t *e);
 void lvglWifiApSaveEvent(lv_event_t *e);
 void lvglMediaRefreshEvent(lv_event_t *e);
+static void mediaEnsureStorageReadyForUi();
 void lvglOpenSnakeEvent(lv_event_t *e);
 void lvglOpenTetrisEvent(lv_event_t *e);
 void lvglOpenMqttCfgEvent(lv_event_t *e);
@@ -3884,6 +3934,7 @@ void lvglOpenScreen(UiScreen screen, lv_scr_load_anim_t anim)
     } else if (screen == UI_CHAT_PEERS) {
         lvglRefreshChatPeerUi();
     } else if (screen == UI_MEDIA) {
+        mediaEnsureStorageReadyForUi();
         lvglQueueMediaRefresh();
     } else if (screen == UI_INFO) {
         lvglRefreshInfoPanel();
@@ -4091,6 +4142,7 @@ void lvglWifiEntryEvent(lv_event_t *e)
 void lvglMediaRefreshEvent(lv_event_t *e)
 {
     (void)e;
+    mediaEnsureStorageReadyForUi();
     lvglQueueMediaRefresh();
 }
 
@@ -4839,8 +4891,13 @@ void p2pEnsureUdp()
     if (!p2pReady) return;
     if (p2pUdpStarted) return;
     if (WiFi.getMode() == WIFI_OFF) return;
+    if (!wifiConnectedSafe()) return;
     if (p2pUdp.begin(P2P_UDP_PORT) == 1) {
         p2pUdpStarted = true;
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+        p2pUdpLastParseError = 0;
+        p2pUdpLastParseErrorMs = 0;
+#endif
         Serial.printf("[P2P] UDP listening on %u\n", static_cast<unsigned int>(P2P_UDP_PORT));
     }
 }
@@ -5002,6 +5059,13 @@ bool p2pAddOrUpdateTrustedPeer(const String &name, const String &pubKeyHex, cons
 void p2pService()
 {
     if (!p2pReady) return;
+    if (!wifiConnectedSafe()) {
+        if (p2pUdpStarted) {
+            p2pUdp.stop();
+            p2pUdpStarted = false;
+        }
+        return;
+    }
     p2pEnsureUdp();
     if (!p2pUdpStarted) return;
 
@@ -5012,6 +5076,27 @@ void p2pService()
     }
 
     int packetLen = p2pUdp.parsePacket();
+    if (packetLen < 0) {
+        const unsigned long nowMs = millis();
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+        if (p2pUdpLastParseError != packetLen ||
+            static_cast<unsigned long>(nowMs - p2pUdpLastParseErrorMs) >= 3000UL) {
+            Serial.printf("[P2P] UDP parsePacket error=%d mode=%d sta=%d ap=%d\n",
+                          packetLen,
+                          static_cast<int>(WiFi.getMode()),
+                          wifiConnectedSafe() ? 1 : 0,
+                          apModeActive ? 1 : 0);
+            p2pUdpLastParseError = packetLen;
+            p2pUdpLastParseErrorMs = nowMs;
+        }
+#else
+        (void)nowMs;
+#endif
+        p2pUdp.stop();
+        p2pUdpStarted = false;
+        delay(1);
+        return;
+    }
     while (packetLen > 0) {
         if (packetLen >= 4 && packetLen <= static_cast<int>(P2P_MAX_PACKET)) {
             uint8_t packet[P2P_MAX_PACKET] = {0};
@@ -5100,6 +5185,13 @@ void p2pService()
             while (p2pUdp.available()) p2pUdp.read();
         }
         packetLen = p2pUdp.parsePacket();
+        if (packetLen < 0) {
+            p2pUdp.stop();
+            p2pUdpStarted = false;
+            delay(1);
+            return;
+        }
+        yield();
     }
 }
 
@@ -6270,9 +6362,15 @@ void lvglInitUi()
                   static_cast<unsigned int>(LV_COLOR_DEPTH),
                   static_cast<unsigned int>(ESP.getFreeHeap()),
                   static_cast<unsigned int>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+    Serial.println("[LVGL] step lv_init");
     lv_init();
+    Serial.println("[LVGL] step lv_init done");
+    Serial.println("[LVGL] step read tft size");
     const uint32_t horRes = static_cast<uint32_t>(tft.width());
     const uint32_t verRes = static_cast<uint32_t>(tft.height());
+    Serial.printf("[LVGL] tft size %ux%u\n",
+                  static_cast<unsigned int>(horRes),
+                  static_cast<unsigned int>(verRes));
     if (horRes == 0 || verRes == 0) {
         Serial.println("[LVGL] invalid TFT resolution");
         return;
@@ -6284,12 +6382,26 @@ void lvglInitUi()
         if (lines > LVGL_BUF_LINES_MAX) lines = LVGL_BUF_LINES_MAX;
         while (lines >= 2) {
             const size_t pxCount = static_cast<size_t>(horRes) * static_cast<size_t>(lines);
+            Serial.printf("[LVGL] alloc try lines=%u bytes=%u\n",
+                          static_cast<unsigned int>(lines),
+                          static_cast<unsigned int>(pxCount * sizeof(lv_color_t)));
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+            lv_color_t *candidate = static_cast<lv_color_t *>(heap_caps_malloc(
+                pxCount * sizeof(lv_color_t),
+                MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT
+            ));
+#else
             lv_color_t *candidate = static_cast<lv_color_t *>(malloc(pxCount * sizeof(lv_color_t)));
+#endif
             if (candidate) {
                 lvglDrawPixels = candidate;
                 lvglBufLinesActive = lines;
+                Serial.printf("[LVGL] alloc ok lines=%u ptr=%p\n",
+                              static_cast<unsigned int>(lines),
+                              static_cast<void *>(candidate));
                 break;
             }
+            Serial.printf("[LVGL] alloc fail lines=%u\n", static_cast<unsigned int>(lines));
             lines /= 2;
         }
     }
@@ -6302,23 +6414,29 @@ void lvglInitUi()
         return;
     }
 
+    Serial.println("[LVGL] step draw_buf_init");
     lv_disp_draw_buf_init(
         &lvglDrawBuf,
         lvglDrawPixels,
         nullptr,
         static_cast<uint32_t>(horRes * static_cast<uint32_t>(lvglBufLinesActive))
     );
+    Serial.println("[LVGL] step disp_drv_init");
     lv_disp_drv_init(&lvglDispDrv);
     lvglDispDrv.hor_res = static_cast<lv_coord_t>(horRes);
     lvglDispDrv.ver_res = static_cast<lv_coord_t>(verRes);
     lvglDispDrv.flush_cb = lvglFlushCb;
     lvglDispDrv.draw_buf = &lvglDrawBuf;
+    Serial.println("[LVGL] step disp_drv_register");
     lv_disp_drv_register(&lvglDispDrv);
 
+    Serial.println("[LVGL] step indev_drv_init");
     lv_indev_drv_init(&lvglIndevDrv);
     lvglIndevDrv.type = LV_INDEV_TYPE_POINTER;
     lvglIndevDrv.read_cb = lvglTouchReadCb;
+    Serial.println("[LVGL] step indev_drv_register");
     lvglTouchIndev = lv_indev_drv_register(&lvglIndevDrv);
+    Serial.println("[LVGL] step ensure top bar");
     lvglEnsurePersistentTopBar();
 
     lvglLastTickMs = millis();
@@ -6487,6 +6605,7 @@ void cpuLoadService(uint32_t loopStartUs)
 
 uint16_t readLightRaw()
 {
+    if (LIGHT_ADC_PIN < 0) return 0;
     uint32_t sum = 0;
     for (int i = 0; i < LIGHT_ADC_SAMPLES; i++) {
         sum += analogRead(LIGHT_ADC_PIN);
@@ -6560,20 +6679,27 @@ void sampleTopIndicators()
         }
     }
 
-    lightRawAdc = readLightRaw();
-    const uint8_t rawLightPercent = lightPercentFromRaw(lightRawAdc);
-    if (!lightFilterInitialized) {
-        lightPercentFiltered = rawLightPercent;
-        lightFilterInitialized = true;
-    } else {
-        lightPercentFiltered += LIGHT_FILTER_ALPHA * (static_cast<float>(rawLightPercent) - lightPercentFiltered);
-    }
-    lightPercent = static_cast<uint8_t>(lightPercentFiltered + 0.5f);
+    if (LIGHT_ADC_PIN >= 0) {
+        lightRawAdc = readLightRaw();
+        const uint8_t rawLightPercent = lightPercentFromRaw(lightRawAdc);
+        if (!lightFilterInitialized) {
+            lightPercentFiltered = rawLightPercent;
+            lightFilterInitialized = true;
+        } else {
+            lightPercentFiltered += LIGHT_FILTER_ALPHA * (static_cast<float>(rawLightPercent) - lightPercentFiltered);
+        }
+        lightPercent = static_cast<uint8_t>(lightPercentFiltered + 0.5f);
 
-    if (LIGHT_LOG_RAW_TO_SERIAL && millis() - lastLightLogMs >= 2000) {
-        lastLightLogMs = millis();
-        Serial.printf("[LIGHT] raw=%u min=%u max=%u pct=%u\n",
-                      lightRawAdc, lightMinObserved, lightMaxObserved, lightPercent);
+        if (LIGHT_LOG_RAW_TO_SERIAL && millis() - lastLightLogMs >= 2000) {
+            lastLightLogMs = millis();
+            Serial.printf("[LIGHT] raw=%u min=%u max=%u pct=%u\n",
+                          lightRawAdc, lightMinObserved, lightMaxObserved, lightPercent);
+        }
+    } else {
+        lightRawAdc = 0;
+        lightPercent = 0;
+        lightPercentFiltered = 0.0f;
+        lightFilterInitialized = true;
     }
 }
 
@@ -6659,6 +6785,7 @@ bool animateChargingBeforeSleep()
 
 void displayBacklightInit()
 {
+    if (!DISPLAY_BACKLIGHT_PWM_SUPPORTED) return;
     ledcSetup(TFT_BL_LEDC_CHANNEL, TFT_BL_LEDC_FREQ, TFT_BL_LEDC_RES);
     ledcAttachPin(TFT_BL, TFT_BL_LEDC_CHANNEL);
     displayBacklightSet(TFT_BL_LEVEL_OFF);
@@ -6672,6 +6799,7 @@ uint8_t displayBacklightLevelFromPercent(uint8_t percent)
 
 void displayBacklightSet(uint8_t level)
 {
+    if (!DISPLAY_BACKLIGHT_PWM_SUPPORTED) return;
     ledcWrite(TFT_BL_LEDC_CHANNEL, level);
 }
 
@@ -6694,6 +6822,7 @@ const char *authName(wifi_auth_mode_t auth)
 
 void refreshWifiScan()
 {
+    wifiEnsureRuntimeEnabled("scan", WIFI_STA);
     const int scanState = WiFi.scanComplete();
     if (scanState == WIFI_SCAN_RUNNING) return;
     WiFi.scanDelete();
@@ -7269,6 +7398,12 @@ void rgbRefreshByMediaState()
 
 bool audioEnsureBackendReady(const char *reason)
 {
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+    Serial.printf("[AUDIO] backend unavailable on this build: GPIO %d mapped but internal DAC mode is ESP32-only reason=%s\n",
+                  I2S_SPK_PIN,
+                  (reason && reason[0]) ? reason : "-");
+    return false;
+#else
     if (audioBackendReady && audio) return true;
     const unsigned long now = millis();
     if (static_cast<unsigned long>(now - audioLastInitAttemptMs) < AUDIO_INIT_RETRY_MS) return false;
@@ -7303,6 +7438,7 @@ bool audioEnsureBackendReady(const char *reason)
                   static_cast<unsigned long>(dmaLargest),
                   (reason && reason[0]) ? reason : "-");
     return true;
+#endif
 }
 
 void audioSetVolumeImmediate(uint8_t v)
@@ -7515,6 +7651,19 @@ bool mediaStartTrack(const String &sourcePath, const String &displayName)
     return true;
 }
 
+static void mediaEnsureStorageReadyForUi()
+{
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+    if (!sdMounted) {
+        setupSd();
+    } else {
+        sdEnsureMounted();
+    }
+#else
+    sdEnsureMounted();
+#endif
+}
+
 void audioSetPaused(bool pause)
 {
     if (!audioBackendReady || !audio) return;
@@ -7664,6 +7813,10 @@ void displaySetAwake(bool awake)
 
 bool canEnterLowPowerSleep(bool touchDownNow)
 {
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+    (void)touchDownNow;
+    return false;
+#else
     if (touchDownNow) return false;
     if (wifiConnectedSafe()) return false; // requested: sleep only when not connected
     if (batteryCharging) return false;
@@ -7674,6 +7827,7 @@ bool canEnterLowPowerSleep(bool touchDownNow)
     if (displayAwake) return false;
     if (millis() - lastUserActivityMs < LIGHT_SLEEP_AFTER_IDLE_MS) return false;
     return true;
+#endif
 }
 
 void enterLowPowerSleep()
@@ -8171,11 +8325,32 @@ static void stopDnsForAp()
     dnsRunning = false;
 }
 
+static void wifiEnsureRuntimeEnabled(const char *reason, wifi_mode_t mode)
+{
+    if (airplaneModeEnabled) return;
+    registerWifiEvents();
+    WiFi.persistent(false);
+    WiFi.setAutoReconnect(false);
+    WiFi.setSleep(false);
+    if (WiFi.getMode() != mode) WiFi.mode(mode);
+    if (!webRoutesRegistered) {
+        setupWebRoutes();
+        webRoutesRegistered = true;
+    }
+    if (!webServerRunning) {
+        server.begin();
+        webServerRunning = true;
+    }
+    Serial.printf("[WIFI] runtime enabled reason=%s mode=%d\n",
+                  reason ? reason : "-",
+                  static_cast<int>(mode));
+}
+
 void ensureApOnline(const char *reason)
 {
     if (networkSuspendedForAudio || airplaneModeEnabled) return;
     if (apModeActive) return;
-    if (WiFi.getMode() != WIFI_AP_STA) WiFi.mode(WIFI_AP_STA);
+    wifiEnsureRuntimeEnabled(reason ? reason : "ensure_ap", WIFI_AP_STA);
     const char *apSsid = savedApSsid.length() ? savedApSsid.c_str() : AP_SSID;
     const char *apPass = savedApPass.length() ? savedApPass.c_str() : AP_PASS;
     if (!WiFi.softAP(apSsid, apPass)) {
@@ -8207,7 +8382,7 @@ static void beginStaConnectAttempt(const char *reason)
     const String ssid = wifiDesiredStaSsid();
     const String pass = wifiDesiredStaPass();
     const wifi_mode_t mode = apModeActive ? WIFI_AP_STA : WIFI_STA;
-    if (WiFi.getMode() != mode) WiFi.mode(mode);
+    wifiEnsureRuntimeEnabled(reason ? reason : "sta_connect", mode);
     WiFi.begin(ssid.c_str(), pass.c_str());
     bootStaConnectInProgress = true;
     bootStaConnectStartedMs = millis();
@@ -11010,6 +11185,9 @@ void setupWebRoutes()
 void wifiConnectionService()
 {
     if (networkSuspendedForAudio || airplaneModeEnabled) return;
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+    if (!bootWifiInitPending && WiFi.getMode() == WIFI_OFF) return;
+#endif
 
     if (wifiStaGotIpPending) {
         wifiStaGotIpPending = false;
@@ -11195,6 +11373,7 @@ void setupWifiAndServer()
     registerWifiEvents();
     WiFi.persistent(false);
     WiFi.setAutoReconnect(false);
+    WiFi.setSleep(false);
     WiFi.mode(WIFI_STA);
     apModeActive = false;
     stopDnsForAp();
@@ -11229,23 +11408,42 @@ void setupSd()
 void setup()
 {
     sdMutex = xSemaphoreCreateMutex();
+    Serial.begin(115200);
+    Serial.println();
+    Serial.printf("[BOOT] setup start board=%s\n", deviceShortNameValue().c_str());
+    Serial.println("[BOOT] step displayBacklightInit");
     displayBacklightInit();
+    Serial.println("[BOOT] step rgb pinMode");
     pinMode(RGB_PIN_R, OUTPUT);
     pinMode(RGB_PIN_G, OUTPUT);
     pinMode(RGB_PIN_B, OUTPUT);
+    Serial.println("[BOOT] step touch irq pinMode");
     pinMode(TOUCH_IRQ, TOUCH_USE_IRQ ? INPUT_PULLUP : INPUT);
+    Serial.println("[BOOT] step rgbApplyNow");
     rgbApplyNow(false, false, false);
+    Serial.println("[BOOT] step analogReadResolution");
     analogReadResolution(12);
+    Serial.println("[BOOT] step battery attenuation");
     analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);
-    analogSetPinAttenuation(LIGHT_ADC_PIN, ADC_11db);
+    if (LIGHT_ADC_PIN >= 0) {
+        Serial.println("[BOOT] step light attenuation");
+        analogSetPinAttenuation(LIGHT_ADC_PIN, ADC_11db);
+    }
+    Serial.println("[BOOT] step randomSeed");
     randomSeed(static_cast<unsigned long>(esp_random()));
+    Serial.println("[BOOT] step sodium_init");
     p2pReady = sodium_init() >= 0;
+    Serial.println("[BOOT] step loadP2pConfig");
     if (p2pReady) loadP2pConfig();
+    Serial.println("[BOOT] step loadUiRuntimeConfig");
     loadUiRuntimeConfig();
+    Serial.println("[BOOT] step mqttBuildIdentity");
     mqttBuildIdentity();
+    Serial.println("[BOOT] step loadMqttConfig");
     loadMqttConfig();
     if (mqttCfg.enabled) mqttStatusLine = "Enabled";
     else mqttStatusLine = "Disabled";
+    Serial.println("[BOOT] step sampleTopIndicators");
     sampleTopIndicators();
     float prevBootV = 0.0f;
     if (loadBatterySnapshot(prevBootV)) {
@@ -11258,8 +11456,6 @@ void setup()
     lastBatterySnapshotVoltage = batteryVoltage;
     lastBatterySnapshotMs = millis();
 
-    Serial.begin(115200);
-    Serial.println();
     Serial.printf("%s UI + fallback file manager\n", deviceShortNameValue().c_str());
     Serial.printf("[P2P] ready=%d pub=%s\n", p2pReady ? 1 : 0, p2pReady ? p2pPublicKeyHex().c_str() : "-");
 
@@ -11272,14 +11468,29 @@ void setup()
     touchInit();
     lvglInitUi();
     if (lvglReady) {
+        Serial.println("[BOOT] step lv_timer_handler");
         lv_timer_handler();
+        Serial.println("[BOOT] step lv_timer_handler done");
         delay(20);
     }
+    Serial.println("[BOOT] step displayBacklightFadeIn");
     displayBacklightFadeIn();
+    Serial.println("[BOOT] step displayBacklightFadeIn done");
     Serial.println("[BOOT] SD/network init deferred to loop");
     bootDeferredStartMs = millis();
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+    bootSdInitPending = false;
+    Serial.println("[BOOT] SD auto-init disabled on ESP32-S3 during bring-up");
+#else
     bootSdInitPending = true;
+#endif
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+    bootWifiInitPending = false;
+    WiFi.mode(WIFI_OFF);
+    Serial.println("[BOOT] WiFi auto-init disabled on ESP32-S3 pending network stabilization");
+#else
     bootWifiInitPending = true;
+#endif
     delay(20);
     sdStatsLogSnapshot(sdStatsSnapshot(), "boot");
     Serial.println("[AUDIO] backend init deferred until playback");
@@ -11287,7 +11498,11 @@ void setup()
     lastUserActivityMs = millis();
     lastSensorSampleMs = millis();
 
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+    Serial.printf("Audio output is disabled on this ESP32-S3 build; GPIO %d is reserved until external I2S pinout is wired in firmware\n", I2S_SPK_PIN);
+#else
     Serial.printf("Audio decoder ready, internal DAC2 on GPIO %d only (GPIO25 kept for TOUCH_RST)\n", I2S_SPK_PIN);
+#endif
     Serial.printf("[TOUCH] ctrl=%s mode=%s irq_pin=%d i2c=(sda=%d,scl=%d,rst=%d)\n",
                   TOUCH_CONTROLLER == TOUCH_CTRL_GT911 ? "gt911" : "cst820",
                   TOUCH_USE_IRQ ? "irq+poll" : "poll-only",
@@ -11317,7 +11532,7 @@ void loop()
     if (static_cast<unsigned long>(now - lastServiceSliceMs) >= DNS_SERVICE_INTERVAL_MS) {
         lastServiceSliceMs = now;
         serviceSlicePhase = static_cast<uint8_t>((serviceSlicePhase + 1U) % 5U);
-        dnsServer.processNextRequest();
+        if (dnsRunning) dnsServer.processNextRequest();
         rgbService();
         switch (serviceSlicePhase) {
             case 0:
