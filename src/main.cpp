@@ -66,6 +66,7 @@ static constexpr const char *DEVICE_MODEL = "ESP32-S3-3248S035 N16R8 Touch Remot
 static constexpr const char *DEVICE_SHORT_NAME = "ESP32-S3-3248S035";
 static constexpr const char *AP_SSID = "ESP32-S3-3248S035-FM";
 static constexpr const char *MDNS_HOST = "esp32-s3-3248s035";
+static constexpr const char *OTA_ASSET_NAME = "esp32-s3-3248s035-n16r8";
 #elif defined(BOARD_ESP32_3248S035)
 static constexpr int TOUCH_SDA = 33;
 static constexpr int TOUCH_SCL = 32;
@@ -77,6 +78,7 @@ static constexpr const char *DEVICE_MODEL = "ESP32-3248S035 Touch Remote";
 static constexpr const char *DEVICE_SHORT_NAME = "ESP32-3248S035";
 static constexpr const char *AP_SSID = "ESP32-3248S035-FM";
 static constexpr const char *MDNS_HOST = "esp32-3248s035";
+static constexpr const char *OTA_ASSET_NAME = "esp32-3248s035";
 #else
 static constexpr int TOUCH_SDA = 33;
 static constexpr int TOUCH_SCL = 32;
@@ -88,6 +90,7 @@ static constexpr const char *DEVICE_MODEL = "ESP32-2432S024C Touch Remote";
 static constexpr const char *DEVICE_SHORT_NAME = "ESP32-2432S024C";
 static constexpr const char *AP_SSID = "ESP32-2432S024C-FM";
 static constexpr const char *MDNS_HOST = "esp32-2432s024c";
+static constexpr const char *OTA_ASSET_NAME = "esp32-2432s024c";
 #endif
 
 static constexpr uint8_t CST820_ADDR = 0x15;
@@ -212,7 +215,8 @@ static constexpr uint16_t LIGHT_RAW_CAL_MAX = 600;
 static constexpr bool LIGHT_LOG_RAW_TO_SERIAL = false;
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.1.2";
+static constexpr const char *FW_VERSION = "0.1.3";
+static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long STA_RETRY_INTERVAL_MS = 5000UL;
 static constexpr bool SERIAL_TERMINAL_TRANSFER_ENABLED = false;
 static constexpr size_t SERIAL_LOG_RING_SIZE = 200;
@@ -422,6 +426,10 @@ bool p2pSendChatAck(const String &peerKey, const String &messageId);
 String p2pPublicKeyHex();
 static int p2pFindPeerByPubKeyHex(const String &pubKeyHex);
 void p2pBroadcastDiscover();
+void p2pSendDiscoveryProbe();
+void p2pSendDiscoveryAnnounceTo(const IPAddress &ip, uint16_t port);
+bool p2pSendPairRequest(const String &name, const String &pubKeyHex, const IPAddress &ip, uint16_t port);
+void p2pSendPairResponse(const String &name, const String &pubKeyHex, const IPAddress &ip, uint16_t port, bool accepted);
 bool p2pAddOrUpdateTrustedPeer(const String &name, const String &pubKeyHex, const IPAddress &ip, uint16_t port);
 void setupWifiAndServer();
 void setupWebRoutes();
@@ -586,6 +594,7 @@ static lv_obj_t *lvglChatComposer = nullptr;
 static lv_obj_t *lvglChatContacts = nullptr;
 static lv_obj_t *lvglChatContactLabel = nullptr;
 static lv_obj_t *lvglChatPeersBtn = nullptr;
+static lv_obj_t *lvglChatDiscoveryBtn = nullptr;
 static lv_obj_t *lvglChatMenuBtn = nullptr;
 static lv_obj_t *lvglChatMenuBackdrop = nullptr;
 static lv_obj_t *lvglChatMenuPanel = nullptr;
@@ -635,6 +644,10 @@ static unsigned long lvglLastInfoRefreshMs = 0;
 static unsigned long lvglLastStatusRefreshMs = 0;
 static unsigned long lvglLastMediaPlayerRefreshMs = 0;
 static bool lvglMediaPlayerVisible = false;
+static bool p2pDiscoveryEnabled = true;
+static bool p2pPairPromptVisible = false;
+static bool p2pPairRequestPending = false;
+static int p2pPairRequestDiscoveredIdx = -1;
 
 bool sdLock(TickType_t timeout = pdMS_TO_TICKS(3000))
 {
@@ -1070,7 +1083,11 @@ static constexpr uint8_t P2P_PKT_VERSION = 1;
 static constexpr uint8_t P2P_PKT_TYPE_CHAT = 1;
 static constexpr uint8_t P2P_PKT_TYPE_DISCOVER = 2;
 static constexpr int MAX_P2P_PEERS = 8;
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
 static constexpr int MAX_P2P_DISCOVERED = 12;
+#else
+static constexpr int MAX_P2P_DISCOVERED = 10;
+#endif
 static constexpr size_t P2P_PUBLIC_KEY_BYTES = crypto_box_curve25519xchacha20poly1305_PUBLICKEYBYTES;
 static constexpr size_t P2P_SECRET_KEY_BYTES = crypto_box_curve25519xchacha20poly1305_SECRETKEYBYTES;
 static constexpr size_t P2P_NONCE_BYTES = crypto_box_curve25519xchacha20poly1305_NONCEBYTES;
@@ -1551,14 +1568,16 @@ bool gt911ProbeAddr(uint8_t addr, uint8_t *productIdOut = nullptr)
     if (!useful) return false;
     if (productIdOut) memcpy(productIdOut, productId, sizeof(productId));
 
-    Serial.printf("[TOUCH] gt911 probe addr=0x%02X pid=%02X %02X %02X %02X text='%c%c%c%c'%s\n",
-                  static_cast<unsigned int>(addr),
-                  productId[0], productId[1], productId[2], productId[3],
-                  printable ? productId[0] : '.',
-                  printable ? productId[1] : '.',
-                  printable ? productId[2] : '.',
-                  printable ? productId[3] : '.',
-                  printable ? "" : " nonprint");
+    if (VERBOSE_SERIAL_DEBUG) {
+        Serial.printf("[TOUCH] gt911 probe addr=0x%02X pid=%02X %02X %02X %02X text='%c%c%c%c'%s\n",
+                      static_cast<unsigned int>(addr),
+                      productId[0], productId[1], productId[2], productId[3],
+                      printable ? productId[0] : '.',
+                      printable ? productId[1] : '.',
+                      printable ? productId[2] : '.',
+                      printable ? productId[3] : '.',
+                      printable ? "" : " nonprint");
+    }
     return true;
 }
 
@@ -1611,10 +1630,12 @@ void cstInit()
     touchReadFailStreak = 0;
     touchGhostLowStreak = 0;
     touchLastInitMs = millis();
-    Serial.printf("[TOUCH] init ok=%d i2c=%lu irq=%d\n",
-                  ok ? 1 : 0,
-                  static_cast<unsigned long>(touchI2cHzActive),
-                  digitalRead(TOUCH_IRQ));
+    if (VERBOSE_SERIAL_DEBUG) {
+        Serial.printf("[TOUCH] init ok=%d i2c=%lu irq=%d\n",
+                      ok ? 1 : 0,
+                      static_cast<unsigned long>(touchI2cHzActive),
+                      digitalRead(TOUCH_IRQ));
+    }
 }
 
 void gt911Init()
@@ -1647,12 +1668,14 @@ void gt911Init()
     touchReadFailStreak = 0;
     touchGhostLowStreak = 0;
     touchLastInitMs = millis();
-    Serial.printf("[TOUCH] gt911 init ok=%d addr=0x%02X i2c=%lu irq=%d pid=%02X %02X %02X %02X\n",
-                  ok ? 1 : 0,
-                  static_cast<unsigned int>(touchI2cAddrActive),
-                  static_cast<unsigned long>(touchI2cHzActive),
-                  digitalRead(TOUCH_IRQ),
-                  detectedPid[0], detectedPid[1], detectedPid[2], detectedPid[3]);
+    if (VERBOSE_SERIAL_DEBUG) {
+        Serial.printf("[TOUCH] gt911 init ok=%d addr=0x%02X i2c=%lu irq=%d pid=%02X %02X %02X %02X\n",
+                      ok ? 1 : 0,
+                      static_cast<unsigned int>(touchI2cAddrActive),
+                      static_cast<unsigned long>(touchI2cHzActive),
+                      digitalRead(TOUCH_IRQ),
+                      detectedPid[0], detectedPid[1], detectedPid[2], detectedPid[3]);
+    }
 }
 
 void touchInit()
@@ -1667,9 +1690,11 @@ void touchTryRecoverBus(const char *reason)
     const unsigned long now = millis();
     if (static_cast<unsigned long>(now - touchLastRecoveryMs) < TOUCH_REINIT_MIN_INTERVAL_MS) return;
     touchLastRecoveryMs = now;
-    Serial.printf("[TOUCH] recover reason=%s fail_streak=%u\n",
-                  reason ? reason : "-",
-                  static_cast<unsigned int>(touchReadFailStreak));
+    if (VERBOSE_SERIAL_DEBUG) {
+        Serial.printf("[TOUCH] recover reason=%s fail_streak=%u\n",
+                      reason ? reason : "-",
+                      static_cast<unsigned int>(touchReadFailStreak));
+    }
     touchInit();
 }
 
@@ -3150,6 +3175,7 @@ void saveP2pConfig()
     p2pPrefs.begin("p2p", false);
     p2pPrefs.putString("pub", p2pPublicKeyHex());
     p2pPrefs.putBytes("sec", p2pSecretKey, sizeof(p2pSecretKey));
+    p2pPrefs.putBool("discover_en", p2pDiscoveryEnabled);
     p2pPrefs.putInt("peer_count", p2pPeerCount);
     for (int i = 0; i < MAX_P2P_PEERS; ++i) {
         p2pPrefs.putString((String("peer_name_") + i).c_str(), (i < p2pPeerCount) ? p2pPeers[i].name : "");
@@ -3165,6 +3191,7 @@ void loadP2pConfig()
 {
     p2pPeerCount = 0;
     p2pPrefs.begin("p2p", false);
+    p2pDiscoveryEnabled = p2pPrefs.getBool("discover_en", true);
 
     String pubHex = p2pPrefs.getString("pub", "");
     size_t secLen = p2pPrefs.getBytesLength("sec");
@@ -3214,6 +3241,7 @@ void lvglOpenTetrisEvent(lv_event_t *e);
 void lvglOpenMqttCfgEvent(lv_event_t *e);
 void lvglOpenMqttCtrlEvent(lv_event_t *e);
 void lvglOpenChatPeersEvent(lv_event_t *e);
+void lvglChatDiscoveryToggleEvent(lv_event_t *e);
 void lvglStyleHintEvent(lv_event_t *e);
 void lvglAirplaneToggleEvent(lv_event_t *e);
 void lvglChatAirplanePromptEvent(lv_event_t *e);
@@ -3371,6 +3399,12 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_label_set_long_mode(lvglChatContactLabel, LV_LABEL_LONG_DOT);
 
             lvglChatMenuBtn = makeSmallBtn(chatOps, LV_SYMBOL_LIST, 34, 28, lv_color_hex(0x2F6D86), lvglToggleChatMenuEvent, nullptr);
+            lvglChatDiscoveryBtn = makeSmallBtn(chatOps,
+                                                "Discovery",
+                                                84,
+                                                28,
+                                                p2pDiscoveryEnabled ? lv_color_hex(0x3A7A3A) : lv_color_hex(0x4E5D6C),
+                                                lvglChatDiscoveryToggleEvent);
 
             lvglChatMenuBackdrop = lv_obj_create(lvglScrChat);
             lv_obj_set_size(lvglChatMenuBackdrop, lv_pct(100), UI_CONTENT_H);
@@ -4139,6 +4173,25 @@ void lvglOpenChatPeersEvent(lv_event_t *e)
     lvglOpenScreen(UI_CHAT_PEERS, LV_SCR_LOAD_ANIM_MOVE_LEFT);
 }
 
+void lvglChatDiscoveryToggleEvent(lv_event_t *e)
+{
+    (void)e;
+    p2pDiscoveryEnabled = !p2pDiscoveryEnabled;
+    saveP2pConfig();
+    if (lvglChatDiscoveryBtn) {
+        lv_obj_t *lbl = lv_obj_get_child(lvglChatDiscoveryBtn, 0);
+        if (lbl) lv_label_set_text(lbl, "Discovery");
+        lv_obj_set_style_bg_color(lvglChatDiscoveryBtn,
+                                  p2pDiscoveryEnabled ? lv_color_hex(0x3A7A3A) : lv_color_hex(0x4E5D6C),
+                                  LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(lvglChatDiscoveryBtn,
+                                  p2pDiscoveryEnabled ? lv_color_hex(0x3A7A3A) : lv_color_hex(0x4E5D6C),
+                                  LV_PART_MAIN | LV_STATE_PRESSED);
+    }
+    uiStatusLine = p2pDiscoveryEnabled ? "Peer discovery enabled" : "Peer discovery disabled";
+    lvglSyncStatusLine();
+}
+
 void lvglRecoveryHintEvent(lv_event_t *e)
 {
     (void)e;
@@ -4736,7 +4789,7 @@ void lvglChatPeerActionEvent(lv_event_t *e)
     if (action == 0) {
         lvglSetChatPeerScanButtonStatus("Scanning...");
         p2pLastDiscoverAnnounceMs = 0;
-        p2pBroadcastDiscover();
+        p2pSendDiscoveryProbe();
         uiStatusLine = "Peer scan started";
         lvglSyncStatusLine();
         lvglRefreshChatPeerUi();
@@ -4785,13 +4838,12 @@ void lvglChatPeerActionEvent(lv_event_t *e)
     if (idx < 0 || idx >= p2pDiscoveredCount) return;
 
     if (sub == 1) {
-        const bool ok = p2pAddOrUpdateTrustedPeer(
+        const bool ok = p2pSendPairRequest(
             p2pDiscoveredPeers[idx].name.isEmpty() ? String("Peer") : p2pDiscoveredPeers[idx].name,
             p2pDiscoveredPeers[idx].pubKeyHex,
             p2pDiscoveredPeers[idx].ip,
             p2pDiscoveredPeers[idx].port);
-        if (ok && currentChatPeerKey.isEmpty()) currentChatPeerKey = p2pDiscoveredPeers[idx].pubKeyHex;
-        uiStatusLine = ok ? "Peer paired" : "Pair failed";
+        uiStatusLine = ok ? "Pair request sent" : "Pair request failed";
     } else if (sub == 2) {
         const int pidx = p2pFindPeerByPubKeyHex(p2pDiscoveredPeers[idx].pubKeyHex);
         if (pidx >= 0) {
@@ -4828,6 +4880,16 @@ void lvglChatPeerActionEvent(lv_event_t *e)
 
 void lvglRefreshChatPeerUi()
 {
+    if (lvglChatDiscoveryBtn) {
+        lv_obj_t *label = lv_obj_get_child(lvglChatDiscoveryBtn, 0);
+        if (label) lv_label_set_text(label, "Discovery");
+        lv_obj_set_style_bg_color(lvglChatDiscoveryBtn,
+                                  p2pDiscoveryEnabled ? lv_color_hex(0x3A7A3A) : lv_color_hex(0x4E5D6C),
+                                  LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(lvglChatDiscoveryBtn,
+                                  p2pDiscoveryEnabled ? lv_color_hex(0x3A7A3A) : lv_color_hex(0x4E5D6C),
+                                  LV_PART_MAIN | LV_STATE_PRESSED);
+    }
     if (lvglChatPeerIdentityLabel) {
         const String pub = p2pPublicKeyHex();
         String shortPub = pub;
@@ -5121,6 +5183,97 @@ void p2pBroadcastDiscover()
     }
 }
 
+void p2pSendDiscoveryProbe()
+{
+    if (!p2pReady || !wifiConnectedSafe()) return;
+    p2pEnsureUdp();
+    if (!p2pUdpStarted) return;
+
+    JsonDocument doc;
+    doc["kind"] = "discover_probe";
+    doc["device"] = deviceShortNameValue();
+    doc["public_key"] = p2pPublicKeyHex();
+    doc["port"] = P2P_UDP_PORT;
+    char payload[256] = {0};
+    const size_t len = serializeJson(doc, payload, sizeof(payload));
+    if (len == 0) return;
+
+    IPAddress bcast = WiFi.localIP();
+    bcast[3] = 255;
+    if (p2pUdp.beginPacket(bcast, P2P_UDP_PORT)) {
+        p2pUdp.write(reinterpret_cast<const uint8_t *>("\x50\x32\x01\x02"), 4);
+        p2pUdp.write(reinterpret_cast<const uint8_t *>(payload), len);
+        p2pUdp.endPacket();
+    }
+}
+
+void p2pSendDiscoveryAnnounceTo(const IPAddress &ip, uint16_t port)
+{
+    if (!p2pReady || !wifiConnectedSafe() || !p2pDiscoveryEnabled) return;
+    p2pEnsureUdp();
+    if (!p2pUdpStarted) return;
+
+    JsonDocument doc;
+    doc["kind"] = "discover";
+    doc["device"] = deviceShortNameValue();
+    doc["public_key"] = p2pPublicKeyHex();
+    doc["port"] = P2P_UDP_PORT;
+    char payload[256] = {0};
+    const size_t len = serializeJson(doc, payload, sizeof(payload));
+    if (len == 0) return;
+
+    if (p2pUdp.beginPacket(ip, port ? port : P2P_UDP_PORT)) {
+        p2pUdp.write(reinterpret_cast<const uint8_t *>("\x50\x32\x01\x02"), 4);
+        p2pUdp.write(reinterpret_cast<const uint8_t *>(payload), len);
+        p2pUdp.endPacket();
+    }
+}
+
+bool p2pSendPairRequest(const String &name, const String &pubKeyHex, const IPAddress &ip, uint16_t port)
+{
+    if (!p2pReady || !wifiConnectedSafe() || pubKeyHex.isEmpty()) return false;
+    p2pEnsureUdp();
+    if (!p2pUdpStarted) return false;
+
+    JsonDocument doc;
+    doc["kind"] = "pair_request";
+    doc["device"] = deviceShortNameValue();
+    doc["public_key"] = p2pPublicKeyHex();
+    doc["port"] = P2P_UDP_PORT;
+    char payload[256] = {0};
+    const size_t len = serializeJson(doc, payload, sizeof(payload));
+    if (len == 0) return false;
+
+    p2pTouchDiscoveredSeen(name, pubKeyHex, ip, port);
+    if (!p2pUdp.beginPacket(ip, port ? port : P2P_UDP_PORT)) return false;
+    p2pUdp.write(reinterpret_cast<const uint8_t *>("\x50\x32\x01\x02"), 4);
+    p2pUdp.write(reinterpret_cast<const uint8_t *>(payload), len);
+    return p2pUdp.endPacket() == 1;
+}
+
+void p2pSendPairResponse(const String &name, const String &pubKeyHex, const IPAddress &ip, uint16_t port, bool accepted)
+{
+    if (!p2pReady || !wifiConnectedSafe() || pubKeyHex.isEmpty()) return;
+    p2pEnsureUdp();
+    if (!p2pUdpStarted) return;
+
+    JsonDocument doc;
+    doc["kind"] = accepted ? "pair_accept" : "pair_reject";
+    doc["device"] = deviceShortNameValue();
+    doc["public_key"] = p2pPublicKeyHex();
+    doc["port"] = P2P_UDP_PORT;
+    char payload[256] = {0};
+    const size_t len = serializeJson(doc, payload, sizeof(payload));
+    if (len == 0) return;
+
+    p2pTouchDiscoveredSeen(name, pubKeyHex, ip, port);
+    if (p2pUdp.beginPacket(ip, port ? port : P2P_UDP_PORT)) {
+        p2pUdp.write(reinterpret_cast<const uint8_t *>("\x50\x32\x01\x02"), 4);
+        p2pUdp.write(reinterpret_cast<const uint8_t *>(payload), len);
+        p2pUdp.endPacket();
+    }
+}
+
 bool p2pAddOrUpdateTrustedPeer(const String &name, const String &pubKeyHex, const IPAddress &ip, uint16_t port)
 {
     unsigned char testPk[P2P_PUBLIC_KEY_BYTES] = {0};
@@ -5156,7 +5309,7 @@ void p2pService()
     if (!p2pUdpStarted) return;
 
     const unsigned long now = millis();
-    if (wifiConnectedSafe() && (now - p2pLastDiscoverAnnounceMs) >= 5000UL) {
+    if (p2pDiscoveryEnabled && wifiConnectedSafe() && (now - p2pLastDiscoverAnnounceMs) >= 5000UL) {
         p2pLastDiscoverAnnounceMs = now;
         p2pBroadcastDiscover();
     }
@@ -5202,6 +5355,31 @@ void p2pService()
                         const uint16_t port = static_cast<uint16_t>(doc["port"] | P2P_UDP_PORT);
                         if (kind == "discover" && !pubKeyHex.equalsIgnoreCase(p2pPublicKeyHex())) {
                             p2pTouchDiscoveredSeen(device, pubKeyHex, p2pUdp.remoteIP(), port);
+                        } else if (kind == "discover_probe" && !pubKeyHex.equalsIgnoreCase(p2pPublicKeyHex())) {
+                            if (p2pDiscoveryEnabled) p2pSendDiscoveryAnnounceTo(p2pUdp.remoteIP(), port);
+                        } else if (kind == "pair_request" && !pubKeyHex.equalsIgnoreCase(p2pPublicKeyHex())) {
+                            p2pTouchDiscoveredSeen(device, pubKeyHex, p2pUdp.remoteIP(), port);
+                            if (p2pDiscoveryEnabled) {
+                                const int requestIdx = p2pFindDiscoveredByPubKeyHex(pubKeyHex);
+                                p2pPairRequestPending = true;
+                                p2pPairPromptVisible = false;
+                                p2pPairRequestDiscoveredIdx = requestIdx;
+                            }
+                        } else if (kind == "pair_accept" && !pubKeyHex.equalsIgnoreCase(p2pPublicKeyHex())) {
+                            const bool ok = p2pAddOrUpdateTrustedPeer(device.isEmpty() ? String("Peer") : device,
+                                                                      pubKeyHex,
+                                                                      p2pUdp.remoteIP(),
+                                                                      port);
+                            if (ok && currentChatPeerKey.isEmpty()) currentChatPeerKey = pubKeyHex;
+                            uiStatusLine = ok ? "Peer paired" : "Pair accept failed";
+                            if (lvglReady) {
+                                lvglSyncStatusLine();
+                                lvglRefreshChatPeerUi();
+                                lvglRefreshChatContactsUi();
+                            }
+                        } else if (kind == "pair_reject" && !pubKeyHex.equalsIgnoreCase(p2pPublicKeyHex())) {
+                            uiStatusLine = (device.isEmpty() ? String("Peer") : device) + " rejected pairing";
+                            if (lvglReady) lvglSyncStatusLine();
                         }
                     }
                 } else if (headerOk && type == P2P_PKT_TYPE_CHAT &&
@@ -6095,6 +6273,45 @@ void lvglMqttControlConfirmEvent(lv_event_t *e)
     lv_msgbox_close(msgbox);
 }
 
+void lvglP2pPairPromptEvent(lv_event_t *e)
+{
+    lv_obj_t *msgbox = lv_event_get_current_target(e);
+    const char *txt = lv_msgbox_get_active_btn_text(msgbox);
+    const bool accepted = txt && strcmp(txt, "Accept") == 0;
+    const int discoveredIdx = p2pPairRequestDiscoveredIdx;
+    const bool requestValid = discoveredIdx >= 0 && discoveredIdx < p2pDiscoveredCount;
+    if (accepted) {
+        bool ok = false;
+        if (requestValid) {
+            const P2PDiscoveredPeer &peer = p2pDiscoveredPeers[discoveredIdx];
+            ok = p2pAddOrUpdateTrustedPeer(
+                peer.name.isEmpty() ? String("Peer") : peer.name,
+                peer.pubKeyHex,
+                peer.ip,
+                peer.port);
+            p2pSendPairResponse(peer.name, peer.pubKeyHex, peer.ip, peer.port, ok);
+            if (ok && currentChatPeerKey.isEmpty()) currentChatPeerKey = peer.pubKeyHex;
+        }
+        uiStatusLine = ok ? "Peer paired" : "Pair accept failed";
+        if (lvglReady) {
+            lvglSyncStatusLine();
+            lvglRefreshChatPeerUi();
+            lvglRefreshChatContactsUi();
+        }
+    } else {
+        if (requestValid) {
+            const P2PDiscoveredPeer &peer = p2pDiscoveredPeers[discoveredIdx];
+            p2pSendPairResponse(peer.name, peer.pubKeyHex, peer.ip, peer.port, false);
+        }
+        uiStatusLine = "Pair request rejected";
+        if (lvglReady) lvglSyncStatusLine();
+    }
+    p2pPairRequestPending = false;
+    p2pPairPromptVisible = false;
+    p2pPairRequestDiscoveredIdx = -1;
+    lv_msgbox_close(msgbox);
+}
+
 void lvglMqttControlPressEvent(lv_event_t *e)
 {
     const int idx = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
@@ -6551,20 +6768,24 @@ void lvglInitUi()
 {
     static_assert(LV_COLOR_DEPTH == 16, "LVGL color depth must be 16 for TFT_eSPI flush path");
     lvglReady = false;
-    Serial.printf("[LVGL] cfg mem=%uB color_depth=%u free_heap=%u largest_8bit=%u\n",
-                  static_cast<unsigned int>(LV_MEM_SIZE),
-                  static_cast<unsigned int>(LV_COLOR_DEPTH),
-                  static_cast<unsigned int>(ESP.getFreeHeap()),
-                  static_cast<unsigned int>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
-    Serial.println("[LVGL] step lv_init");
+    if (VERBOSE_SERIAL_DEBUG) {
+        Serial.printf("[LVGL] cfg mem=%uB color_depth=%u free_heap=%u largest_8bit=%u\n",
+                      static_cast<unsigned int>(LV_MEM_SIZE),
+                      static_cast<unsigned int>(LV_COLOR_DEPTH),
+                      static_cast<unsigned int>(ESP.getFreeHeap()),
+                      static_cast<unsigned int>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+        Serial.println("[LVGL] step lv_init");
+    }
     lv_init();
-    Serial.println("[LVGL] step lv_init done");
-    Serial.println("[LVGL] step read tft size");
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[LVGL] step lv_init done");
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[LVGL] step read tft size");
     const uint32_t horRes = static_cast<uint32_t>(tft.width());
     const uint32_t verRes = static_cast<uint32_t>(tft.height());
-    Serial.printf("[LVGL] tft size %ux%u\n",
-                  static_cast<unsigned int>(horRes),
-                  static_cast<unsigned int>(verRes));
+    if (VERBOSE_SERIAL_DEBUG) {
+        Serial.printf("[LVGL] tft size %ux%u\n",
+                      static_cast<unsigned int>(horRes),
+                      static_cast<unsigned int>(verRes));
+    }
     if (horRes == 0 || verRes == 0) {
         Serial.println("[LVGL] invalid TFT resolution");
         return;
@@ -6577,9 +6798,11 @@ void lvglInitUi()
         while (lines >= 2) {
             const size_t pxCount = static_cast<size_t>(horRes) * static_cast<size_t>(lines);
             const size_t allocBytes = pxCount * sizeof(lv_color_t);
-            Serial.printf("[LVGL] alloc try lines=%u bytes=%u\n",
-                          static_cast<unsigned int>(lines),
-                          static_cast<unsigned int>(allocBytes));
+            if (VERBOSE_SERIAL_DEBUG) {
+                Serial.printf("[LVGL] alloc try lines=%u bytes=%u\n",
+                              static_cast<unsigned int>(lines),
+                              static_cast<unsigned int>(allocBytes));
+            }
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
             lv_color_t *candidate = static_cast<lv_color_t *>(allocPreferPsram(allocBytes,
                 MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
@@ -6589,13 +6812,15 @@ void lvglInitUi()
             if (candidate) {
                 lvglDrawPixels = candidate;
                 lvglBufLinesActive = lines;
-                Serial.printf("[LVGL] alloc ok lines=%u ptr=%p psram=%d\n",
-                              static_cast<unsigned int>(lines),
-                              static_cast<void *>(candidate),
-                              boardHasUsablePsram() && esp_ptr_external_ram(candidate) ? 1 : 0);
+                if (VERBOSE_SERIAL_DEBUG) {
+                    Serial.printf("[LVGL] alloc ok lines=%u ptr=%p psram=%d\n",
+                                  static_cast<unsigned int>(lines),
+                                  static_cast<void *>(candidate),
+                                  boardHasUsablePsram() && esp_ptr_external_ram(candidate) ? 1 : 0);
+                }
                 break;
             }
-            Serial.printf("[LVGL] alloc fail lines=%u\n", static_cast<unsigned int>(lines));
+            if (VERBOSE_SERIAL_DEBUG) Serial.printf("[LVGL] alloc fail lines=%u\n", static_cast<unsigned int>(lines));
             lines /= 2;
         }
     }
@@ -6608,52 +6833,74 @@ void lvglInitUi()
         return;
     }
 
-    Serial.println("[LVGL] step draw_buf_init");
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[LVGL] step draw_buf_init");
     lv_disp_draw_buf_init(
         &lvglDrawBuf,
         lvglDrawPixels,
         nullptr,
         static_cast<uint32_t>(horRes * static_cast<uint32_t>(lvglBufLinesActive))
     );
-    Serial.println("[LVGL] step disp_drv_init");
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[LVGL] step disp_drv_init");
     lv_disp_drv_init(&lvglDispDrv);
     lvglDispDrv.hor_res = static_cast<lv_coord_t>(horRes);
     lvglDispDrv.ver_res = static_cast<lv_coord_t>(verRes);
     lvglDispDrv.flush_cb = lvglFlushCb;
     lvglDispDrv.draw_buf = &lvglDrawBuf;
-    Serial.println("[LVGL] step disp_drv_register");
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[LVGL] step disp_drv_register");
     lv_disp_drv_register(&lvglDispDrv);
 
-    Serial.println("[LVGL] step indev_drv_init");
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[LVGL] step indev_drv_init");
     lv_indev_drv_init(&lvglIndevDrv);
     lvglIndevDrv.type = LV_INDEV_TYPE_POINTER;
     lvglIndevDrv.read_cb = lvglTouchReadCb;
-    Serial.println("[LVGL] step indev_drv_register");
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[LVGL] step indev_drv_register");
     lvglTouchIndev = lv_indev_drv_register(&lvglIndevDrv);
-    Serial.println("[LVGL] step ensure top bar");
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[LVGL] step ensure top bar");
     lvglEnsurePersistentTopBar();
 
     lvglLastTickMs = millis();
     lvglLastInfoRefreshMs = 0;
     lvglLastStatusRefreshMs = 0;
     lvglLastMediaPlayerRefreshMs = 0;
-    Serial.printf("[LVGL] init ok: %lux%lu, buf_lines=%u\n",
-                  static_cast<unsigned long>(horRes),
-                  static_cast<unsigned long>(verRes),
-                  static_cast<unsigned int>(lvglBufLinesActive));
-    Serial.printf("[LVGL] pre-ui free_heap=%u largest_8bit=%u\n",
-                  static_cast<unsigned int>(ESP.getFreeHeap()),
-                  static_cast<unsigned int>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+    if (VERBOSE_SERIAL_DEBUG) {
+        Serial.printf("[LVGL] init ok: %lux%lu, buf_lines=%u\n",
+                      static_cast<unsigned long>(horRes),
+                      static_cast<unsigned long>(verRes),
+                      static_cast<unsigned int>(lvglBufLinesActive));
+        Serial.printf("[LVGL] pre-ui free_heap=%u largest_8bit=%u\n",
+                      static_cast<unsigned int>(ESP.getFreeHeap()),
+                      static_cast<unsigned int>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+    }
     lvglBuildUi();
-    Serial.printf("[LVGL] post-ui free_heap=%u largest_8bit=%u\n",
-                  static_cast<unsigned int>(ESP.getFreeHeap()),
-                  static_cast<unsigned int>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+    if (VERBOSE_SERIAL_DEBUG) {
+        Serial.printf("[LVGL] post-ui free_heap=%u largest_8bit=%u\n",
+                      static_cast<unsigned int>(ESP.getFreeHeap()),
+                      static_cast<unsigned int>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+    }
     lvglReady = true;
 }
 
 void lvglService()
 {
     if (!lvglReady) return;
+    if (p2pPairRequestPending && !p2pPairPromptVisible) {
+        static const char *btns[] = {"Reject", "Accept", ""};
+        String prompt = "A device would like to pair.";
+        if (p2pPairRequestDiscoveredIdx >= 0 && p2pPairRequestDiscoveredIdx < p2pDiscoveredCount) {
+            const String &name = p2pDiscoveredPeers[p2pPairRequestDiscoveredIdx].name;
+            if (!name.isEmpty()) prompt = name + " would like to pair.";
+        }
+        lv_obj_t *m = lv_msgbox_create(nullptr, "Pair Request", prompt.c_str(), btns, false);
+        if (m) {
+            lv_obj_center(m);
+            lv_obj_set_width(m, min<int16_t>(DISPLAY_WIDTH - 24, 260));
+            lv_obj_add_event_cb(m, lvglP2pPairPromptEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+            p2pPairPromptVisible = true;
+        } else {
+            p2pPairRequestPending = false;
+            p2pPairRequestDiscoveredIdx = -1;
+        }
+    }
     if (lvglSwipeBackPending) {
         lvglSwipeBackPending = false;
         if (lvglKb && !lv_obj_has_flag(lvglKb, LV_OBJ_FLAG_HIDDEN)) lvglHideKeyboard();
@@ -9263,16 +9510,29 @@ String chooseLatestFirmwareBinUrl(const JsonVariantConst &assets)
     if (!assets.is<JsonArrayConst>()) return "";
     JsonArrayConst arr = assets.as<JsonArrayConst>();
 
+    const String boardNeedle = String(OTA_ASSET_NAME);
+
     for (JsonObjectConst asset : arr) {
         const String name = asset["name"] | "";
         const String url = asset["browser_download_url"] | "";
-        if (!url.isEmpty() && name.endsWith(".ino.bin")) return url;
+        if (url.isEmpty()) continue;
+        const String low = name;
+        if (!low.endsWith(".bin") || low.indexOf("bootloader") >= 0 || low.indexOf("partitions") >= 0) continue;
+        if (low.indexOf(boardNeedle) >= 0) return url;
     }
     for (JsonObjectConst asset : arr) {
         const String name = asset["name"] | "";
         const String url = asset["browser_download_url"] | "";
         if (url.isEmpty()) continue;
-        const String low = String(name);
+        const String low = name;
+        if (!low.endsWith(".bin") || low.indexOf("bootloader") >= 0 || low.indexOf("partitions") >= 0) continue;
+        if (low.endsWith(".ino.bin")) return url;
+    }
+    for (JsonObjectConst asset : arr) {
+        const String name = asset["name"] | "";
+        const String url = asset["browser_download_url"] | "";
+        if (url.isEmpty()) continue;
+        const String low = name;
         if (low.endsWith(".bin") && low.indexOf("bootloader") < 0 && low.indexOf("partitions") < 0) return url;
     }
     return "";
@@ -11640,45 +11900,47 @@ void setup()
 {
     sdMutex = xSemaphoreCreateMutex();
     Serial.begin(115200);
-    Serial.println();
-    Serial.printf("[BOOT] setup start board=%s\n", deviceShortNameValue().c_str());
-    Serial.println("[BOOT] step displayBacklightInit");
+    if (VERBOSE_SERIAL_DEBUG) {
+        Serial.println();
+        Serial.printf("[BOOT] setup start board=%s\n", deviceShortNameValue().c_str());
+        Serial.println("[BOOT] step displayBacklightInit");
+    }
     displayBacklightInit();
-    Serial.println("[BOOT] step rgb pinMode");
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step rgb pinMode");
     if (RGB_OUTPUT_SUPPORTED) {
         pinMode(RGB_PIN_R, OUTPUT);
         pinMode(RGB_PIN_G, OUTPUT);
         pinMode(RGB_PIN_B, OUTPUT);
-    } else {
+    } else if (VERBOSE_SERIAL_DEBUG) {
         Serial.println("[RGB] disabled on this board; configured pins overlap ESP32-S3 octal PSRAM");
     }
-    Serial.println("[BOOT] step touch irq pinMode");
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step touch irq pinMode");
     pinMode(TOUCH_IRQ, TOUCH_USE_IRQ ? INPUT_PULLUP : INPUT);
-    Serial.println("[BOOT] step rgbApplyNow");
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step rgbApplyNow");
     rgbApplyNow(false, false, false);
-    Serial.println("[BOOT] step analogReadResolution");
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step analogReadResolution");
     analogReadResolution(12);
-    Serial.println("[BOOT] step battery attenuation");
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step battery attenuation");
     analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);
     if (LIGHT_ADC_PIN >= 0) {
-        Serial.println("[BOOT] step light attenuation");
+        if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step light attenuation");
         analogSetPinAttenuation(LIGHT_ADC_PIN, ADC_11db);
     }
-    Serial.println("[BOOT] step randomSeed");
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step randomSeed");
     randomSeed(static_cast<unsigned long>(esp_random()));
-    Serial.println("[BOOT] step sodium_init");
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step sodium_init");
     p2pReady = sodium_init() >= 0;
-    Serial.println("[BOOT] step loadP2pConfig");
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step loadP2pConfig");
     if (p2pReady) loadP2pConfig();
-    Serial.println("[BOOT] step loadUiRuntimeConfig");
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step loadUiRuntimeConfig");
     loadUiRuntimeConfig();
-    Serial.println("[BOOT] step mqttBuildIdentity");
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step mqttBuildIdentity");
     mqttBuildIdentity();
-    Serial.println("[BOOT] step loadMqttConfig");
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step loadMqttConfig");
     loadMqttConfig();
     if (mqttCfg.enabled) mqttStatusLine = "Enabled";
     else mqttStatusLine = "Disabled";
-    Serial.println("[BOOT] step sampleTopIndicators");
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step sampleTopIndicators");
     sampleTopIndicators();
     float prevBootV = 0.0f;
     if (loadBatterySnapshot(prevBootV)) {
@@ -11691,53 +11953,61 @@ void setup()
     lastBatterySnapshotVoltage = batteryVoltage;
     lastBatterySnapshotMs = millis();
 
-    Serial.printf("%s UI + fallback file manager\n", deviceShortNameValue().c_str());
-    Serial.printf("[P2P] ready=%d pub=%s\n", p2pReady ? 1 : 0, p2pReady ? p2pPublicKeyHex().c_str() : "-");
+    if (VERBOSE_SERIAL_DEBUG) {
+        Serial.printf("%s UI + fallback file manager\n", deviceShortNameValue().c_str());
+        Serial.printf("[P2P] ready=%d pub=%s\n", p2pReady ? 1 : 0, p2pReady ? p2pPublicKeyHex().c_str() : "-");
+    }
 
     tft.init();
     tft.setRotation(TFT_ROTATION);
     tft.setTextFont(2);
     tft.fillScreen(TFT_BLACK);
 
-    Serial.println("[BOOT] touch pre-init");
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] touch pre-init");
     touchInit();
     lvglInitUi();
     if (lvglReady) {
-        Serial.println("[BOOT] step lv_timer_handler");
+        if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step lv_timer_handler");
         lv_timer_handler();
-        Serial.println("[BOOT] step lv_timer_handler done");
+        if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step lv_timer_handler done");
         delay(20);
     }
-    Serial.println("[BOOT] step displayBacklightFadeIn");
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step displayBacklightFadeIn");
     displayBacklightFadeIn();
-    Serial.println("[BOOT] step displayBacklightFadeIn done");
-    Serial.println("[BOOT] SD/network init deferred to loop");
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step displayBacklightFadeIn done");
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] SD/network init deferred to loop");
     bootDeferredStartMs = millis();
     bootSdInitPending = true;
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
-    Serial.println("[BOOT] SD boot init enabled on ESP32-S3 after RGB/PSRAM fix");
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] SD boot init enabled on ESP32-S3 after RGB/PSRAM fix");
 #endif
     bootWifiInitPending = true;
     wifiRuntimeManaged = true;
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
-    Serial.println("[BOOT] WiFi boot init enabled on ESP32-S3 after RGB/PSRAM fix");
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] WiFi boot init enabled on ESP32-S3 after RGB/PSRAM fix");
 #endif
     delay(20);
     sdStatsLogSnapshot(sdStatsSnapshot(), "boot");
-    Serial.println("[AUDIO] backend init deferred until playback");
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[AUDIO] backend init deferred until playback");
     rgbRefreshByMediaState();
     lastUserActivityMs = millis();
     lastSensorSampleMs = millis();
 
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
-    Serial.printf("Audio output is disabled on this ESP32-S3 build; GPIO %d is reserved until external I2S pinout is wired in firmware\n", I2S_SPK_PIN);
+    if (VERBOSE_SERIAL_DEBUG) {
+        Serial.printf("Audio output is disabled on this ESP32-S3 build; GPIO %d is reserved until external I2S pinout is wired in firmware\n", I2S_SPK_PIN);
+    }
 #else
-    Serial.printf("Audio decoder ready, internal DAC2 on GPIO %d only (GPIO25 kept for TOUCH_RST)\n", I2S_SPK_PIN);
+    if (VERBOSE_SERIAL_DEBUG) {
+        Serial.printf("Audio decoder ready, internal DAC2 on GPIO %d only (GPIO25 kept for TOUCH_RST)\n", I2S_SPK_PIN);
+    }
 #endif
-    Serial.printf("[TOUCH] ctrl=%s mode=%s irq_pin=%d i2c=(sda=%d,scl=%d,rst=%d)\n",
-                  TOUCH_CONTROLLER == TOUCH_CTRL_GT911 ? "gt911" : "cst820",
-                  TOUCH_USE_IRQ ? "irq+poll" : "poll-only",
-                  TOUCH_IRQ, TOUCH_SDA, TOUCH_SCL, TOUCH_RST);
+    if (VERBOSE_SERIAL_DEBUG) {
+        Serial.printf("[TOUCH] ctrl=%s mode=%s irq_pin=%d i2c=(sda=%d,scl=%d,rst=%d)\n",
+                      TOUCH_CONTROLLER == TOUCH_CTRL_GT911 ? "gt911" : "cst820",
+                      TOUCH_USE_IRQ ? "irq+poll" : "poll-only",
+                      TOUCH_IRQ, TOUCH_SDA, TOUCH_SCL, TOUCH_RST);
+    }
 }
 
 void loop()
