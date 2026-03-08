@@ -2445,6 +2445,16 @@ static int chatFindPendingIndex(const String &peerKey, const String &messageId)
     return -1;
 }
 
+static bool chatConversationHasMessageId(const String &peerKey, const String &messageId)
+{
+    if (peerKey.isEmpty() || messageId.isEmpty()) return false;
+    if (currentChatPeerKey != peerKey) return false;
+    for (int i = 0; i < chatMessageCount; ++i) {
+        if (chatMessages[i].messageId == messageId) return true;
+    }
+    return false;
+}
+
 static bool chatHasLoggedMessageId(const String &peerKey, const String &messageId)
 {
     if (peerKey.isEmpty() || messageId.isEmpty()) return false;
@@ -2532,10 +2542,13 @@ static bool chatAppendMessageToSd(const String &peerKey, ChatTransport transport
 static void chatStoreMessage(const String &peerKey, const String &author, const String &text, bool outgoing, ChatTransport transport, const String &messageId = "")
 {
     const unsigned long nowMs = millis();
-    if (!messageId.isEmpty() && !outgoing && chatHasLoggedMessageId(peerKey, messageId)) return;
-    chatAppendMessageToSd(peerKey, transport, author, text, outgoing, nowMs, messageId);
+    if (!messageId.isEmpty() && !outgoing) {
+        if (chatConversationHasMessageId(peerKey, messageId)) return;
+        if (chatHasLoggedMessageId(peerKey, messageId)) return;
+    }
+    const bool stored = chatAppendMessageToSd(peerKey, transport, author, text, outgoing, nowMs, messageId);
     const bool conversationOpen = (uiScreen == UI_CHAT) && (currentChatPeerKey == peerKey);
-    if (conversationOpen) {
+    if (conversationOpen && (stored || !messageId.isEmpty())) {
         chatSetPeerUnread(peerKey, false);
         chatAddMessage(author, text, outgoing, transport, messageId);
     } else if (!outgoing) {
@@ -2571,81 +2584,71 @@ static bool chatDeleteMessageAt(const String &peerKey, int index)
     if (peerKey.isEmpty() || index < 0 || index >= chatMessageCount) return false;
     ChatMessage target = chatMessages[index];
 
-    if (target.outgoing && !target.messageId.isEmpty()) {
+    if (!target.messageId.isEmpty()) {
         p2pSendMessageDelete(peerKey, target.messageId);
         mqttPublishMessageDelete(peerKey, target.messageId);
         return chatDeleteMessageById(peerKey, target.messageId, "Message deleted");
     }
 
-    if (target.outgoing && !target.messageId.isEmpty()) {
-        const int pendingIdx = chatFindPendingIndex(peerKey, target.messageId);
-        if (pendingIdx >= 0) {
-            for (int i = pendingIdx + 1; i < chatPendingCount; ++i) chatPendingMessages[i - 1] = chatPendingMessages[i];
-            chatPendingCount--;
-            chatSavePendingOutbox();
-        }
-    }
-
-    if (!sdEnsureMounted(true)) return false;
+    bool ok = true;
+    if (!sdEnsureMounted(true)) ok = false;
+    if (ok) {
     fsWriteBegin();
-    bool ok = false;
-    if (sdLock()) {
-        String path = chatLogPathForPeer(peerKey);
-        File src = SD.open(path, FILE_READ);
-        if (src) {
-            const String tmpPath = path + ".tmp";
-            SD.remove(tmpPath);
-            File dst = SD.open(tmpPath, FILE_WRITE);
-            if (dst) {
-                bool removed = false;
-                ok = true;
-                while (src.available()) {
-                    String line = src.readStringUntil('\n');
-                    line.trim();
-                    if (line.isEmpty()) continue;
-                    const int p1 = line.indexOf('\t');
-                    const int p2 = (p1 >= 0) ? line.indexOf('\t', p1 + 1) : -1;
-                    const int p3 = (p2 >= 0) ? line.indexOf('\t', p2 + 1) : -1;
-                    const int p4 = (p3 >= 0) ? line.indexOf('\t', p3 + 1) : -1;
-                    const int p5 = (p4 >= 0) ? line.indexOf('\t', p4 + 1) : -1;
-                    if (p1 <= 0 || p2 <= p1 || p3 <= p2 || p4 <= p3) continue;
+        if (sdLock()) {
+            String path = chatLogPathForPeer(peerKey);
+            File src = SD.open(path, FILE_READ);
+            if (src) {
+                const String tmpPath = path + ".tmp";
+                SD.remove(tmpPath);
+                File dst = SD.open(tmpPath, FILE_WRITE);
+                if (dst) {
+                    bool removed = false;
+                    while (src.available()) {
+                        String line = src.readStringUntil('\n');
+                        line.trim();
+                        if (line.isEmpty()) continue;
+                        const int p1 = line.indexOf('\t');
+                        const int p2 = (p1 >= 0) ? line.indexOf('\t', p1 + 1) : -1;
+                        const int p3 = (p2 >= 0) ? line.indexOf('\t', p2 + 1) : -1;
+                        const int p4 = (p3 >= 0) ? line.indexOf('\t', p3 + 1) : -1;
+                        const int p5 = (p4 >= 0) ? line.indexOf('\t', p4 + 1) : -1;
+                        if (p1 <= 0 || p2 <= p1 || p3 <= p2 || p4 <= p3) continue;
 
-                    const unsigned long tsMs = static_cast<unsigned long>(strtoul(line.substring(0, p1).c_str(), nullptr, 10));
-                    const bool outgoing = line.substring(p1 + 1, p2) == "out";
-                    const String author = chatUnescapeLogField(line.substring(p3 + 1, p4));
-                    const String text = chatUnescapeLogField((p5 > p4) ? line.substring(p4 + 1, p5) : line.substring(p4 + 1));
-                    const String messageId = (p5 > p4) ? chatUnescapeLogField(line.substring(p5 + 1)) : String("");
+                        const unsigned long tsMs = static_cast<unsigned long>(strtoul(line.substring(0, p1).c_str(), nullptr, 10));
+                        const bool outgoing = line.substring(p1 + 1, p2) == "out";
+                        const String author = chatUnescapeLogField(line.substring(p3 + 1, p4));
+                        const String text = chatUnescapeLogField((p5 > p4) ? line.substring(p4 + 1, p5) : line.substring(p4 + 1));
+                        const String messageId = (p5 > p4) ? chatUnescapeLogField(line.substring(p5 + 1)) : String("");
 
-                    const bool idMatch = !target.messageId.isEmpty() && (messageId == target.messageId);
-                    const bool fallbackMatch = target.messageId.isEmpty() &&
-                                               (tsMs == target.tsMs) &&
-                                               (outgoing == target.outgoing) &&
-                                               (author == target.author) &&
-                                               (text == target.text);
-                    if (!removed && (idMatch || fallbackMatch)) {
-                        removed = true;
-                        continue;
+                        const bool idMatch = !target.messageId.isEmpty() && (messageId == target.messageId);
+                        const bool fallbackMatch = target.messageId.isEmpty() &&
+                                                   (tsMs == target.tsMs) &&
+                                                   (outgoing == target.outgoing) &&
+                                                   (author == target.author) &&
+                                                   (text == target.text);
+                        if (!removed && (idMatch || fallbackMatch)) {
+                            removed = true;
+                            continue;
+                        }
+
+                        if (dst.print(line + "\n") <= 0) ok = false;
                     }
-
-                    if (dst.print(line + "\n") <= 0) ok = false;
-                }
-                dst.close();
-                src.close();
-                SD.remove(path);
-                if (ok && SD.rename(tmpPath, path)) {
-                    ok = true;
+                    dst.close();
+                    src.close();
+                    SD.remove(path);
+                    if (!(ok && SD.rename(tmpPath, path))) {
+                        SD.remove(tmpPath);
+                        ok = false;
+                    }
                 } else {
-                    SD.remove(tmpPath);
+                    src.close();
                     ok = false;
                 }
-            } else {
-                src.close();
             }
+            sdUnlock();
         }
-        sdUnlock();
+        fsWriteEnd();
     }
-    fsWriteEnd();
-    if (!ok) return false;
 
     for (int i = index + 1; i < chatMessageCount; ++i) chatMessages[i - 1] = chatMessages[i];
     chatMessageCount--;
@@ -2671,53 +2674,55 @@ static bool chatDeleteMessageById(const String &peerKey, const String &messageId
         chatSavePendingOutbox();
     }
 
-    if (!sdEnsureMounted(true)) return false;
+    bool ok = true;
+    if (!sdEnsureMounted(true)) ok = false;
+    if (ok) {
     fsWriteBegin();
-    bool ok = false;
-    if (sdLock()) {
-        String path = chatLogPathForPeer(peerKey);
-        File src = SD.open(path, FILE_READ);
-        if (src) {
-            const String tmpPath = path + ".tmp";
-            SD.remove(tmpPath);
-            File dst = SD.open(tmpPath, FILE_WRITE);
-            if (dst) {
-                ok = true;
-                bool removed = false;
-                while (src.available()) {
-                    String line = src.readStringUntil('\n');
-                    line.trim();
-                    if (line.isEmpty()) continue;
-                    const int p1 = line.indexOf('\t');
-                    const int p2 = (p1 >= 0) ? line.indexOf('\t', p1 + 1) : -1;
-                    const int p3 = (p2 >= 0) ? line.indexOf('\t', p2 + 1) : -1;
-                    const int p4 = (p3 >= 0) ? line.indexOf('\t', p3 + 1) : -1;
-                    const int p5 = (p4 >= 0) ? line.indexOf('\t', p4 + 1) : -1;
-                    if (p1 <= 0 || p2 <= p1 || p3 <= p2 || p4 <= p3) continue;
-                    const String loggedId = (p5 > p4) ? chatUnescapeLogField(line.substring(p5 + 1)) : String("");
-                    if (!removed && loggedId == messageId) {
-                        removed = true;
-                        continue;
+        if (sdLock()) {
+            String path = chatLogPathForPeer(peerKey);
+            File src = SD.open(path, FILE_READ);
+            if (src) {
+                const String tmpPath = path + ".tmp";
+                SD.remove(tmpPath);
+                File dst = SD.open(tmpPath, FILE_WRITE);
+                if (dst) {
+                    bool removed = false;
+                    while (src.available()) {
+                        String line = src.readStringUntil('\n');
+                        line.trim();
+                        if (line.isEmpty()) continue;
+                        const int p1 = line.indexOf('\t');
+                        const int p2 = (p1 >= 0) ? line.indexOf('\t', p1 + 1) : -1;
+                        const int p3 = (p2 >= 0) ? line.indexOf('\t', p2 + 1) : -1;
+                        const int p4 = (p3 >= 0) ? line.indexOf('\t', p3 + 1) : -1;
+                        const int p5 = (p4 >= 0) ? line.indexOf('\t', p4 + 1) : -1;
+                        if (p1 <= 0 || p2 <= p1 || p3 <= p2 || p4 <= p3) continue;
+                        const String loggedId = (p5 > p4) ? chatUnescapeLogField(line.substring(p5 + 1)) : String("");
+                        if (!removed && loggedId == messageId) {
+                            removed = true;
+                            continue;
+                        }
+                        if (removed && loggedId == messageId) continue;
+                        if (dst.print(line + "\n") <= 0) ok = false;
                     }
-                    if (dst.print(line + "\n") <= 0) ok = false;
-                }
-                dst.close();
-                src.close();
-                SD.remove(path);
-                if (!(ok && SD.rename(tmpPath, path))) {
-                    SD.remove(tmpPath);
+                    dst.close();
+                    src.close();
+                    SD.remove(path);
+                    if (!(ok && SD.rename(tmpPath, path))) {
+                        SD.remove(tmpPath);
+                        ok = false;
+                    }
+                } else {
+                    src.close();
                     ok = false;
                 }
-            } else {
-                src.close();
             }
+            sdUnlock();
         }
-        sdUnlock();
+        fsWriteEnd();
     }
-    fsWriteEnd();
-    if (!ok) return false;
 
-    for (int i = 0; i < chatMessageCount; ++i) {
+    for (int i = 0; i < chatMessageCount;) {
         if (chatMessages[i].messageId == messageId) {
             for (int j = i + 1; j < chatMessageCount; ++j) chatMessages[j - 1] = chatMessages[j];
             chatMessageCount--;
@@ -2726,8 +2731,9 @@ static bool chatDeleteMessageById(const String &peerKey, const String &messageId
                 chatMessages[chatMessageCount].text = "";
                 chatMessages[chatMessageCount].messageId = "";
             }
-            break;
+            continue;
         }
+        ++i;
     }
     if (lvglReady && uiScreen == UI_CHAT && currentChatPeerKey == peerKey) lvglRefreshChatUi();
     uiStatusLine = status;
@@ -2837,6 +2843,7 @@ static bool chatOpenPeerConversation(const String &peerKey)
     const int idx = p2pFindPeerByPubKeyHex(peerKey);
     if (idx < 0 || !p2pPeers[idx].enabled) return false;
 
+    lvglHideChatMenu();
     currentChatPeerKey = p2pPeers[idx].pubKeyHex;
     chatSetPeerUnread(currentChatPeerKey, false);
     chatReloadRecentMessagesFromSd(currentChatPeerKey);
@@ -3894,6 +3901,7 @@ void lvglNavigateBackBySwipe()
     switch (uiScreen) {
         case UI_CHAT:
             if (!currentChatPeerKey.isEmpty()) {
+                lvglHideChatMenu();
                 currentChatPeerKey = "";
                 chatClearCache();
                 lvglRefreshChatLayout();
@@ -3935,6 +3943,7 @@ void lvglHomeNavEvent(lv_event_t *e)
 {
     const UiScreen target = static_cast<UiScreen>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
     if (target == UI_CHAT) {
+        lvglHideChatMenu();
         currentChatPeerKey = "";
         chatClearCache();
     }
@@ -4447,6 +4456,7 @@ void lvglRefreshChatLayout()
         lv_label_set_text(lvglChatContactLabel, "");
         lv_obj_clear_flag(lvglChatPeersBtn, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(lvglChatMenuBtn, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(lvglChatMenuBackdrop, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(lvglChatMenuPanel, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_size(lvglChatContacts, lv_pct(100), UI_CONTENT_H - 44);
         lv_obj_align(lvglChatContacts, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y + 44);
