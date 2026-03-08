@@ -32,6 +32,7 @@ Currently supported boards:
 - Added inline password visibility toggles to the Wi-Fi, AP, and MQTT password fields
 - Updated Wi-Fi submenu back navigation so it returns to `Config`
 - Added a `Config` brightness slider that controls real TFT backlight PWM
+- Added a second `Config` slider for RGB LED intensity
 - Brightness is saved in preferences and restored on the next boot
 - The last `20%` of the brightness bar is highlighted red
 - Boot now renders the first screen before enabling the backlight, then fades the backlight in
@@ -39,6 +40,7 @@ Currently supported boards:
 - Wake touch handling now consumes the wake gesture fully before allowing normal menu taps
 - Added global double-tap-to-sleep while keeping single-tap wake unchanged
 - Shared on-screen keyboard now supports one-shot uppercase, caps lock on double-tap, and dismiss-on-tap-away/swipe
+- Double-tap sleep is disabled while the on-screen keyboard is visible
 - Added encrypted peer-to-peer chat over LAN using UDP and public-key cryptography
 - Added encrypted global chat relay over MQTT using per-peer inbox topics
 - Added automatic peer discovery plus a manual `Scan` action in `Chat -> Peers`
@@ -50,10 +52,12 @@ Currently supported boards:
 - Conversation menu supports `Clear` and `Clear for All`
 - Swipe-back inside Chat now returns from a conversation to contacts before leaving Chat
 - Chat now shows per-message delivery state: airplane while pending, green check after delivery, plus a per-message delete button
+- Per-message delete is limited to outgoing messages only
 - Airplane mode now blocks Chat send actions with a popup; `Cancel` opens Chat read-only and keeps the draft queued until airplane mode is turned off
 - Added persistent device rename in `Config`
 - Renamed devices are used in chat/discovery UI and old conversation display is normalized to current names
 - Tapping the top-bar antenna icon now opens `WiFi Config`
+- MQTT connect flow and several background services were staged to reduce UI stalls and keep touch/LVGL first priority
 - Recovery browser access is no longer limited to fixed folders; it can browse all SD folders
 
 ## Supported Hardware
@@ -186,6 +190,7 @@ Board-specific defaults:
 - Vertical swipe scrolls list-style screens
 - Swipe right on supported sub-screens navigates back when a clear horizontal gesture is detected, even when started away from the left edge
 - Double-tap anywhere while the display is awake turns the screen off
+- Double-tap sleep is ignored while the on-screen keyboard is open
 - Screenshot capture is available from the `Config` screen
 - Button color feedback is intentionally delayed until a click is confirmed on release, to avoid false visual tap feedback during swipes
 - `Config -> WiFi Config` shows the saved/current STA network first and starts scanning only when `Scan` is pressed
@@ -196,6 +201,7 @@ Board-specific defaults:
 - The AP password field and MQTT password field also include inline eye buttons
 - The first touch while the display is asleep only wakes the screen; the next separate touch performs the menu action
 - `Config` includes a brightness slider for screen backlight control, and its value is persisted across reboots
+- `Config` also includes an RGB LED brightness slider, and its value is persisted across reboots
 - `Config` also includes a device-name field; the saved name persists across reboots
 - When editing the device name, the Config page scrolls the field above the on-screen keyboard
 - Tapping away from the on-screen keyboard or swiping while it is open dismisses it first
@@ -203,13 +209,14 @@ Board-specific defaults:
 - In conversation view, the contact name is shown in the top bar and swipe-back returns to the contacts list
 - Chat message bubbles are left/right aligned by sender and capped to roughly `75%` width
 - Outgoing messages show a left-side status badge: airplane while pending, green check after delivery
-- Each message row also includes a trashcan button on the right to delete that one message from the UI, SD history, and pending outbox
+- Outgoing message rows include a trashcan button on the right to delete that one sent message from the UI, SD history, and pending outbox
 - The conversation menu is opened from the 3-dot button; tapping away dismisses it
 - If airplane mode is on, opening Chat shows a popup with `Cancel` and `Airplane Off`
 - Choosing `Cancel` opens Chat in read-only mode; if a draft send is attempted while still blocked, the popup is shown again and the draft is retained until airplane mode is disabled
 - `Chat -> Peers` shows paired devices and discovered devices in separate sections
 - The `Scan` button forces an immediate discovery broadcast; devices are still discovered automatically in the background
 - The `Scan` button shows inline state feedback: `Scanning...`, then `Done`, then back to `Scan`
+- MQTT enable/disable now persists immediately from the on-screen switch and releases most MQTT buffer memory when turned off
 
 ### Future UI reference
 

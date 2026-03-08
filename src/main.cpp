@@ -338,6 +338,7 @@ void lvglRefreshConfigUi();
 void lvglSaveDeviceNameEvent(lv_event_t *e);
 void lvglSetConfigKeyboardVisible(bool visible);
 void cpuLoadService(uint32_t loopStartUs);
+void rgbService();
 void loadP2pConfig();
 void saveP2pConfig();
 void p2pEnsureUdp();
@@ -495,7 +496,6 @@ static lv_obj_t *lvglMqttPassTa = nullptr;
 static lv_obj_t *lvglMqttPassShowBtnLabel = nullptr;
 static lv_obj_t *lvglMqttPassShowBtn = nullptr;
 static lv_obj_t *lvglMqttDiscTa = nullptr;
-static lv_obj_t *lvglMqttChatTa = nullptr;
 static lv_obj_t *lvglMqttBtnNameTa = nullptr;
 static lv_obj_t *lvglMqttEnableSw = nullptr;
 static lv_obj_t *lvglMqttCriticalSw = nullptr;
@@ -519,6 +519,7 @@ static lv_obj_t *lvglConfigWrap = nullptr;
 static lv_obj_t *lvglConfigDeviceNameTa = nullptr;
 static lv_obj_t *lvglBrightnessSlider = nullptr;
 static lv_obj_t *lvglBrightnessValueLabel = nullptr;
+static lv_obj_t *lvglRgbLedSlider = nullptr;
 static lv_obj_t *lvglKb = nullptr;
 static lv_obj_t *lvglSnakeScoreLabel = nullptr;
 static lv_obj_t *lvglTetrisScoreLabel = nullptr;
@@ -768,6 +769,7 @@ unsigned long lastChargeEvalMs = 0;
 unsigned long lastChargeSeenMs = 0;
 bool displayAwake = true;
 uint8_t displayBrightnessPercent = 100;
+uint8_t rgbLedPercent = 100;
 String deviceShortName = DEVICE_SHORT_NAME;
 uint8_t cpuLoadPercent = 0;
 bool batteryFilterInitialized = false;
@@ -1179,6 +1181,16 @@ static constexpr uint32_t MQTT_MIN_FREE_HEAP_CONNECT = 36000U;
 static constexpr uint32_t MQTT_MIN_LARGEST_8BIT_CONNECT = 8192U;
 static constexpr uint32_t MQTT_MIN_FREE_HEAP_PUBLISH = 42000U;
 static constexpr uint32_t MQTT_MIN_LARGEST_8BIT_PUBLISH = 14000U;
+static constexpr unsigned long DNS_SERVICE_INTERVAL_MS = 8UL;
+static constexpr unsigned long WIFI_SCAN_SERVICE_INTERVAL_MS = 25UL;
+static constexpr unsigned long WIFI_CONN_SERVICE_INTERVAL_MS = 20UL;
+static constexpr unsigned long SD_STATS_SERVICE_INTERVAL_MS = 100UL;
+static constexpr unsigned long MDNS_SERVICE_INTERVAL_MS = 250UL;
+static constexpr unsigned long P2P_SERVICE_INTERVAL_MS = 10UL;
+static constexpr unsigned long MQTT_SERVICE_INTERVAL_MS = 15UL;
+static constexpr unsigned long CHAT_PENDING_SERVICE_INTERVAL_MS = 80UL;
+static constexpr unsigned long RGB_SERVICE_INTERVAL_MS = 16UL;
+static constexpr unsigned long CAR_TELEMETRY_SERVICE_INTERVAL_MS = 50UL;
 int mqttButtonCount = 4;
 String mqttButtonNames[MQTT_MAX_BUTTONS];
 bool mqttButtonCritical[MQTT_MAX_BUTTONS];
@@ -1726,7 +1738,9 @@ void lvglTouchReadCb(lv_indev_drv_t *indev, lv_indev_data_t *data)
     if (lvglTouchDown) {
         if (!lvglSwipeTracking) {
             const unsigned long now = millis();
+            const bool keyboardVisible = lvglKb && !lv_obj_has_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
             if (displayAwake &&
+                !keyboardVisible &&
                 lvglLastTapReleaseMs != 0 &&
                 static_cast<unsigned long>(now - lvglLastTapReleaseMs) <= static_cast<unsigned long>(DOUBLE_TAP_MAX_GAP) &&
                 abs(static_cast<int>(x) - static_cast<int>(lvglLastTapReleaseX)) <= DOUBLE_TAP_MAX_MOVE &&
@@ -1782,7 +1796,9 @@ void lvglTouchReadCb(lv_indev_drv_t *indev, lv_indev_data_t *data)
             const int dx = static_cast<int>(lvglSwipeLastX) - static_cast<int>(lvglSwipeStartX);
             const int dy = static_cast<int>(lvglSwipeLastY) - static_cast<int>(lvglSwipeStartY);
             const unsigned long dt = static_cast<unsigned long>(millis() - lvglSwipeStartMs);
+            const bool keyboardVisible = lvglKb && !lv_obj_has_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
             const bool tapCandidate = displayAwake &&
+                                      !keyboardVisible &&
                                       abs(dx) <= DOUBLE_TAP_MAX_MOVE &&
                                       abs(dy) <= DOUBLE_TAP_MAX_MOVE &&
                                       dt <= DOUBLE_TAP_MAX_TAP_MS;
@@ -2952,6 +2968,7 @@ void lvglShowChatAirplanePrompt();
 bool lvglChatPromptIfAirplaneBlocked();
 void lvglScreenshotEvent(lv_event_t *e);
 void lvglBrightnessEvent(lv_event_t *e);
+void lvglRgbLedEvent(lv_event_t *e);
 void lvglTextAreaFocusEvent(lv_event_t *e);
 void lvglWifiApShowToggleEvent(lv_event_t *e);
 void lvglWifiPwdCancelEvent(lv_event_t *e);
@@ -3493,6 +3510,39 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_width(lvglBrightnessSlider, lv_pct(100));
             lv_slider_set_range(lvglBrightnessSlider, 5, 100);
             lv_obj_add_event_cb(lvglBrightnessSlider, lvglBrightnessEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+
+            lv_obj_t *rgbWrap = lv_obj_create(lvglConfigWrap);
+            lv_obj_set_size(rgbWrap, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_color(rgbWrap, lv_color_hex(0x18222D), 0);
+            lv_obj_set_style_border_width(rgbWrap, 0, 0);
+            lv_obj_set_style_radius(rgbWrap, 12, 0);
+            lv_obj_set_style_pad_all(rgbWrap, 10, 0);
+            lv_obj_set_style_pad_row(rgbWrap, 6, 0);
+            lv_obj_set_flex_flow(rgbWrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_clear_flag(rgbWrap, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *rgbHdr = lv_obj_create(rgbWrap);
+            lv_obj_set_size(rgbHdr, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(rgbHdr, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(rgbHdr, 0, 0);
+            lv_obj_set_style_pad_all(rgbHdr, 0, 0);
+            lv_obj_set_style_pad_column(rgbHdr, 8, 0);
+            lv_obj_set_flex_flow(rgbHdr, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(rgbHdr, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *rgbLbl = lv_label_create(rgbHdr);
+            lv_label_set_text(rgbLbl, "RGB LED");
+            lv_obj_set_style_text_color(rgbLbl, lv_color_hex(0xE5ECF3), 0);
+            lv_obj_set_flex_grow(rgbLbl, 1);
+
+            lv_obj_t *rgbValueLabel = lv_label_create(rgbHdr);
+            lv_obj_set_style_text_color(rgbValueLabel, lv_color_hex(0xB7C4D1), 0);
+            lv_label_set_text_fmt(rgbValueLabel, "%u%%", static_cast<unsigned int>(rgbLedPercent));
+
+            lvglRgbLedSlider = lv_slider_create(rgbWrap);
+            lv_obj_set_width(lvglRgbLedSlider, lv_pct(100));
+            lv_slider_set_range(lvglRgbLedSlider, 0, 100);
+            lv_obj_add_event_cb(lvglRgbLedSlider, lvglRgbLedEvent, LV_EVENT_VALUE_CHANGED, nullptr);
             lvglRefreshConfigUi();
             break;
         }
@@ -3580,7 +3630,6 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_center(lvglMqttPassShowBtnLabel);
 
             lvglMqttDiscTa = addTa("Discovery prefix", false, false);
-            lvglMqttChatTa = nullptr;
             lv_obj_t *actRow = lv_obj_create(formWrap);
             lv_obj_set_size(actRow, lv_pct(100), 40);
             lv_obj_set_style_bg_opa(actRow, LV_OPA_TRANSP, 0);
@@ -4186,7 +4235,7 @@ void lvglRefreshChatUi()
             lv_obj_set_style_pad_row(statusBadge, 0, 0);
             lv_obj_clear_flag(statusBadge, LV_OBJ_FLAG_SCROLLABLE);
             lv_obj_t *statusLbl = lv_label_create(statusBadge);
-            lv_label_set_text(statusLbl, pendingDelivery ? "A\nI\nR" : LV_SYMBOL_OK);
+            lv_label_set_text(statusLbl, pendingDelivery ? LV_SYMBOL_UPLOAD : LV_SYMBOL_OK);
             lv_obj_set_style_text_color(statusLbl, pendingDelivery ? lv_color_hex(0xFFD27A) : lv_color_hex(0x9BF0AE), 0);
             lv_obj_set_style_text_align(statusLbl, LV_TEXT_ALIGN_CENTER, 0);
         }
@@ -4212,18 +4261,20 @@ void lvglRefreshChatUi()
         lv_label_set_text(body, chatMessages[i].text.c_str());
         lv_obj_set_style_text_color(body, lv_color_hex(0xEDF2F7), 0);
 
-        lv_obj_t *delBtn = lv_btn_create(row);
-        lv_obj_set_size(delBtn, 24, 24);
-        lv_obj_set_style_bg_color(delBtn, lv_color_hex(0x7A2E2E), 0);
-        lv_obj_set_style_border_width(delBtn, 0, 0);
-        lv_obj_set_style_radius(delBtn, 12, 0);
-        lv_obj_set_style_pad_all(delBtn, 0, 0);
-        lv_obj_clear_flag(delBtn, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_event_cb(delBtn, lvglDeleteChatMessageEvent, LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(i)));
-        lv_obj_t *delLbl = lv_label_create(delBtn);
-        lv_label_set_text(delLbl, LV_SYMBOL_TRASH);
-        lv_obj_set_style_text_color(delLbl, lv_color_hex(0xF5D2D2), 0);
-        lv_obj_center(delLbl);
+        if (chatMessages[i].outgoing) {
+            lv_obj_t *delBtn = lv_btn_create(row);
+            lv_obj_set_size(delBtn, 24, 24);
+            lv_obj_set_style_bg_color(delBtn, lv_color_hex(0x7A2E2E), 0);
+            lv_obj_set_style_border_width(delBtn, 0, 0);
+            lv_obj_set_style_radius(delBtn, 12, 0);
+            lv_obj_set_style_pad_all(delBtn, 0, 0);
+            lv_obj_clear_flag(delBtn, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_add_event_cb(delBtn, lvglDeleteChatMessageEvent, LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(i)));
+            lv_obj_t *delLbl = lv_label_create(delBtn);
+            lv_label_set_text(delLbl, LV_SYMBOL_TRASH);
+            lv_obj_set_style_text_color(delLbl, lv_color_hex(0xF5D2D2), 0);
+            lv_obj_center(delLbl);
+        }
     }
 
     lv_obj_scroll_to_view_recursive(lv_obj_get_child(lvglChatList, lv_obj_get_child_cnt(lvglChatList) - 1), LV_ANIM_OFF);
@@ -5977,6 +6028,16 @@ void lvglBrightnessEvent(lv_event_t *e)
     lvglRefreshConfigUi();
 }
 
+void lvglRgbLedEvent(lv_event_t *e)
+{
+    (void)e;
+    if (!lvglRgbLedSlider) return;
+    rgbLedPercent = static_cast<uint8_t>(lv_slider_get_value(lvglRgbLedSlider));
+    uiPrefs.putUChar("rgb_led", rgbLedPercent);
+    rgbService();
+    lvglRefreshConfigUi();
+}
+
 void lvglSaveDeviceNameEvent(lv_event_t *e)
 {
     (void)e;
@@ -6023,6 +6084,18 @@ void lvglRefreshConfigUi()
         lv_obj_set_style_bg_main_stop(lvglBrightnessSlider, 204, LV_PART_INDICATOR);
         lv_obj_set_style_bg_grad_stop(lvglBrightnessSlider, 255, LV_PART_INDICATOR);
         lv_obj_set_style_bg_color(lvglBrightnessSlider, lv_color_hex(0xE5ECF3), LV_PART_KNOB);
+    }
+    if (lvglRgbLedSlider && lv_slider_get_value(lvglRgbLedSlider) != rgbLedPercent) {
+        lv_slider_set_value(lvglRgbLedSlider, rgbLedPercent, LV_ANIM_OFF);
+    }
+    if (lvglRgbLedSlider) {
+        lv_obj_set_style_bg_color(lvglRgbLedSlider, lv_color_hex(0x2A3340), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(lvglRgbLedSlider, lv_color_hex(0x7C4DFF), LV_PART_INDICATOR);
+        lv_obj_set_style_bg_grad_color(lvglRgbLedSlider, lv_color_hex(0xFF6B6B), LV_PART_INDICATOR);
+        lv_obj_set_style_bg_grad_dir(lvglRgbLedSlider, LV_GRAD_DIR_HOR, LV_PART_INDICATOR);
+        lv_obj_set_style_bg_main_stop(lvglRgbLedSlider, 96, LV_PART_INDICATOR);
+        lv_obj_set_style_bg_grad_stop(lvglRgbLedSlider, 255, LV_PART_INDICATOR);
+        lv_obj_set_style_bg_color(lvglRgbLedSlider, lv_color_hex(0xE5ECF3), LV_PART_KNOB);
     }
 }
 
@@ -6874,13 +6947,13 @@ String mediaFindAdjacentTrack(const String &sourcePath, bool nextDir)
 void rgbApplyNow(bool rOn, bool gOn, bool bOn)
 {
     auto level = [](bool on) -> uint8_t {
-        if (RGB_ACTIVE_LOW) return on ? LOW : HIGH;
-        return on ? HIGH : LOW;
+        const uint8_t scaled = on ? static_cast<uint8_t>((static_cast<uint16_t>(255U) * rgbLedPercent) / 100U) : 0U;
+        return RGB_ACTIVE_LOW ? static_cast<uint8_t>(255U - scaled) : scaled;
     };
     // Board LED channels are physically swapped: logical R<->G.
-    digitalWrite(RGB_PIN_R, level(gOn));
-    digitalWrite(RGB_PIN_G, level(rOn));
-    digitalWrite(RGB_PIN_B, level(bOn));
+    analogWrite(RGB_PIN_R, level(gOn));
+    analogWrite(RGB_PIN_G, level(rOn));
+    analogWrite(RGB_PIN_B, level(bOn));
 }
 
 void rgbSetPersistent(bool rOn, bool gOn, bool bOn)
@@ -6900,7 +6973,8 @@ void rgbFlashAcknowledge()
 void rgbApplyPwm(uint8_t r, uint8_t g, uint8_t b)
 {
     auto out = [](uint8_t val) -> uint8_t {
-        return RGB_ACTIVE_LOW ? static_cast<uint8_t>(255 - val) : val;
+        const uint8_t scaled = static_cast<uint8_t>((static_cast<uint16_t>(val) * rgbLedPercent) / 100U);
+        return RGB_ACTIVE_LOW ? static_cast<uint8_t>(255U - scaled) : scaled;
     };
     // Board LED channels are physically swapped: logical R<->G.
     analogWrite(RGB_PIN_R, out(g));
@@ -7521,6 +7595,7 @@ void loadUiRuntimeConfig()
     systemSoundsEnabled = uiPrefs.getBool("sys_snd", true);
     mediaVolumePercent = uiPrefs.getUChar("sys_vol", mediaVolumePercent);
     displayBrightnessPercent = static_cast<uint8_t>(constrain(uiPrefs.getUChar("disp_bri", displayBrightnessPercent), 5, 100));
+    rgbLedPercent = static_cast<uint8_t>(constrain(uiPrefs.getUChar("rgb_led", rgbLedPercent), 0, 100));
     deviceShortName = sanitizeDeviceShortName(uiPrefs.getString("dev_name", DEVICE_SHORT_NAME));
     if (deviceShortName.isEmpty()) deviceShortName = DEVICE_SHORT_NAME;
     wsRebootOnDisconnectEnabled = uiPrefs.getBool("ws_reboot", false);
@@ -11010,10 +11085,34 @@ void loop()
         setupWifiAndServer();
     }
 
-    if (dnsRunning) dnsServer.processNextRequest();
-    wifiScanService();
-    wifiConnectionService();
-    sdStatsService();
+    static unsigned long lastServiceSliceMs = 0;
+    static uint8_t serviceSlicePhase = 0;
+    if (static_cast<unsigned long>(now - lastServiceSliceMs) >= DNS_SERVICE_INTERVAL_MS) {
+        lastServiceSliceMs = now;
+        serviceSlicePhase = static_cast<uint8_t>((serviceSlicePhase + 1U) % 5U);
+        dnsServer.processNextRequest();
+        rgbService();
+        switch (serviceSlicePhase) {
+            case 0:
+                wifiConnectionService();
+                mqttService();
+                break;
+            case 1:
+                if (p2pReady) p2pService();
+                break;
+            case 2:
+                wifiScanService();
+                chatPendingService();
+                break;
+            case 3:
+                sdStatsService();
+                serviceCarInputTelemetry();
+                break;
+            case 4:
+                refreshMdnsState();
+                break;
+        }
+    }
     const bool allowSdAutoRetry = (uiScreen == UI_MEDIA) || !displayAwake;
     if (!sdMounted && allowSdAutoRetry && !isDown && !fsWriteBusy() &&
         static_cast<unsigned long>(millis() - sdLastAutoRetryMs) >= SD_AUTORETRY_PERIOD_MS) {
@@ -11023,15 +11122,10 @@ void loop()
         portEXIT_CRITICAL(&sdStatsMux);
         sdEnsureMounted(true);
     }
-    refreshMdnsState();
-    if (p2pReady) p2pService();
-    mqttService();
-    chatPendingService();
     if (rgbFlashUntilMs != 0 && static_cast<long>(millis() - rgbFlashUntilMs) >= 0) {
         rgbFlashUntilMs = 0;
         rgbApplyNow(rgbPersistR, rgbPersistG, rgbPersistB);
     }
-    rgbService();
     bool wasRunning = mediaIsPlaying || mediaPaused;
     // Keep decoder fed continuously; sparse servicing causes audible clicks.
     audioService();
@@ -11055,8 +11149,6 @@ void loop()
         lastSensorSampleMs = millis();
         sampleTopIndicators();
     }
-
-    serviceCarInputTelemetry();
 
     if (rebootRequested && static_cast<unsigned long>(millis() - rebootRequestedAtMs) >= 150UL) {
         delay(20);
