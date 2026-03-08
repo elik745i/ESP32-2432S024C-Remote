@@ -215,8 +215,12 @@ static constexpr uint16_t LIGHT_RAW_CAL_MAX = 600;
 static constexpr bool LIGHT_LOG_RAW_TO_SERIAL = false;
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.1.3";
+static constexpr const char *FW_VERSION = "0.1.4";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
+static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
+static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 45000UL;
+static constexpr unsigned long OTA_RETRY_DELAY_MS = 10UL * 60UL * 1000UL;
+static constexpr size_t OTA_VERSION_TEXT_MAX = 32;
 static constexpr unsigned long STA_RETRY_INTERVAL_MS = 5000UL;
 static constexpr bool SERIAL_TERMINAL_TRANSFER_ENABLED = false;
 static constexpr size_t SERIAL_LOG_RING_SIZE = 200;
@@ -387,6 +391,16 @@ String recycleMetaPathFor(const String &recyclePath);
 String httpsGetText(const String &url, int *statusOut = nullptr);
 String chooseLatestFirmwareBinUrl(const JsonVariantConst &assets);
 bool otaDownloadAndApplyFromUrl(const String &url, String &errorOut);
+void otaCheckService();
+void otaUpdateService();
+static bool otaFetchLatestReleaseInfo(String &tagNameOut, String &binUrlOut, String &errorOut);
+static void otaSetStatus(const String &text);
+static void otaClearPopupVersion();
+static void otaCheckTask(void *param);
+static void otaUpdateTask(void *param);
+void lvglOpenOtaScreenEvent(lv_event_t *e);
+void lvglOtaUpdateEvent(lv_event_t *e);
+void lvglRefreshOtaUi();
 void tetrisRotate();
 void tetrisDrop();
 bool tetrisCellFor(int type, int rot, int i, int &ox, int &oy);
@@ -532,6 +546,7 @@ static lv_obj_t *lvglScrMedia = nullptr;
 static lv_obj_t *lvglScrInfo = nullptr;
 static lv_obj_t *lvglScrGames = nullptr;
 static lv_obj_t *lvglScrConfig = nullptr;
+static lv_obj_t *lvglScrOta = nullptr;
 static lv_obj_t *lvglScrMqttCfg = nullptr;
 static lv_obj_t *lvglScrMqttCtrl = nullptr;
 static lv_obj_t *lvglScrSnake = nullptr;
@@ -604,6 +619,13 @@ static lv_obj_t *lvglChatPeerScanBtn = nullptr;
 static lv_obj_t *lvglAirplaneBtn = nullptr;
 static lv_obj_t *lvglAirplaneBtnLabel = nullptr;
 static lv_obj_t *lvglConfigWrap = nullptr;
+static lv_obj_t *lvglOtaCurrentLabel = nullptr;
+static lv_obj_t *lvglOtaLatestLabel = nullptr;
+static lv_obj_t *lvglOtaStatusLabel = nullptr;
+static lv_obj_t *lvglOtaUpdateBtn = nullptr;
+static lv_obj_t *lvglOtaUpdateBtnLabel = nullptr;
+static lv_obj_t *lvglOtaProgressBar = nullptr;
+static lv_obj_t *lvglOtaProgressLabel = nullptr;
 static lv_obj_t *lvglConfigDeviceNameTa = nullptr;
 static lv_obj_t *lvglBrightnessSlider = nullptr;
 static lv_obj_t *lvglBrightnessValueLabel = nullptr;
@@ -648,6 +670,8 @@ static bool p2pDiscoveryEnabled = true;
 static bool p2pPairPromptVisible = false;
 static bool p2pPairRequestPending = false;
 static int p2pPairRequestDiscoveredIdx = -1;
+static bool lvglOtaPostUpdatePopupVisible = false;
+static bool lvglOtaUpdatePromptVisible = false;
 
 bool sdLock(TickType_t timeout = pdMS_TO_TICKS(3000))
 {
@@ -888,6 +912,7 @@ enum UiScreen : uint8_t {
     UI_INFO,
     UI_GAMES,
     UI_CONFIG,
+    UI_CONFIG_OTA,
     UI_CONFIG_MQTT_CONFIG,
     UI_CONFIG_MQTT_CONTROLS,
     UI_GAME_SNAKE,
@@ -965,6 +990,53 @@ static String sanitizeDeviceShortName(String name)
 static const String &deviceShortNameValue()
 {
     return deviceShortName;
+}
+
+static void copyTextToBuf(char *dst, size_t dstSize, const String &value)
+{
+    if (!dst || dstSize == 0) return;
+    strncpy(dst, value.c_str(), dstSize - 1);
+    dst[dstSize - 1] = '\0';
+}
+
+static void copyTextToBuf(char *dst, size_t dstSize, const char *value)
+{
+    if (!dst || dstSize == 0) return;
+    strncpy(dst, value ? value : "", dstSize - 1);
+    dst[dstSize - 1] = '\0';
+}
+
+static String otaNormalizedVersion(const String &raw)
+{
+    String value = raw;
+    value.trim();
+    while (value.startsWith("v") || value.startsWith("V")) value.remove(0, 1);
+    return value;
+}
+
+static int otaCompareVersions(const String &lhsRaw, const String &rhsRaw)
+{
+    const String lhs = otaNormalizedVersion(lhsRaw);
+    const String rhs = otaNormalizedVersion(rhsRaw);
+    int li = 0;
+    int ri = 0;
+    while (li < lhs.length() || ri < rhs.length()) {
+        long lv = 0;
+        long rv = 0;
+        while (li < lhs.length() && lhs[li] != '.') {
+            if (lhs[li] >= '0' && lhs[li] <= '9') lv = (lv * 10L) + (lhs[li] - '0');
+            li++;
+        }
+        while (ri < rhs.length() && rhs[ri] != '.') {
+            if (rhs[ri] >= '0' && rhs[ri] <= '9') rv = (rv * 10L) + (rhs[ri] - '0');
+            ri++;
+        }
+        if (lv < rv) return -1;
+        if (lv > rv) return 1;
+        li++;
+        ri++;
+    }
+    return 0;
 }
 
 static String chatSafeFileToken(const String &raw);
@@ -1086,7 +1158,7 @@ static constexpr int MAX_P2P_PEERS = 8;
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
 static constexpr int MAX_P2P_DISCOVERED = 12;
 #else
-static constexpr int MAX_P2P_DISCOVERED = 10;
+static constexpr int MAX_P2P_DISCOVERED = 8;
 #endif
 static constexpr size_t P2P_PUBLIC_KEY_BYTES = crypto_box_curve25519xchacha20poly1305_PUBLICKEYBYTES;
 static constexpr size_t P2P_SECRET_KEY_BYTES = crypto_box_curve25519xchacha20poly1305_SECRETKEYBYTES;
@@ -1217,6 +1289,31 @@ bool recordTelemetryEnabled = false;
 bool systemSoundsEnabled = true;
 bool wsRebootOnDisconnectEnabled = false;
 bool airplaneModeEnabled = false;
+enum OtaUiState : uint8_t {
+    OTA_UI_IDLE = 0,
+    OTA_UI_CHECKING,
+    OTA_UI_AVAILABLE,
+    OTA_UI_UP_TO_DATE,
+    OTA_UI_DOWNLOADING,
+    OTA_UI_FINALIZING,
+    OTA_UI_DONE,
+    OTA_UI_ERROR
+};
+volatile OtaUiState otaUiState = OTA_UI_IDLE;
+volatile uint8_t otaProgressPercent = 0;
+bool otaUpdateAvailable = false;
+bool otaCheckRequested = false;
+bool otaBootCheckPending = true;
+bool otaPostUpdatePopupPending = false;
+bool otaUpdatePromptPending = false;
+unsigned long otaLastCheckMs = 0;
+unsigned long otaNextAllowedCheckMs = 0;
+char otaLatestVersion[OTA_VERSION_TEXT_MAX] = "";
+char otaPendingPopupVersion[OTA_VERSION_TEXT_MAX] = "";
+String otaStatusText;
+String otaLatestBinUrl;
+TaskHandle_t otaCheckTaskHandle = nullptr;
+TaskHandle_t otaUpdateTaskHandle = nullptr;
 bool p2pUdpStarted = false;
 bool p2pReady = false;
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
@@ -2096,7 +2193,18 @@ void lvglTopIndicatorsDrawEvent(lv_event_t *e)
 
     const bool conversationOpen = (uiScreen == UI_CHAT) && !currentChatPeerKey.isEmpty();
     const bool showUnreadMail = chatHasUnreadMessages() && !conversationOpen;
+    const bool showOtaIcon = otaUpdateAvailable;
     const int battX = ox + ow - 54;
+    if (showOtaIcon) {
+        const lv_color_t otaCol = lv_color_hex(0x79E28A);
+        const int otaX = battX - 56;
+        const int otaY = topY + 4;
+        lvglDrawRectSolid(drawCtx, otaX + 2, otaY + 1, 16, 12, otaCol, LV_OPA_30);
+        lvglDrawLineSeg(drawCtx, otaX + 10, otaY + 2, otaX + 10, otaY + 12, otaCol, 2);
+        lvglDrawLineSeg(drawCtx, otaX + 6, otaY + 8, otaX + 10, otaY + 12, otaCol, 2);
+        lvglDrawLineSeg(drawCtx, otaX + 14, otaY + 8, otaX + 10, otaY + 12, otaCol, 2);
+        lvglDrawRectSolid(drawCtx, otaX + 4, otaY + 14, 12, 2, otaCol);
+    }
     if (showUnreadMail) {
         const lv_color_t mailCol = lv_color_hex(0xF2C35E);
         const int mailX = battX - 28;
@@ -2147,7 +2255,7 @@ void lvglTopIndicatorsDrawEvent(lv_event_t *e)
     lv_area_t nameA;
     nameA.x1 = static_cast<lv_coord_t>(ox + 56);
     nameA.y1 = topNameY;
-    nameA.x2 = static_cast<lv_coord_t>(battX - (showUnreadMail ? 34 : 8));
+    nameA.x2 = static_cast<lv_coord_t>(battX - ((showUnreadMail ? 34 : 8) + (showOtaIcon ? 28 : 0)));
     nameA.y2 = static_cast<lv_coord_t>(topNameY + topNameLineH + 2);
     lv_draw_label(drawCtx, &labelDsc, &nameA, topName.c_str(), nullptr);
     lv_area_t nameABold = nameA;
@@ -2195,6 +2303,16 @@ void lvglTopUnreadTapEvent(lv_event_t *e)
     chatOpenFirstUnreadConversation();
 }
 
+void lvglTopOtaTapEvent(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    if (lvglClickSuppressed()) return;
+    if (!displayAwake || !otaUpdateAvailable) return;
+    if (lvglKb && !lv_obj_has_flag(lvglKb, LV_OBJ_FLAG_HIDDEN)) lvglHideKeyboard();
+    lvglEnsureScreenBuilt(UI_CONFIG_OTA);
+    lvglOpenScreen(UI_CONFIG_OTA, LV_SCR_LOAD_ANIM_MOVE_LEFT);
+}
+
 void lvglCreateTopIndicators(lv_obj_t *header, bool backToHome)
 {
     if (!header) return;
@@ -2231,6 +2349,17 @@ void lvglCreateTopIndicators(lv_obj_t *header, bool backToHome)
     lv_obj_clear_flag(mailTap, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(mailTap, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(mailTap, lvglTopUnreadTapEvent, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *otaTap = lv_obj_create(header);
+    if (!otaTap) return;
+    lv_obj_set_size(otaTap, 30, UI_TOP_BAR_H - 2);
+    lv_obj_align(otaTap, LV_ALIGN_TOP_RIGHT, -84, 0);
+    lv_obj_set_style_bg_opa(otaTap, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(otaTap, 0, 0);
+    lv_obj_set_style_pad_all(otaTap, 0, 0);
+    lv_obj_clear_flag(otaTap, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(otaTap, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(otaTap, lvglTopOtaTapEvent, LV_EVENT_CLICKED, nullptr);
 }
 
 void lvglEnsurePersistentTopBar()
@@ -3268,6 +3397,8 @@ void lvglMqttConnectEvent(lv_event_t *e);
 void lvglMqttPublishDiscoveryEvent(lv_event_t *e);
 void lvglRefreshMqttConfigUi();
 void lvglRefreshMqttControlsUi();
+void lvglOtaPopupEvent(lv_event_t *e);
+void lvglOtaAvailablePromptEvent(lv_event_t *e);
 void lvglRefreshSnakeBoard();
 void lvglRefreshTetrisBoard();
 void lvglSnakeBoardDrawEvent(lv_event_t *e);
@@ -3297,6 +3428,7 @@ static bool uiScreenSupportsSwipeBack(UiScreen screen)
         case UI_INFO:
         case UI_GAMES:
         case UI_CONFIG:
+        case UI_CONFIG_OTA:
         case UI_CONFIG_MQTT_CONFIG:
         case UI_CONFIG_MQTT_CONTROLS:
         case UI_GAME_SNAKE:
@@ -3318,6 +3450,7 @@ lv_obj_t *lvglScreenForUi(UiScreen screen)
         case UI_INFO: return lvglScrInfo;
         case UI_GAMES: return lvglScrGames;
         case UI_CONFIG: return lvglScrConfig;
+        case UI_CONFIG_OTA: return lvglScrOta;
         case UI_CONFIG_MQTT_CONFIG: return lvglScrMqttCfg;
         case UI_CONFIG_MQTT_CONTROLS: return lvglScrMqttCtrl;
         case UI_GAME_SNAKE: return lvglScrSnake;
@@ -3725,6 +3858,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_flex_flow(lvglConfigWrap, LV_FLEX_FLOW_COLUMN);
             lv_obj_set_scrollbar_mode(lvglConfigWrap, LV_SCROLLBAR_MODE_OFF);
             lvglCreateMenuButton(lvglConfigWrap, "WiFi Config", lv_color_hex(0x3A8F4B), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_WIFI_LIST)));
+            lvglCreateMenuButton(lvglConfigWrap, "OTA Updates", lv_color_hex(0x2E6F95), lvglOpenOtaScreenEvent, nullptr);
             lvglAirplaneBtn = lvglCreateMenuButton(lvglConfigWrap, "Airplane: OFF", lv_color_hex(0x8A5A25), lvglAirplaneToggleEvent, nullptr);
             if (lvglAirplaneBtn) lvglAirplaneBtnLabel = lv_obj_get_child(lvglAirplaneBtn, 0);
             lvglCreateMenuButton(lvglConfigWrap, "Style", lv_color_hex(0x2D6D8E), lvglStyleHintEvent, nullptr);
@@ -3831,6 +3965,62 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_slider_set_range(lvglRgbLedSlider, 0, 100);
             lv_obj_add_event_cb(lvglRgbLedSlider, lvglRgbLedEvent, LV_EVENT_VALUE_CHANGED, nullptr);
             lvglRefreshConfigUi();
+            break;
+        }
+        case UI_CONFIG_OTA: {
+            lvglScrOta = lvglCreateScreenBase("OTA Updates", false);
+            lv_obj_t *wrap = lv_obj_create(lvglScrOta);
+            lv_obj_set_size(wrap, lv_pct(100), UI_CONTENT_H);
+            lv_obj_align(wrap, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
+            lv_obj_set_style_bg_opa(wrap, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(wrap, 0, 0);
+            lv_obj_set_style_pad_all(wrap, 10, 0);
+            lv_obj_set_style_pad_row(wrap, 10, 0);
+            lv_obj_set_flex_flow(wrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_scrollbar_mode(wrap, LV_SCROLLBAR_MODE_OFF);
+
+            auto makeInfoLine = [&](const char *title, lv_obj_t **valueOut) {
+                lv_obj_t *card = lv_obj_create(wrap);
+                lv_obj_set_width(card, lv_pct(100));
+                lv_obj_set_height(card, LV_SIZE_CONTENT);
+                lv_obj_set_style_bg_color(card, lv_color_hex(0x16212C), 0);
+                lv_obj_set_style_border_color(card, lv_color_hex(0x536274), 0);
+                lv_obj_set_style_border_width(card, 1, 0);
+                lv_obj_set_style_radius(card, 12, 0);
+                lv_obj_set_style_pad_all(card, 10, 0);
+                lv_obj_set_style_pad_row(card, 4, 0);
+                lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+                lv_obj_t *label = lv_label_create(card);
+                lv_label_set_text(label, title);
+                lv_obj_set_style_text_color(label, lv_color_hex(0x9FB0C2), 0);
+                lv_obj_t *value = lv_label_create(card);
+                lv_obj_set_width(value, lv_pct(100));
+                lv_label_set_long_mode(value, LV_LABEL_LONG_WRAP);
+                lv_label_set_text(value, "--");
+                lv_obj_set_style_text_color(value, lv_color_hex(0xF5F8FB), 0);
+                *valueOut = value;
+            };
+
+            makeInfoLine("Current version", &lvglOtaCurrentLabel);
+            makeInfoLine("Latest version", &lvglOtaLatestLabel);
+            makeInfoLine("Status", &lvglOtaStatusLabel);
+
+            lvglOtaProgressBar = lv_bar_create(wrap);
+            lv_obj_set_size(lvglOtaProgressBar, lv_pct(100), 14);
+            lv_bar_set_range(lvglOtaProgressBar, 0, 100);
+            lv_bar_set_value(lvglOtaProgressBar, 0, LV_ANIM_OFF);
+            lv_obj_set_style_bg_color(lvglOtaProgressBar, lv_color_hex(0x2A3340), LV_PART_MAIN);
+            lv_obj_set_style_bg_color(lvglOtaProgressBar, lv_color_hex(0x52B788), LV_PART_INDICATOR);
+
+            lvglOtaProgressLabel = lv_label_create(wrap);
+            lv_obj_set_width(lvglOtaProgressLabel, lv_pct(100));
+            lv_obj_set_style_text_align(lvglOtaProgressLabel, LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_set_style_text_color(lvglOtaProgressLabel, lv_color_hex(0xC8D3DD), 0);
+            lv_label_set_text(lvglOtaProgressLabel, "");
+
+            lvglOtaUpdateBtn = lvglCreateMenuButton(wrap, "Update", lv_color_hex(0x3A8F4B), lvglOtaUpdateEvent, nullptr);
+            if (lvglOtaUpdateBtn) lvglOtaUpdateBtnLabel = lv_obj_get_child(lvglOtaUpdateBtn, 0);
+            lvglRefreshOtaUi();
             break;
         }
         case UI_CONFIG_MQTT_CONFIG: {
@@ -4058,6 +4248,8 @@ void lvglOpenScreen(UiScreen screen, lv_scr_load_anim_t anim)
         lvglRefreshInfoPanel();
     } else if (screen == UI_CONFIG) {
         lvglRefreshConfigUi();
+    } else if (screen == UI_CONFIG_OTA) {
+        lvglRefreshOtaUi();
     }
     lvglRefreshTopIndicators();
     lvglLoadScreen(target, anim);
@@ -4090,6 +4282,9 @@ void lvglNavigateBackBySwipe()
             lvglOpenScreen(UI_CHAT, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
             break;
         case UI_WIFI_LIST:
+            lvglOpenScreen(UI_CONFIG, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
+            break;
+        case UI_CONFIG_OTA:
             lvglOpenScreen(UI_CONFIG, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
             break;
         case UI_GAME_SNAKE:
@@ -6312,6 +6507,30 @@ void lvglP2pPairPromptEvent(lv_event_t *e)
     lv_msgbox_close(msgbox);
 }
 
+void lvglOtaAvailablePromptEvent(lv_event_t *e)
+{
+    lv_obj_t *msgbox = lv_event_get_current_target(e);
+    const char *txt = lv_msgbox_get_active_btn_text(msgbox);
+    const bool updateNow = txt && strcmp(txt, "Update") == 0;
+    otaUpdatePromptPending = false;
+    lvglOtaUpdatePromptVisible = false;
+    if (updateNow) {
+        lvglEnsureScreenBuilt(UI_CONFIG_OTA);
+        lvglRefreshOtaUi();
+        lvglOpenScreen(UI_CONFIG_OTA, LV_SCR_LOAD_ANIM_MOVE_LEFT);
+        lvglOtaUpdateEvent(nullptr);
+    }
+    lv_msgbox_close(msgbox);
+}
+
+void lvglOtaPopupEvent(lv_event_t *e)
+{
+    lv_obj_t *msgbox = lv_event_get_current_target(e);
+    otaClearPopupVersion();
+    lvglOtaPostUpdatePopupVisible = false;
+    lv_msgbox_close(msgbox);
+}
+
 void lvglMqttControlPressEvent(lv_event_t *e)
 {
     const int idx = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
@@ -6647,10 +6866,45 @@ void lvglOpenMqttCtrlEvent(lv_event_t *e)
     lvglOpenScreen(UI_CONFIG_MQTT_CONTROLS, LV_SCR_LOAD_ANIM_MOVE_LEFT);
 }
 
+void lvglOpenOtaScreenEvent(lv_event_t *e)
+{
+    (void)e;
+    lvglEnsureScreenBuilt(UI_CONFIG_OTA);
+    lvglRefreshOtaUi();
+    lvglOpenScreen(UI_CONFIG_OTA, LV_SCR_LOAD_ANIM_MOVE_LEFT);
+    otaCheckRequested = true;
+}
+
 void lvglBackToConfigEvent(lv_event_t *e)
 {
     (void)e;
     lvglOpenScreen(UI_CONFIG, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
+}
+
+void lvglOtaUpdateEvent(lv_event_t *e)
+{
+    (void)e;
+    if (otaUpdateTaskHandle || otaUiState == OTA_UI_DOWNLOADING || otaUiState == OTA_UI_FINALIZING) return;
+    if (!wifiConnectedSafe()) {
+        uiStatusLine = "Connect WiFi before OTA";
+        lvglSyncStatusLine();
+        return;
+    }
+    if (!otaUpdateAvailable || otaLatestBinUrl.isEmpty()) {
+        otaCheckRequested = true;
+        uiStatusLine = "Checking for updates";
+        lvglSyncStatusLine();
+        return;
+    }
+    otaUiState = OTA_UI_DOWNLOADING;
+    otaProgressPercent = 0;
+    otaSetStatus("Starting update...");
+    if (xTaskCreatePinnedToCore(otaUpdateTask, "ota_update", 12288, nullptr, 1, &otaUpdateTaskHandle, ARDUINO_RUNNING_CORE) != pdPASS) {
+        otaUpdateTaskHandle = nullptr;
+        otaUiState = OTA_UI_ERROR;
+        otaSetStatus("Update start failed");
+    }
+    lvglRefreshOtaUi();
 }
 
 void lvglStyleHintEvent(lv_event_t *e)
@@ -6747,6 +7001,47 @@ void lvglRefreshConfigUi()
         lv_obj_set_style_bg_main_stop(lvglRgbLedSlider, 96, LV_PART_INDICATOR);
         lv_obj_set_style_bg_grad_stop(lvglRgbLedSlider, 255, LV_PART_INDICATOR);
         lv_obj_set_style_bg_color(lvglRgbLedSlider, lv_color_hex(0xE5ECF3), LV_PART_KNOB);
+    }
+}
+
+void lvglRefreshOtaUi()
+{
+    if (lvglOtaCurrentLabel) lv_label_set_text(lvglOtaCurrentLabel, FW_VERSION);
+    if (lvglOtaLatestLabel) {
+        if (otaLatestVersion[0] != '\0') lv_label_set_text(lvglOtaLatestLabel, otaLatestVersion);
+        else lv_label_set_text(lvglOtaLatestLabel, otaUiState == OTA_UI_CHECKING ? "Checking..." : "Unknown");
+    }
+    if (lvglOtaStatusLabel) {
+        if (otaStatusText.length()) lv_label_set_text(lvglOtaStatusLabel, otaStatusText.c_str());
+        else if (otaUpdateAvailable) lv_label_set_text(lvglOtaStatusLabel, "Update available");
+        else lv_label_set_text(lvglOtaStatusLabel, "Idle");
+    }
+    const bool showProgress = otaUiState == OTA_UI_DOWNLOADING || otaUiState == OTA_UI_FINALIZING || otaUiState == OTA_UI_DONE;
+    if (lvglOtaProgressBar) {
+        if (showProgress) lv_obj_clear_flag(lvglOtaProgressBar, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(lvglOtaProgressBar, LV_OBJ_FLAG_HIDDEN);
+        lv_bar_set_value(lvglOtaProgressBar, showProgress ? otaProgressPercent : 0, LV_ANIM_ON);
+    }
+    if (lvglOtaProgressLabel) {
+        if (showProgress) {
+            lv_obj_clear_flag(lvglOtaProgressLabel, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text_fmt(lvglOtaProgressLabel, "%u%%", static_cast<unsigned int>(otaProgressPercent));
+        } else {
+            lv_obj_add_flag(lvglOtaProgressLabel, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(lvglOtaProgressLabel, "");
+        }
+    }
+    if (lvglOtaUpdateBtn && lvglOtaUpdateBtnLabel) {
+        const bool busy = otaUiState == OTA_UI_CHECKING || otaUiState == OTA_UI_DOWNLOADING || otaUiState == OTA_UI_FINALIZING;
+        if (busy) {
+            lv_obj_add_flag(lvglOtaUpdateBtn, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_clear_flag(lvglOtaUpdateBtn, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(lvglOtaUpdateBtnLabel, otaUpdateAvailable ? "Update" : "Check Now");
+            const lv_color_t btnCol = otaUpdateAvailable ? lv_color_hex(0x3A8F4B) : lv_color_hex(0x2E6F95);
+            lv_obj_set_style_bg_color(lvglOtaUpdateBtn, btnCol, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_color(lvglOtaUpdateBtn, btnCol, LV_PART_MAIN | LV_STATE_PRESSED);
+        }
     }
 }
 
@@ -6883,6 +7178,29 @@ void lvglInitUi()
 void lvglService()
 {
     if (!lvglReady) return;
+    if (otaPostUpdatePopupPending && !lvglOtaPostUpdatePopupVisible) {
+        static const char *btns[] = {"OK", ""};
+        String prompt = String("Device updated to FW Version ") + FW_VERSION;
+        lv_obj_t *m = lv_msgbox_create(nullptr, "Update Complete", prompt.c_str(), btns, false);
+        if (m) {
+            lv_obj_center(m);
+            lv_obj_set_width(m, min<int16_t>(DISPLAY_WIDTH - 24, 280));
+            lv_obj_add_event_cb(m, lvglOtaPopupEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+            lvglOtaPostUpdatePopupVisible = true;
+        }
+    }
+    if (otaUpdatePromptPending && !lvglOtaUpdatePromptVisible && !otaPostUpdatePopupPending &&
+        otaUiState != OTA_UI_DOWNLOADING && otaUiState != OTA_UI_FINALIZING) {
+        static const char *btns[] = {"Cancel", "Update", ""};
+        String prompt = String("Firmware ") + (otaLatestVersion[0] ? otaLatestVersion : "?") + " is available.";
+        lv_obj_t *m = lv_msgbox_create(nullptr, "Update Available", prompt.c_str(), btns, false);
+        if (m) {
+            lv_obj_center(m);
+            lv_obj_set_width(m, min<int16_t>(DISPLAY_WIDTH - 24, 280));
+            lv_obj_add_event_cb(m, lvglOtaAvailablePromptEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+            lvglOtaUpdatePromptVisible = true;
+        }
+    }
     if (p2pPairRequestPending && !p2pPairPromptVisible) {
         static const char *btns[] = {"Reject", "Accept", ""};
         String prompt = "A device would like to pair.";
@@ -8422,8 +8740,133 @@ void loadUiRuntimeConfig()
     telemetryMaxKB = uiPrefs.getUInt("tele_kb", 512);
     serialLogWsMinIntervalMs = uiPrefs.getUInt("ser_rate", SERIAL_LOG_RATE_MS_DEFAULT);
     serialLogKeepLines = static_cast<size_t>(uiPrefs.getUInt("ser_keep", SERIAL_LOG_RING_SIZE));
+    copyTextToBuf(otaPendingPopupVersion, sizeof(otaPendingPopupVersion), uiPrefs.getString("ota_popup", ""));
+    copyTextToBuf(otaLatestVersion, sizeof(otaLatestVersion), otaNormalizedVersion(uiPrefs.getString("ota_latest", "")));
+    otaUpdateAvailable = uiPrefs.getBool("ota_avail", false);
     uiPrefs.end();
+    if (otaLatestVersion[0] != '\0' && otaCompareVersions(String(FW_VERSION), String(otaLatestVersion)) >= 0) {
+        otaUpdateAvailable = false;
+    }
+    otaUpdatePromptPending = otaUpdateAvailable;
+    otaPostUpdatePopupPending = otaPendingPopupVersion[0] != '\0' && otaNormalizedVersion(String(otaPendingPopupVersion)) == otaNormalizedVersion(String(FW_VERSION));
     audioSetVolumeImmediate(mediaVolumePercent);
+}
+
+static void otaStorePopupVersion(const String &version)
+{
+    copyTextToBuf(otaPendingPopupVersion, sizeof(otaPendingPopupVersion), version);
+    uiPrefs.begin("ui", false);
+    uiPrefs.putString("ota_popup", version);
+    uiPrefs.end();
+    otaPostUpdatePopupPending = otaNormalizedVersion(version) == otaNormalizedVersion(String(FW_VERSION));
+}
+
+static void otaPersistAvailabilityState()
+{
+    uiPrefs.begin("ui", false);
+    uiPrefs.putBool("ota_avail", otaUpdateAvailable);
+    uiPrefs.putString("ota_latest", otaLatestVersion);
+    uiPrefs.end();
+}
+
+static void otaClearPopupVersion()
+{
+    otaPendingPopupVersion[0] = '\0';
+    otaPostUpdatePopupPending = false;
+    uiPrefs.begin("ui", false);
+    uiPrefs.remove("ota_popup");
+    uiPrefs.end();
+}
+
+static void otaCheckTask(void *param)
+{
+    (void)param;
+    otaUiState = OTA_UI_CHECKING;
+    otaSetStatus("Checking for updates...");
+    String latestTag;
+    String latestUrl;
+    String error;
+    const bool ok = otaFetchLatestReleaseInfo(latestTag, latestUrl, error);
+    if (ok) {
+        copyTextToBuf(otaLatestVersion, sizeof(otaLatestVersion), otaNormalizedVersion(latestTag));
+        otaLatestBinUrl = latestUrl;
+        otaUpdateAvailable = otaCompareVersions(String(FW_VERSION), String(otaLatestVersion)) < 0;
+        otaUpdatePromptPending = otaUpdateAvailable;
+        otaPersistAvailabilityState();
+        otaUiState = otaUpdateAvailable ? OTA_UI_AVAILABLE : OTA_UI_UP_TO_DATE;
+        otaSetStatus(otaUpdateAvailable ? "Update available" : "You are up to date");
+        otaLastCheckMs = millis();
+        otaNextAllowedCheckMs = millis() + OTA_CHECK_INTERVAL_MS;
+    } else {
+        otaUiState = OTA_UI_ERROR;
+        otaSetStatus("Update check failed");
+        otaNextAllowedCheckMs = millis() + OTA_RETRY_DELAY_MS;
+        otaUpdatePromptPending = false;
+    }
+    if (lvglReady) {
+        lvglRefreshTopIndicators();
+        if (uiScreen == UI_CONFIG_OTA) lvglRefreshOtaUi();
+    }
+    otaCheckTaskHandle = nullptr;
+    vTaskDelete(nullptr);
+}
+
+static void otaUpdateTask(void *param)
+{
+    (void)param;
+    const String binUrl = otaLatestBinUrl;
+    const String targetVersion = String(otaLatestVersion);
+    String error;
+    otaUiState = OTA_UI_DOWNLOADING;
+    otaProgressPercent = 0;
+    otaUpdatePromptPending = false;
+    otaUpdateAvailable = false;
+    otaPersistAvailabilityState();
+    otaSetStatus("Starting update...");
+    const bool ok = otaDownloadAndApplyFromUrl(binUrl, error);
+    if (ok) {
+        otaUiState = OTA_UI_DONE;
+        otaSetStatus("Update complete. Rebooting...");
+        if (targetVersion.length()) otaStorePopupVersion(targetVersion);
+        rebootRequested = true;
+        rebootRequestedAtMs = millis() + 300UL;
+    } else {
+        otaUiState = OTA_UI_ERROR;
+        otaSetStatus("Update failed");
+        uiStatusLine = "OTA failed: " + error;
+        lvglSyncStatusLine();
+    }
+    if (lvglReady) {
+        lvglRefreshTopIndicators();
+        if (uiScreen == UI_CONFIG_OTA) lvglRefreshOtaUi();
+    }
+    otaUpdateTaskHandle = nullptr;
+    vTaskDelete(nullptr);
+}
+
+void otaCheckService()
+{
+    if (otaCheckTaskHandle || otaUpdateTaskHandle) return;
+    if (!wifiConnectedSafe()) return;
+    const unsigned long now = millis();
+    const bool due = otaCheckRequested ||
+                     (otaBootCheckPending && now >= OTA_INITIAL_CHECK_DELAY_MS) ||
+                     (otaNextAllowedCheckMs != 0 && static_cast<long>(now - otaNextAllowedCheckMs) >= 0);
+    if (!due) return;
+    otaCheckRequested = false;
+    otaBootCheckPending = false;
+    if (xTaskCreatePinnedToCore(otaCheckTask, "ota_check", 8192, nullptr, 1, &otaCheckTaskHandle, ARDUINO_RUNNING_CORE) != pdPASS) {
+        otaCheckTaskHandle = nullptr;
+        otaUiState = OTA_UI_ERROR;
+        otaSetStatus("Check start failed");
+        otaNextAllowedCheckMs = now + OTA_RETRY_DELAY_MS;
+    }
+}
+
+void otaUpdateService()
+{
+    if (!lvglReady && !rebootRequested) return;
+    if (uiScreen == UI_CONFIG_OTA) lvglRefreshOtaUi();
 }
 
 bool handleUiSettingMessage(const char *msg)
@@ -9538,6 +9981,45 @@ String chooseLatestFirmwareBinUrl(const JsonVariantConst &assets)
     return "";
 }
 
+static bool otaFetchLatestReleaseInfo(String &tagNameOut, String &binUrlOut, String &errorOut)
+{
+    tagNameOut = "";
+    binUrlOut = "";
+    errorOut = "";
+
+    int ghStatus = -1;
+    const String body = httpsGetText("https://api.github.com/repos/elik745i/ESP32-2432S024C-Remote/releases/latest", &ghStatus);
+    if (body.isEmpty()) {
+        errorOut = "github_fetch_failed";
+        return false;
+    }
+
+    JsonDocument filter;
+    filter["tag_name"] = true;
+    filter["assets"][0]["name"] = true;
+    filter["assets"][0]["browser_download_url"] = true;
+
+    JsonDocument parsed;
+    const DeserializationError err = deserializeJson(parsed, body, DeserializationOption::Filter(filter));
+    if (err) {
+        errorOut = "json_parse_failed";
+        return false;
+    }
+
+    tagNameOut = String(static_cast<const char *>(parsed["tag_name"] | ""));
+    binUrlOut = chooseLatestFirmwareBinUrl(parsed["assets"]);
+    if (tagNameOut.isEmpty() || binUrlOut.isEmpty()) {
+        errorOut = "release_asset_not_found";
+        return false;
+    }
+    return true;
+}
+
+static void otaSetStatus(const String &text)
+{
+    otaStatusText = text;
+}
+
 bool otaDownloadAndApplyFromUrl(const String &url, String &errorOut)
 {
     errorOut = "";
@@ -9590,6 +10072,10 @@ bool otaDownloadAndApplyFromUrl(const String &url, String &errorOut)
         return false;
     }
     int remaining = totalLen;
+    size_t writtenTotal = 0;
+    otaUiState = OTA_UI_DOWNLOADING;
+    otaProgressPercent = 0;
+    otaSetStatus(totalLen > 0 ? "Downloading update..." : "Downloading update...");
     while (http.connected() && (remaining > 0 || remaining == -1)) {
         const size_t avail = static_cast<size_t>(stream->available());
         if (!avail) {
@@ -9609,12 +10095,20 @@ bool otaDownloadAndApplyFromUrl(const String &url, String &errorOut)
             free(buf);
             return false;
         }
+        writtenTotal += static_cast<size_t>(n);
         if (remaining > 0) remaining -= n;
+        if (totalLen > 0) {
+            const size_t pct = min<size_t>(100U, (writtenTotal * 100U) / static_cast<size_t>(totalLen));
+            otaProgressPercent = static_cast<uint8_t>(pct);
+        }
         delay(0);
     }
     http.end();
     free(buf);
 
+    otaUiState = OTA_UI_FINALIZING;
+    otaProgressPercent = 100;
+    otaSetStatus("Finalizing update...");
     if (!Update.end(true)) {
         errorOut = "update_end_failed";
         return false;
@@ -10160,41 +10654,11 @@ void setupWebRoutes()
         JsonDocument doc;
         doc["ok"] = false;
         doc["repo"] = "elik745i/ESP32-2432S024C-Remote";
-
-        int ghStatus = -1;
-        const String body = httpsGetText("https://api.github.com/repos/elik745i/ESP32-2432S024C-Remote/releases/latest", &ghStatus);
-        if (body.isEmpty()) {
-            doc["error"] = "github_fetch_failed";
-            doc["http_status"] = ghStatus;
-            String payload;
-            serializeJson(doc, payload);
-            request->send(502, "application/json", payload);
-            return;
-        }
-
-        JsonDocument filter;
-        filter["tag_name"] = true;
-        filter["assets"][0]["name"] = true;
-        filter["assets"][0]["browser_download_url"] = true;
-
-        JsonDocument parsed;
-        const DeserializationError err =
-            deserializeJson(parsed, body, DeserializationOption::Filter(filter));
-        if (err) {
-            doc["error"] = "json_parse_failed";
-            doc["detail"] = err.c_str();
-            doc["http_status"] = ghStatus;
-            String payload;
-            serializeJson(doc, payload);
-            request->send(500, "application/json", payload);
-            return;
-        }
-
-        const String tagName = parsed["tag_name"] | "";
-        const String binUrl = chooseLatestFirmwareBinUrl(parsed["assets"]);
-        if (tagName.isEmpty() || binUrl.isEmpty()) {
-            doc["error"] = "release_asset_not_found";
-            doc["http_status"] = ghStatus;
+        String tagName;
+        String binUrl;
+        String error;
+        if (!otaFetchLatestReleaseInfo(tagName, binUrl, error)) {
+            doc["error"] = error;
             String payload;
             serializeJson(doc, payload);
             request->send(500, "application/json", payload);
@@ -10205,7 +10669,6 @@ void setupWebRoutes()
         doc["tag_name"] = tagName;
         doc["bin_url"] = binUrl;
         doc["source"] = "device";
-        doc["http_status"] = ghStatus;
         String payload;
         serializeJson(doc, payload);
         request->send(200, "application/json", payload);
@@ -12053,9 +12516,11 @@ void loop()
                 break;
             case 4:
                 refreshMdnsState();
+                otaCheckService();
                 break;
         }
     }
+    otaUpdateService();
     const bool allowSdAutoRetry = (uiScreen == UI_MEDIA) || !displayAwake;
     if (!sdMounted && allowSdAutoRetry && !isDown && !fsWriteBusy() &&
         static_cast<unsigned long>(millis() - sdLastAutoRetryMs) >= SD_AUTORETRY_PERIOD_MS) {

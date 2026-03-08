@@ -2,7 +2,7 @@
 
 Firmware for Sunton-style ESP32 touch display boards with an LVGL touch UI, Wi-Fi/AP management, SD-backed recovery tools, MQTT controls, and encrypted device-to-device chat.
 
-Current firmware version: **`0.1.3`**
+Current firmware version: **`0.1.4`**
 
 Supported boards:
 - `ESP32-2432S024C` (`240x320`, `ILI9341`, `CST820`)
@@ -20,6 +20,7 @@ Supported boards:
 - Saved backlight brightness and RGB LED intensity controls in `Config`
 - Brightness and RGB slider values are persisted in `Preferences`
 - `WiFi Config` screen with current network info, manual scan, saved-network actions, and editable AP SSID/password
+- `OTA Updates` screen with periodic update checks, update-available indicator/popup, progress bar, and post-update confirmation
 - `MQTT Config` screen for broker settings, status, and connection control
 - SD recovery browser that can browse all rooted SD folders
 - SD-backed chat history stored per contact under `/Conversations`
@@ -563,6 +564,7 @@ Configured via [partitions_3mb_no_ota.csv](partitions_3mb_no_ota.csv).
 
 For future UI experiments and LVGL demo ideas:
 - https://github.com/lvgl/lvgl
+- https://github.com/playfultechnology/esp32-eyes
 
 ## Release Binary
 
