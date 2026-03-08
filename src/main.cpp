@@ -412,7 +412,8 @@ uint32_t sdStatsLastLoggedRemountAttempts = 0;
 uint32_t sdStatsLastLoggedRemountSuccess = 0;
 uint32_t sdStatsLastLoggedRemountFailure = 0;
 
-static constexpr uint16_t LVGL_BUF_LINES = 24;
+static constexpr uint16_t LVGL_BUF_LINES_MIN = 32;
+static constexpr uint16_t LVGL_BUF_LINES_MAX = 48;
 static constexpr uint16_t UI_ANIM_MS = 72;
 static constexpr uint16_t UI_BUTTON_CLICK_FLASH_MS = 90;
 static constexpr lv_opa_t UI_BUTTON_CLICK_FLASH_MIX = 64;
@@ -1695,30 +1696,45 @@ void lvglFlushCb(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p
     lv_disp_flush_ready(disp);
 }
 
+static inline bool lvglKeyboardVisible()
+{
+    return lvglKb && !lv_obj_has_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
+}
+
+static inline void lvglResetGestureTracking()
+{
+    lvglSwipeTracking = false;
+    lvglSwipeCandidate = false;
+    lvglSwipeHorizontalLocked = false;
+}
+
 void lvglTouchReadCb(lv_indev_drv_t *indev, lv_indev_data_t *data)
 {
     (void)indev;
     int16_t x = 0;
     int16_t y = 0;
-    lvglTouchDown = readScreenTouch(x, y);
+    const bool rawDown = readScreenTouch(x, y);
+    if (rawDown) {
+        lvglLastTouchX = x;
+        lvglLastTouchY = y;
+    }
     if (!displayAwake) {
-        if (lvglTouchDown && !wakeTouchReleaseGuard) {
+        if (rawDown && !wakeTouchReleaseGuard) {
             wakeTouchReleaseGuard = true;
             wakeTouchConfirmCount = WAKE_TOUCH_RELEASE_STABLE_POLLS;
             displaySetAwake(true);
             lastUserActivityMs = millis();
         }
         if (wakeTouchReleaseGuard) {
-            if (lvglTouchDown) {
+            if (rawDown) {
                 wakeTouchConfirmCount = WAKE_TOUCH_RELEASE_STABLE_POLLS;
             } else if (wakeTouchConfirmCount > 0) {
                 wakeTouchConfirmCount--;
             } else {
                 wakeTouchReleaseGuard = false;
             }
-            lvglSwipeTracking = false;
-            lvglSwipeCandidate = false;
-            lvglSwipeHorizontalLocked = false;
+            lvglTouchDown = false;
+            lvglResetGestureTracking();
             data->state = LV_INDEV_STATE_REL;
             data->point.x = lvglLastTouchX;
             data->point.y = lvglLastTouchY;
@@ -1726,35 +1742,33 @@ void lvglTouchReadCb(lv_indev_drv_t *indev, lv_indev_data_t *data)
         }
     }
     if (wakeTouchReleaseGuard) {
-        if (lvglTouchDown) {
+        if (rawDown) {
             wakeTouchConfirmCount = WAKE_TOUCH_RELEASE_STABLE_POLLS;
         } else if (wakeTouchConfirmCount > 0) {
             wakeTouchConfirmCount--;
         } else {
             wakeTouchReleaseGuard = false;
         }
-        lvglSwipeTracking = false;
-        lvglSwipeCandidate = false;
-        lvglSwipeHorizontalLocked = false;
+        lvglTouchDown = false;
+        lvglResetGestureTracking();
         data->state = LV_INDEV_STATE_REL;
         data->point.x = lvglLastTouchX;
         data->point.y = lvglLastTouchY;
         return;
     }
+    lvglTouchDown = rawDown;
     if (lvglTouchDown) {
         if (!lvglSwipeTracking) {
             const unsigned long now = millis();
-            const bool keyboardVisible = lvglKb && !lv_obj_has_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
             if (displayAwake &&
-                !keyboardVisible &&
+                !lvglKeyboardVisible() &&
                 lvglLastTapReleaseMs != 0 &&
                 static_cast<unsigned long>(now - lvglLastTapReleaseMs) <= static_cast<unsigned long>(DOUBLE_TAP_MAX_GAP) &&
                 abs(static_cast<int>(x) - static_cast<int>(lvglLastTapReleaseX)) <= DOUBLE_TAP_MAX_MOVE &&
                 abs(static_cast<int>(y) - static_cast<int>(lvglLastTapReleaseY)) <= DOUBLE_TAP_MAX_MOVE) {
                 lvglLastTapReleaseMs = 0;
-                lvglSwipeTracking = false;
-                lvglSwipeCandidate = false;
-                lvglSwipeHorizontalLocked = false;
+                lvglTouchDown = false;
+                lvglResetGestureTracking();
                 displaySetAwake(false);
                 wakeTouchReleaseGuard = true;
                 wakeTouchConfirmCount = WAKE_TOUCH_RELEASE_STABLE_POLLS;
@@ -1763,69 +1777,11 @@ void lvglTouchReadCb(lv_indev_drv_t *indev, lv_indev_data_t *data)
                 data->point.y = lvglLastTouchY;
                 return;
             }
-            lvglSwipeTracking = true;
-            lvglSwipeStartX = x;
-            lvglSwipeStartY = y;
-            lvglSwipeLastX = x;
-            lvglSwipeLastY = y;
-            lvglSwipeStartMs = millis();
-            lvglSwipeCandidate = uiScreenSupportsSwipeBack(uiScreen);
-            lvglSwipeHorizontalLocked = false;
-        } else {
-            lvglSwipeLastX = x;
-            lvglSwipeLastY = y;
-            if (lvglSwipeCandidate) {
-                const int dx = static_cast<int>(lvglSwipeLastX) - static_cast<int>(lvglSwipeStartX);
-                const int dy = static_cast<int>(lvglSwipeLastY) - static_cast<int>(lvglSwipeStartY);
-                const int absDx = abs(dx);
-                const int absDy = abs(dy);
-                if (!lvglSwipeHorizontalLocked) {
-                    if (absDy >= SWIPE_CANCEL_VERTICAL_DY && absDy > absDx) {
-                        lvglSwipeCandidate = false;
-                    } else if (dx >= SWIPE_LOCK_MIN_DX && dx > (absDy * 2)) {
-                        lvglSwipeHorizontalLocked = true;
-                    }
-                } else if (absDy > SWIPE_BACK_MAX_DY) {
-                    lvglSwipeCandidate = false;
-                    lvglSwipeHorizontalLocked = false;
-                }
-            }
         }
-        lvglLastTouchX = x;
-        lvglLastTouchY = y;
         data->state = LV_INDEV_STATE_PR;
         data->point.x = x;
         data->point.y = y;
     } else {
-        if (lvglSwipeTracking) {
-            lvglSwipeTracking = false;
-            const int dx = static_cast<int>(lvglSwipeLastX) - static_cast<int>(lvglSwipeStartX);
-            const int dy = static_cast<int>(lvglSwipeLastY) - static_cast<int>(lvglSwipeStartY);
-            const unsigned long dt = static_cast<unsigned long>(millis() - lvglSwipeStartMs);
-            const bool keyboardVisible = lvglKb && !lv_obj_has_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
-            const bool tapCandidate = displayAwake &&
-                                      !keyboardVisible &&
-                                      abs(dx) <= DOUBLE_TAP_MAX_MOVE &&
-                                      abs(dy) <= DOUBLE_TAP_MAX_MOVE &&
-                                      dt <= DOUBLE_TAP_MAX_TAP_MS;
-            if (lvglSwipeCandidate &&
-                lvglSwipeHorizontalLocked &&
-                dx >= SWIPE_BACK_MIN_DX &&
-                abs(dy) <= SWIPE_BACK_MAX_DY &&
-                dx > (abs(dy) * 2) &&
-                dt <= SWIPE_BACK_MAX_MS) {
-                lvglSwipeBackPending = true;
-                lvglLastTapReleaseMs = 0;
-            } else if (tapCandidate) {
-                lvglLastTapReleaseMs = millis();
-                lvglLastTapReleaseX = lvglLastTouchX;
-                lvglLastTapReleaseY = lvglLastTouchY;
-            } else {
-                lvglLastTapReleaseMs = 0;
-            }
-            lvglSwipeCandidate = false;
-            lvglSwipeHorizontalLocked = false;
-        }
         data->state = LV_INDEV_STATE_REL;
         data->point.x = lvglLastTouchX;
         data->point.y = lvglLastTouchY;
@@ -1835,7 +1791,10 @@ void lvglTouchReadCb(lv_indev_drv_t *indev, lv_indev_data_t *data)
 void lvglSyncStatusLine()
 {
     if (!lvglStatusLabel) return;
-    lv_label_set_text_fmt(lvglStatusLabel, "Status: %s", uiStatusLine.c_str());
+    String next = "Status: " + uiStatusLine;
+    const char *current = lv_label_get_text(lvglStatusLabel);
+    if (current && next == current) return;
+    lv_label_set_text(lvglStatusLabel, next.c_str());
 }
 
 void lvglRegisterTopIndicator(lv_obj_t *obj)
@@ -2036,21 +1995,30 @@ void lvglTopIndicatorsDrawEvent(lv_event_t *e)
 
     String topName = deviceShortNameValue();
     if (topName.length() > 8) topName.remove(8);
+    const lv_font_t *topNameFont = lv_obj_get_style_text_font(obj, LV_PART_MAIN);
+    if (!topNameFont) topNameFont = lv_theme_get_font_small(obj);
+    const lv_coord_t topNameLineH = topNameFont ? static_cast<lv_coord_t>(lv_font_get_line_height(topNameFont)) : 16;
+    const lv_coord_t topNameY = static_cast<lv_coord_t>(topY + ((UI_TOP_BAR_H - topNameLineH) / 2) + 1);
     lv_draw_label_dsc_t labelDsc;
     lv_draw_label_dsc_init(&labelDsc);
     labelDsc.color = lv_color_hex(0xC8D3DD);
     labelDsc.opa = LV_OPA_COVER;
     labelDsc.align = LV_TEXT_ALIGN_CENTER;
+    labelDsc.font = topNameFont;
     lv_area_t nameA;
     nameA.x1 = static_cast<lv_coord_t>(ox + 56);
-    nameA.y1 = static_cast<lv_coord_t>(topY + 1);
+    nameA.y1 = topNameY;
     nameA.x2 = static_cast<lv_coord_t>(battX - (showUnreadMail ? 34 : 8));
-    nameA.y2 = static_cast<lv_coord_t>(topY + 24);
+    nameA.y2 = static_cast<lv_coord_t>(topNameY + topNameLineH + 2);
     lv_draw_label(drawCtx, &labelDsc, &nameA, topName.c_str(), nullptr);
     lv_area_t nameABold = nameA;
     nameABold.x1 += 1;
     nameABold.x2 += 1;
     lv_draw_label(drawCtx, &labelDsc, &nameABold, topName.c_str(), nullptr);
+    lv_area_t nameABold2 = nameA;
+    nameABold2.y1 += 1;
+    nameABold2.y2 += 1;
+    lv_draw_label(drawCtx, &labelDsc, &nameABold2, topName.c_str(), nullptr);
 }
 
 void lvglTopIndicatorsTapEvent(lv_event_t *e)
@@ -4237,6 +4205,7 @@ void lvglMediaVolumeStepEvent(lv_event_t *e)
 void lvglRefreshMediaPlayerUi()
 {
     if (!lvglMediaTrackLabel || !lvglMediaPlayBtnLabel || !lvglMediaProgressBar || !lvglMediaProgressLabel) return;
+    if (uiScreen != UI_MEDIA) return;
 
     if (mediaSelectedTrackName.isEmpty() && !mediaNowPlaying.isEmpty()) mediaSelectedTrackName = mediaNowPlaying;
     const bool hasTrack = !mediaSelectedSourcePath.isEmpty();
@@ -5127,6 +5096,7 @@ void p2pService()
 void lvglRefreshInfoPanel()
 {
     if (!lvglInfoList) return;
+    if (uiScreen != UI_INFO) return;
     sampleTopIndicators();
     lvglRefreshTopIndicators();
     const bool connected = wifiConnectedSafe();
@@ -6188,7 +6158,9 @@ void lvglBrightnessEvent(lv_event_t *e)
     if (!lvglBrightnessSlider) return;
     displayBrightnessPercent = static_cast<uint8_t>(lv_slider_get_value(lvglBrightnessSlider));
     if (displayAwake) displayBacklightSet(displayBacklightLevelFromPercent(displayBrightnessPercent));
+    uiPrefs.begin("ui", false);
     uiPrefs.putUChar("disp_bri", displayBrightnessPercent);
+    uiPrefs.end();
     lvglRefreshConfigUi();
 }
 
@@ -6197,7 +6169,9 @@ void lvglRgbLedEvent(lv_event_t *e)
     (void)e;
     if (!lvglRgbLedSlider) return;
     rgbLedPercent = static_cast<uint8_t>(lv_slider_get_value(lvglRgbLedSlider));
+    uiPrefs.begin("ui", false);
     uiPrefs.putUChar("rgb_led", rgbLedPercent);
+    uiPrefs.end();
     rgbService();
     lvglRefreshConfigUi();
 }
@@ -6295,7 +6269,9 @@ void lvglInitUi()
     }
 
     if (!lvglDrawPixels) {
-        uint16_t lines = LVGL_BUF_LINES;
+        uint16_t lines = static_cast<uint16_t>((verRes + 9U) / 10U);
+        if (lines < LVGL_BUF_LINES_MIN) lines = LVGL_BUF_LINES_MIN;
+        if (lines > LVGL_BUF_LINES_MAX) lines = LVGL_BUF_LINES_MAX;
         while (lines >= 2) {
             const size_t pxCount = static_cast<size_t>(horRes) * static_cast<size_t>(lines);
             lv_color_t *candidate = static_cast<lv_color_t *>(malloc(pxCount * sizeof(lv_color_t)));
@@ -6380,16 +6356,75 @@ void lvglService()
     }
     lv_timer_handler();
 
-    if ((now - lvglLastStatusRefreshMs) >= 600UL) {
+    if (lvglTouchDown) {
+        if (!lvglSwipeTracking) {
+            lvglSwipeTracking = true;
+            lvglSwipeStartX = lvglLastTouchX;
+            lvglSwipeStartY = lvglLastTouchY;
+            lvglSwipeLastX = lvglLastTouchX;
+            lvglSwipeLastY = lvglLastTouchY;
+            lvglSwipeStartMs = now;
+            lvglSwipeCandidate = uiScreenSupportsSwipeBack(uiScreen);
+            lvglSwipeHorizontalLocked = false;
+        } else if (lvglSwipeTracking) {
+            lvglSwipeLastX = lvglLastTouchX;
+            lvglSwipeLastY = lvglLastTouchY;
+            if (lvglSwipeCandidate) {
+                const int dx = static_cast<int>(lvglSwipeLastX) - static_cast<int>(lvglSwipeStartX);
+                const int dy = static_cast<int>(lvglSwipeLastY) - static_cast<int>(lvglSwipeStartY);
+                const int absDx = abs(dx);
+                const int absDy = abs(dy);
+                if (!lvglSwipeHorizontalLocked) {
+                    if (absDy >= SWIPE_CANCEL_VERTICAL_DY && absDy > absDx) {
+                        lvglSwipeCandidate = false;
+                    } else if (dx >= SWIPE_LOCK_MIN_DX && dx > (absDy * 2)) {
+                        lvglSwipeHorizontalLocked = true;
+                    }
+                } else if (absDy > SWIPE_BACK_MAX_DY) {
+                    lvglSwipeCandidate = false;
+                    lvglSwipeHorizontalLocked = false;
+                }
+            }
+        }
+    } else if (lvglSwipeTracking) {
+        lvglSwipeTracking = false;
+        const int dx = static_cast<int>(lvglSwipeLastX) - static_cast<int>(lvglSwipeStartX);
+        const int dy = static_cast<int>(lvglSwipeLastY) - static_cast<int>(lvglSwipeStartY);
+        const unsigned long dt = static_cast<unsigned long>(now - lvglSwipeStartMs);
+        const bool tapCandidate = displayAwake &&
+                                  !lvglKeyboardVisible() &&
+                                  abs(dx) <= DOUBLE_TAP_MAX_MOVE &&
+                                  abs(dy) <= DOUBLE_TAP_MAX_MOVE &&
+                                  dt <= DOUBLE_TAP_MAX_TAP_MS;
+        if (lvglSwipeCandidate &&
+            lvglSwipeHorizontalLocked &&
+            dx >= SWIPE_BACK_MIN_DX &&
+            abs(dy) <= SWIPE_BACK_MAX_DY &&
+            dx > (abs(dy) * 2) &&
+            dt <= SWIPE_BACK_MAX_MS) {
+            lvglSwipeBackPending = true;
+            lvglLastTapReleaseMs = 0;
+        } else if (tapCandidate) {
+            lvglLastTapReleaseMs = now;
+            lvglLastTapReleaseX = lvglLastTouchX;
+            lvglLastTapReleaseY = lvglLastTouchY;
+        } else {
+            lvglLastTapReleaseMs = 0;
+        }
+        lvglSwipeCandidate = false;
+        lvglSwipeHorizontalLocked = false;
+    }
+
+    if ((now - lvglLastStatusRefreshMs) >= 900UL) {
         lvglLastStatusRefreshMs = now;
         lvglSyncStatusLine();
         lvglRefreshTopIndicators();
     }
-    if ((now - lvglLastMediaPlayerRefreshMs) >= 250UL) {
+    if (uiScreen == UI_MEDIA && (now - lvglLastMediaPlayerRefreshMs) >= 400UL) {
         lvglLastMediaPlayerRefreshMs = now;
         lvglRefreshMediaPlayerUi();
     }
-    if ((now - lvglLastInfoRefreshMs) >= 2000UL) {
+    if (uiScreen == UI_INFO && (now - lvglLastInfoRefreshMs) >= 2500UL) {
         lvglLastInfoRefreshMs = now;
         lvglRefreshInfoPanel();
     }
@@ -6479,6 +6514,7 @@ uint8_t lightPercentFromRaw(uint16_t raw)
 
 void sampleTopIndicators()
 {
+    const unsigned long now = millis();
     const float rawVoltage = readBatteryVoltage();
     if (!batteryFilterInitialized) {
         batteryVoltage = rawVoltage;
@@ -6488,7 +6524,6 @@ void sampleTopIndicators()
     }
     batteryPercent = batteryPercentFromVoltage(batteryVoltage);
 
-    const unsigned long now = millis();
     if (lastChargeEvalMs == 0) {
         lastChargeEvalMs = now;
         chargePrevVoltage = batteryVoltage;
@@ -11375,8 +11410,8 @@ void loop()
         }
         if (lvglReady) {
             lvglSyncStatusLine();
-            lvglRefreshInfoPanel();
-            lvglRefreshWifiList();
+            if (uiScreen == UI_INFO) lvglRefreshInfoPanel();
+            if (uiScreen == UI_WIFI_LIST) lvglRefreshWifiList();
             if (lvglMqttStatusLabel) lv_label_set_text_fmt(lvglMqttStatusLabel, "MQTT: %s", mqttStatusLine.c_str());
         }
         lastWiFi = cur;
@@ -11384,7 +11419,9 @@ void loop()
 
     if (lvglReady && displayAwake && millis() - lastTopIndicatorRefreshMs >= 1500) {
         lastTopIndicatorRefreshMs = millis();
-        lvglRefreshInfoPanel();
+        sampleTopIndicators();
+        lvglRefreshTopIndicators();
+        if (uiScreen == UI_INFO) lvglRefreshInfoPanel();
     }
 
     // Service audio again after UI/network work to reduce underruns.

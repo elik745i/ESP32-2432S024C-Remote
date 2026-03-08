@@ -14,7 +14,9 @@ Supported boards:
 
 - Multi-board firmware with board-specific display and touch support selected at build time
 - LVGL touch UI with swipe-back navigation, delayed click feedback, and global double-tap sleep
+- LVGL touch/UI hot paths trimmed to reduce callback and off-screen refresh overhead
 - Saved backlight brightness and RGB LED intensity controls in `Config`
+- Brightness and RGB slider values are persisted in `Preferences`
 - `WiFi Config` screen with current network info, manual scan, saved-network actions, and editable AP SSID/password
 - `MQTT Config` screen for broker settings, status, and connection control
 - SD recovery browser that can browse all rooted SD folders
@@ -145,6 +147,7 @@ Board-specific defaults:
 - Charging sleep animation is limited to one cycle and cancels immediately on touch
 - The first frame is rendered before the backlight fades in at boot
 - Tapping the top-bar antenna icon opens `WiFi Config`
+- Tapping the top-bar unread mail icon jumps directly into the first unread conversation
 - The top bar can show device name, Wi-Fi state, MQTT state, unread mail, and battery
 
 ### Keyboard
@@ -159,6 +162,7 @@ Board-specific defaults:
 
 - Screen backlight brightness slider with persistence
 - RGB LED intensity slider with persistence
+- Brightness and RGB values are restored after reboot
 - Low-end brightness warning color on the slider
 - Device rename field with persistence
 - Device name is shown in the top bar and shortened there when needed
