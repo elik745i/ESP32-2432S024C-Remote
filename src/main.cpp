@@ -326,6 +326,7 @@ void mqttPublishDiscovery();
 void mqttTrimBufferForIdle();
 bool mqttPublishChatMessage(const String &text);
 bool mqttPublishChatMessageWithId(const String &peerKey, const String &text, const String &messageId);
+bool mqttPublishMessageDelete(const String &peerKey, const String &messageId);
 bool mqttPublishConversationDelete();
 bool mqttPublishChatAck(const String &peerKey, const String &messageId);
 void loadMqttConfig();
@@ -345,6 +346,7 @@ void p2pEnsureUdp();
 void p2pService();
 bool p2pSendChatMessage(const String &text);
 bool p2pSendChatMessageWithId(const String &peerKey, const String &text, const String &messageId);
+bool p2pSendMessageDelete(const String &peerKey, const String &messageId);
 bool p2pSendConversationDelete();
 bool p2pSendChatAck(const String &peerKey, const String &messageId);
 String p2pPublicKeyHex();
@@ -883,6 +885,7 @@ static bool chatSendAndStoreMessage(const String &peerKey, const String &text);
 static void chatStageDeferredAirplaneMessage(const String &peerKey, const String &text);
 static void chatFlushDeferredAirplaneMessage();
 static bool chatMessagePendingForPeer(const String &peerKey, const String &messageId);
+static bool chatDeleteMessageById(const String &peerKey, const String &messageId, const String &status);
 static bool chatDeleteMessageAt(const String &peerKey, int index);
 void lvglDeleteChatMessageEvent(lv_event_t *e);
 
@@ -2579,6 +2582,12 @@ static bool chatDeleteMessageAt(const String &peerKey, int index)
     ChatMessage target = chatMessages[index];
 
     if (target.outgoing && !target.messageId.isEmpty()) {
+        p2pSendMessageDelete(peerKey, target.messageId);
+        mqttPublishMessageDelete(peerKey, target.messageId);
+        return chatDeleteMessageById(peerKey, target.messageId, "Message deleted");
+    }
+
+    if (target.outgoing && !target.messageId.isEmpty()) {
         const int pendingIdx = chatFindPendingIndex(peerKey, target.messageId);
         if (pendingIdx >= 0) {
             for (int i = pendingIdx + 1; i < chatPendingCount; ++i) chatPendingMessages[i - 1] = chatPendingMessages[i];
@@ -2661,6 +2670,81 @@ static bool chatDeleteMessageAt(const String &peerKey, int index)
     return true;
 }
 
+static bool chatDeleteMessageById(const String &peerKey, const String &messageId, const String &status)
+{
+    if (peerKey.isEmpty() || messageId.isEmpty()) return false;
+
+    const int pendingIdx = chatFindPendingIndex(peerKey, messageId);
+    if (pendingIdx >= 0) {
+        for (int i = pendingIdx + 1; i < chatPendingCount; ++i) chatPendingMessages[i - 1] = chatPendingMessages[i];
+        chatPendingCount--;
+        chatSavePendingOutbox();
+    }
+
+    if (!sdEnsureMounted(true)) return false;
+    fsWriteBegin();
+    bool ok = false;
+    if (sdLock()) {
+        String path = chatLogPathForPeer(peerKey);
+        File src = SD.open(path, FILE_READ);
+        if (src) {
+            const String tmpPath = path + ".tmp";
+            SD.remove(tmpPath);
+            File dst = SD.open(tmpPath, FILE_WRITE);
+            if (dst) {
+                ok = true;
+                bool removed = false;
+                while (src.available()) {
+                    String line = src.readStringUntil('\n');
+                    line.trim();
+                    if (line.isEmpty()) continue;
+                    const int p1 = line.indexOf('\t');
+                    const int p2 = (p1 >= 0) ? line.indexOf('\t', p1 + 1) : -1;
+                    const int p3 = (p2 >= 0) ? line.indexOf('\t', p2 + 1) : -1;
+                    const int p4 = (p3 >= 0) ? line.indexOf('\t', p3 + 1) : -1;
+                    const int p5 = (p4 >= 0) ? line.indexOf('\t', p4 + 1) : -1;
+                    if (p1 <= 0 || p2 <= p1 || p3 <= p2 || p4 <= p3) continue;
+                    const String loggedId = (p5 > p4) ? chatUnescapeLogField(line.substring(p5 + 1)) : String("");
+                    if (!removed && loggedId == messageId) {
+                        removed = true;
+                        continue;
+                    }
+                    if (dst.print(line + "\n") <= 0) ok = false;
+                }
+                dst.close();
+                src.close();
+                SD.remove(path);
+                if (!(ok && SD.rename(tmpPath, path))) {
+                    SD.remove(tmpPath);
+                    ok = false;
+                }
+            } else {
+                src.close();
+            }
+        }
+        sdUnlock();
+    }
+    fsWriteEnd();
+    if (!ok) return false;
+
+    for (int i = 0; i < chatMessageCount; ++i) {
+        if (chatMessages[i].messageId == messageId) {
+            for (int j = i + 1; j < chatMessageCount; ++j) chatMessages[j - 1] = chatMessages[j];
+            chatMessageCount--;
+            if (chatMessageCount >= 0 && chatMessageCount < MAX_CHAT_MESSAGES) {
+                chatMessages[chatMessageCount].author = "";
+                chatMessages[chatMessageCount].text = "";
+                chatMessages[chatMessageCount].messageId = "";
+            }
+            break;
+        }
+    }
+    if (lvglReady && uiScreen == UI_CHAT && currentChatPeerKey == peerKey) lvglRefreshChatUi();
+    uiStatusLine = status;
+    if (lvglReady) lvglSyncStatusLine();
+    return true;
+}
+
 static bool chatSendAndStoreMessage(const String &peerKey, const String &text)
 {
     if (peerKey.isEmpty() || text.isEmpty()) return false;
@@ -2712,6 +2796,9 @@ static bool chatAckOutgoingMessage(const String &peerKey, const String &messageI
     for (int i = idx + 1; i < chatPendingCount; ++i) chatPendingMessages[i - 1] = chatPendingMessages[i];
     chatPendingCount--;
     chatSavePendingOutbox();
+    if (lvglReady && uiScreen == UI_CHAT && currentChatPeerKey == peerKey) {
+        lvglRefreshChatUi();
+    }
     return true;
 }
 
@@ -4802,6 +4889,23 @@ bool p2pSendChatAck(const String &peerKey, const String &messageId)
     return p2pSendPacketToPeer(p2pPeers[peerIdx], P2P_PKT_TYPE_CHAT, reinterpret_cast<const uint8_t *>(plain), plainLen);
 }
 
+bool p2pSendMessageDelete(const String &peerKey, const String &messageId)
+{
+    if (!p2pReady || peerKey.isEmpty() || messageId.isEmpty()) return false;
+    const int peerIdx = p2pFindPeerByPubKeyHex(peerKey);
+    if (peerIdx < 0 || !p2pPeers[peerIdx].enabled || p2pPeers[peerIdx].ip == IPAddress((uint32_t)0)) return false;
+
+    JsonDocument doc;
+    doc["kind"] = "delete_message";
+    doc["id"] = messageId;
+    doc["author"] = deviceShortNameValue();
+    char plain[P2P_MAX_PACKET] = {0};
+    const size_t plainLen = serializeJson(doc, plain, sizeof(plain));
+    if (plainLen == 0) return false;
+
+    return p2pSendPacketToPeer(p2pPeers[peerIdx], P2P_PKT_TYPE_CHAT, reinterpret_cast<const uint8_t *>(plain), plainLen);
+}
+
 bool p2pSendConversationDelete()
 {
     if (!p2pReady || currentChatPeerKey.isEmpty()) return false;
@@ -4942,6 +5046,13 @@ void p2pService()
                                     } else if (kind == "ack") {
                                         const String ackId = String(static_cast<const char *>(doc["ack_id"] | ""));
                                         if (!ackId.isEmpty()) chatAckOutgoingMessage(p2pPeers[peerIdx].pubKeyHex, ackId);
+                                    } else if (kind == "delete_message") {
+                                        const String messageId = String(static_cast<const char *>(doc["id"] | ""));
+                                        if (!messageId.isEmpty()) {
+                                            p2pRefreshTrustedPeerIdentity(p2pPeers[peerIdx].pubKeyHex, author, p2pUdp.remoteIP(), p2pUdp.remotePort());
+                                            p2pTouchPeerSeen(peerIdx, p2pUdp.remoteIP(), p2pUdp.remotePort());
+                                            chatDeleteMessageById(p2pPeers[peerIdx].pubKeyHex, messageId, "Message deleted by " + author);
+                                        }
                                     } else if (kind == "delete_conversation") {
                                         p2pRefreshTrustedPeerIdentity(p2pPeers[peerIdx].pubKeyHex, author, p2pUdp.remoteIP(), p2pUdp.remotePort());
                                         p2pTouchPeerSeen(peerIdx, p2pUdp.remoteIP(), p2pUdp.remotePort());
@@ -8159,6 +8270,11 @@ bool mqttConnectNow()
             chatApplyConversationDeletion(senderPubHex, "Conversation deleted by " + author);
             return;
         }
+        if (kind == "delete_message") {
+            const String messageId = String(static_cast<const char *>(plainDoc["id"] | ""));
+            if (!messageId.isEmpty()) chatDeleteMessageById(senderPubHex, messageId, "Message deleted by " + author);
+            return;
+        }
         if (kind == "ack") {
             const String ackId = String(static_cast<const char *>(plainDoc["ack_id"] | ""));
             if (!ackId.isEmpty()) chatAckOutgoingMessage(senderPubHex, ackId);
@@ -8335,6 +8451,19 @@ bool mqttPublishConversationDelete()
     const size_t plainLen = serializeJson(plainDoc, plain, sizeof(plain));
     if (plainLen == 0) return false;
     return mqttPublishEncryptedPayload(currentChatPeerKey, reinterpret_cast<const uint8_t *>(plain), plainLen);
+}
+
+bool mqttPublishMessageDelete(const String &peerKey, const String &messageId)
+{
+    if (!mqttCfg.enabled || !mqttClient.connected() || peerKey.isEmpty() || messageId.isEmpty()) return false;
+    JsonDocument plainDoc;
+    plainDoc["kind"] = "delete_message";
+    plainDoc["id"] = messageId;
+    plainDoc["author"] = deviceShortNameValue();
+    char plain[P2P_MAX_PACKET] = {0};
+    const size_t plainLen = serializeJson(plainDoc, plain, sizeof(plain));
+    if (plainLen == 0) return false;
+    return mqttPublishEncryptedPayload(peerKey, reinterpret_cast<const uint8_t *>(plain), plainLen);
 }
 
 bool mqttPublishChatAck(const String &peerKey, const String &messageId)
