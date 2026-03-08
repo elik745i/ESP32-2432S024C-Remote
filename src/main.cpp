@@ -224,7 +224,7 @@ static constexpr uint16_t LIGHT_RAW_CAL_MAX = 600;
 static constexpr bool LIGHT_LOG_RAW_TO_SERIAL = false;
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.1.5";
+static constexpr const char *FW_VERSION = "0.1.6";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 45000UL;
@@ -646,10 +646,6 @@ static lv_obj_t *lvglBrightnessSlider = nullptr;
 static lv_obj_t *lvglBrightnessValueLabel = nullptr;
 static lv_obj_t *lvglRgbLedSlider = nullptr;
 static lv_obj_t *lvglKb = nullptr;
-static lv_obj_t *lvglScreensaverLeftEye = nullptr;
-static lv_obj_t *lvglScreensaverRightEye = nullptr;
-static lv_obj_t *lvglScreensaverLeftPupil = nullptr;
-static lv_obj_t *lvglScreensaverRightPupil = nullptr;
 static lv_obj_t *lvglSnakeScoreLabel = nullptr;
 static lv_obj_t *lvglTetrisScoreLabel = nullptr;
 static lv_obj_t *lvglSnakeBoardObj = nullptr;
@@ -4216,28 +4212,6 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_style_border_width(lvglScrScreensaver, 0, 0);
             lv_obj_set_style_pad_all(lvglScrScreensaver, 0, 0);
             lv_obj_clear_flag(lvglScrScreensaver, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-
-            lvglScreensaverLeftEye = lv_obj_create(lvglScrScreensaver);
-            lvglScreensaverRightEye = lv_obj_create(lvglScrScreensaver);
-            lvglScreensaverLeftPupil = lv_obj_create(lvglScrScreensaver);
-            lvglScreensaverRightPupil = lv_obj_create(lvglScrScreensaver);
-
-            lv_obj_t *eyes[] = {lvglScreensaverLeftEye, lvglScreensaverRightEye};
-            for (lv_obj_t *eye : eyes) {
-                if (!eye) continue;
-                lv_obj_set_style_bg_color(eye, lv_color_hex(0xF5F7FA), 0);
-                lv_obj_set_style_bg_opa(eye, LV_OPA_COVER, 0);
-                lv_obj_set_style_border_width(eye, 0, 0);
-                lv_obj_clear_flag(eye, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-            }
-            lv_obj_t *pupils[] = {lvglScreensaverLeftPupil, lvglScreensaverRightPupil};
-            for (lv_obj_t *pupil : pupils) {
-                if (!pupil) continue;
-                lv_obj_set_style_bg_color(pupil, lv_color_hex(0x0A0D11), 0);
-                lv_obj_set_style_bg_opa(pupil, LV_OPA_COVER, 0);
-                lv_obj_set_style_border_width(pupil, 0, 0);
-                lv_obj_clear_flag(pupil, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-            }
             break;
         }
         case UI_CONFIG_MQTT_CONFIG: {
@@ -7343,13 +7317,9 @@ struct ScreensaverEyePreset {
 
 struct ScreensaverPose {
     const ScreensaverEyePreset *preset;
-    uint16_t eyeWidth;
-    uint16_t eyeHeight;
-    uint16_t pupilSize;
-    int16_t lookX;
-    int16_t lookY;
-    int16_t eyeYOffset;
-    int16_t eyeXOffset;
+    float faceScale;
+    float lookX;
+    float lookY;
 };
 
 static constexpr ScreensaverEyePreset SCREENSAVER_PRESET_NORMAL = {0, 0, 40, 40, 0.0f, 0.0f, 8, 8, 0, 0, 0, 0, true};
@@ -7377,81 +7347,187 @@ static const ScreensaverEyePreset *const SCREENSAVER_PRESETS[] = {
 
 static ScreensaverPose screensaverRandomPose(bool blinkOnly)
 {
-    const int16_t lookLimitX = max<int16_t>(4, DISPLAY_WIDTH / 18);
-    const int16_t lookLimitY = max<int16_t>(3, DISPLAY_HEIGHT / 28);
     const float scale = min(DISPLAY_WIDTH / 128.0f, DISPLAY_HEIGHT / 64.0f) * 0.9f;
     const ScreensaverEyePreset *preset = blinkOnly
                                              ? &SCREENSAVER_PRESET_BLINK
                                              : SCREENSAVER_PRESETS[random(0, static_cast<int>(sizeof(SCREENSAVER_PRESETS) / sizeof(SCREENSAVER_PRESETS[0])))];
-    if (blinkOnly) {
-        return {
-            preset,
-            static_cast<uint16_t>(max<int16_t>(28, lroundf(preset->width * scale))),
-            static_cast<uint16_t>(max<int16_t>(4, lroundf(preset->height * scale))),
-            0U,
-            0,
-            0,
-            0,
-            0
-        };
-    }
     ScreensaverPose pose = {
         preset,
-        static_cast<uint16_t>(max<int16_t>(28, lroundf(preset->width * scale))),
-        static_cast<uint16_t>(max<int16_t>(8, lroundf(preset->height * scale))),
-        static_cast<uint16_t>(max<int16_t>(10, lroundf(min(preset->width, preset->height) * scale * 0.34f))),
-        static_cast<int16_t>(random(-lookLimitX, lookLimitX + 1)),
-        static_cast<int16_t>(random(-lookLimitY, lookLimitY + 1)),
-        static_cast<int16_t>(lroundf(preset->offsetY * scale)),
-        static_cast<int16_t>(lroundf(preset->offsetX * scale))
+        scale,
+        blinkOnly ? 0.0f : static_cast<float>(random(-50, 51)) / 100.0f,
+        blinkOnly ? 0.0f : static_cast<float>(random(-40, 41)) / 100.0f,
     };
-    if (!preset->pupilsVisible) pose.pupilSize = 0;
     return pose;
+}
+
+enum ScreensaverCornerType : uint8_t { SC_T_R, SC_T_L, SC_B_L, SC_B_R };
+
+static void screensaverFillRect(int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint16_t color)
+{
+    const int32_t l = min(x0, x1);
+    const int32_t r = max(x0, x1);
+    const int32_t t = min(y0, y1);
+    const int32_t b = max(y0, y1);
+    const int32_t w = max<int32_t>(0, r - l);
+    const int32_t h = max<int32_t>(0, b - t);
+    if (w <= 0 || h <= 0) return;
+    tft.fillRect(l, t, w, h, color);
+}
+
+static void screensaverFillRectTriangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, bool flip, uint16_t color)
+{
+    if (!flip) tft.fillTriangle(x0, y0, x1, y1, x1, y0, color);
+    else tft.fillTriangle(x0, y0, x1, y1, x0, y1, color);
+}
+
+static void screensaverFillEllipseCorner(ScreensaverCornerType corner, int16_t x0, int16_t y0, int32_t rx, int32_t ry, uint16_t color)
+{
+    if (rx < 2 || ry < 2) return;
+    int32_t x, y;
+    const int32_t rx2 = rx * rx;
+    const int32_t ry2 = ry * ry;
+    const int32_t fx2 = 4 * rx2;
+    const int32_t fy2 = 4 * ry2;
+    int32_t s;
+
+    auto hline = [&](int32_t sx, int32_t sy, int32_t len) {
+        if (len <= 0) return;
+        tft.drawFastHLine(static_cast<int16_t>(sx), static_cast<int16_t>(sy), static_cast<int16_t>(len), color);
+    };
+
+    if (corner == SC_T_R) {
+        for (x = 0, y = ry, s = 2 * ry2 + rx2 * (1 - 2 * ry); ry2 * x <= rx2 * y; x++) {
+            hline(x0, y0 - y, x);
+            if (s >= 0) { s += fx2 * (1 - y); y--; }
+            s += ry2 * ((4 * x) + 6);
+        }
+        for (x = rx, y = 0, s = 2 * rx2 + ry2 * (1 - 2 * rx); rx2 * y <= ry2 * x; y++) {
+            hline(x0, y0 - y, x);
+            if (s >= 0) { s += fy2 * (1 - x); x--; }
+            s += rx2 * ((4 * y) + 6);
+        }
+    } else if (corner == SC_B_R) {
+        for (x = 0, y = ry, s = 2 * ry2 + rx2 * (1 - 2 * ry); ry2 * x <= rx2 * y; x++) {
+            hline(x0, y0 + y - 1, x);
+            if (s >= 0) { s += fx2 * (1 - y); y--; }
+            s += ry2 * ((4 * x) + 6);
+        }
+        for (x = rx, y = 0, s = 2 * rx2 + ry2 * (1 - 2 * rx); rx2 * y <= ry2 * x; y++) {
+            hline(x0, y0 + y - 1, x);
+            if (s >= 0) { s += fy2 * (1 - x); x--; }
+            s += rx2 * ((4 * y) + 6);
+        }
+    } else if (corner == SC_T_L) {
+        for (x = 0, y = ry, s = 2 * ry2 + rx2 * (1 - 2 * ry); ry2 * x <= rx2 * y; x++) {
+            hline(x0 - x, y0 - y, x);
+            if (s >= 0) { s += fx2 * (1 - y); y--; }
+            s += ry2 * ((4 * x) + 6);
+        }
+        for (x = rx, y = 0, s = 2 * rx2 + ry2 * (1 - 2 * rx); rx2 * y <= ry2 * x; y++) {
+            hline(x0 - x, y0 - y, x);
+            if (s >= 0) { s += fy2 * (1 - x); x--; }
+            s += rx2 * ((4 * y) + 6);
+        }
+    } else {
+        for (x = 0, y = ry, s = 2 * ry2 + rx2 * (1 - 2 * ry); ry2 * x <= rx2 * y; x++) {
+            hline(x0 - x, y0 + y - 1, x);
+            if (s >= 0) { s += fx2 * (1 - y); y--; }
+            s += ry2 * ((4 * x) + 6);
+        }
+        for (x = rx, y = 0, s = 2 * rx2 + ry2 * (1 - 2 * rx); rx2 * y <= ry2 * x; y++) {
+            hline(x0 - x, y0 + y, x);
+            if (s >= 0) { s += fy2 * (1 - x); x--; }
+            s += rx2 * ((4 * y) + 6);
+        }
+    }
+}
+
+static void screensaverDrawEyeExact(int16_t centerX, int16_t centerY, const ScreensaverEyePreset &srcPreset,
+                                    bool mirrored, float scaleX, float scaleY, uint16_t color)
+{
+    ScreensaverEyePreset config = srcPreset;
+    config.offsetX = mirrored ? -config.offsetX : config.offsetX;
+    config.offsetY = -config.offsetY;
+    config.slopeTop = mirrored ? config.slopeTop : -config.slopeTop;
+    config.slopeBottom = mirrored ? config.slopeBottom : -config.slopeBottom;
+
+    const int32_t offsetX = lroundf(config.offsetX * scaleX);
+    const int32_t offsetY = lroundf(config.offsetY * scaleY);
+    const int32_t width = max<int32_t>(2, lroundf(config.width * scaleX));
+    const int32_t height = max<int32_t>(2, lroundf(config.height * scaleY));
+    int32_t radiusTop = max<int32_t>(0, lroundf(config.radiusTop * min(scaleX, scaleY)));
+    int32_t radiusBottom = max<int32_t>(0, lroundf(config.radiusBottom * min(scaleX, scaleY)));
+
+    int32_t deltaYTop = lroundf(height * config.slopeTop / 2.0f);
+    int32_t deltaYBottom = lroundf(height * config.slopeBottom / 2.0f);
+    const int32_t totalHeight = height + deltaYTop - deltaYBottom;
+    if (radiusBottom > 0 && radiusTop > 0 && totalHeight - 1 < radiusBottom + radiusTop) {
+        const int32_t correctedTop = static_cast<int32_t>(static_cast<float>(radiusTop) * (totalHeight - 1) / max<int32_t>(1, radiusBottom + radiusTop));
+        const int32_t correctedBottom = static_cast<int32_t>(static_cast<float>(radiusBottom) * (totalHeight - 1) / max<int32_t>(1, radiusBottom + radiusTop));
+        radiusTop = correctedTop;
+        radiusBottom = correctedBottom;
+    }
+
+    const int32_t TLcY = centerY + offsetY - height / 2 + radiusTop - deltaYTop;
+    const int32_t TLcX = centerX + offsetX - width / 2 + radiusTop;
+    const int32_t TRcY = centerY + offsetY - height / 2 + radiusTop + deltaYTop;
+    const int32_t TRcX = centerX + offsetX + width / 2 - radiusTop;
+    const int32_t BLcY = centerY + offsetY + height / 2 - radiusBottom - deltaYBottom;
+    const int32_t BLcX = centerX + offsetX - width / 2 + radiusBottom;
+    const int32_t BRcY = centerY + offsetY + height / 2 - radiusBottom + deltaYBottom;
+    const int32_t BRcX = centerX + offsetX + width / 2 - radiusBottom;
+
+    const int32_t minCX = min(TLcX, BLcX);
+    const int32_t maxCX = max(TRcX, BRcX);
+    const int32_t minCY = min(TLcY, TRcY);
+    const int32_t maxCY = max(BLcY, BRcY);
+
+    screensaverFillRect(minCX, minCY, maxCX, maxCY, color);
+    screensaverFillRect(TRcX, TRcY, BRcX + radiusBottom, BRcY, color);
+    screensaverFillRect(TLcX - radiusTop, TLcY, BLcX, BLcY, color);
+    screensaverFillRect(TLcX, TLcY - radiusTop, TRcX, TRcY, color);
+    screensaverFillRect(BLcX, BLcY, BRcX, BRcY + radiusBottom, color);
+
+    if (config.slopeTop > 0) {
+        screensaverFillRectTriangle(TLcX, TLcY - radiusTop, TRcX, TRcY - radiusTop, false, color);
+        screensaverFillRectTriangle(TRcX, TRcY - radiusTop, TLcX, TLcY - radiusTop, true, color);
+    } else if (config.slopeTop < 0) {
+        screensaverFillRectTriangle(TRcX, TRcY - radiusTop, TLcX, TLcY - radiusTop, false, color);
+        screensaverFillRectTriangle(TLcX, TLcY - radiusTop, TRcX, TRcY - radiusTop, true, color);
+    }
+    if (config.slopeBottom > 0) {
+        screensaverFillRectTriangle(BRcX + radiusBottom, BRcY + radiusBottom, BLcX - radiusBottom, BLcY + radiusBottom, false, color);
+        screensaverFillRectTriangle(BLcX - radiusBottom, BLcY + radiusBottom, BRcX + radiusBottom, BRcY + radiusBottom, true, color);
+    } else if (config.slopeBottom < 0) {
+        screensaverFillRectTriangle(BLcX - radiusBottom, BLcY + radiusBottom, BRcX + radiusBottom, BRcY + radiusBottom, false, color);
+        screensaverFillRectTriangle(BRcX + radiusBottom, BRcY + radiusBottom, BLcX - radiusBottom, BLcY + radiusBottom, true, color);
+    }
+
+    if (radiusTop > 0) {
+        screensaverFillEllipseCorner(SC_T_L, TLcX, TLcY, radiusTop, radiusTop, color);
+        screensaverFillEllipseCorner(SC_T_R, TRcX, TRcY, radiusTop, radiusTop, color);
+    }
+    if (radiusBottom > 0) {
+        screensaverFillEllipseCorner(SC_B_L, BLcX, BLcY, radiusBottom, radiusBottom, color);
+        screensaverFillEllipseCorner(SC_B_R, BRcX, BRcY, radiusBottom, radiusBottom, color);
+    }
 }
 
 static void screensaverApplyPose(const ScreensaverPose &pose)
 {
-    if (!lvglScreensaverLeftEye || !lvglScreensaverRightEye || !lvglScreensaverLeftPupil || !lvglScreensaverRightPupil) return;
     const ScreensaverEyePreset &preset = *pose.preset;
+    const float eyeScale = pose.faceScale;
+    const int16_t eyeSize = max<int16_t>(18, lroundf(40.0f * eyeScale));
+    const int16_t interDistance = max<int16_t>(4, lroundf(4.0f * eyeScale));
+    const int16_t centerX = DISPLAY_WIDTH / 2 + lroundf(-25.0f * pose.lookX * eyeScale);
+    const int16_t centerY = DISPLAY_HEIGHT / 2 + lroundf(20.0f * pose.lookY * eyeScale);
+    const float scaleYY = 1.0f - fabsf(pose.lookY) * 0.4f;
+    const float leftScaleY = (1.0f + pose.lookX * 0.2f) * scaleYY;
+    const float rightScaleY = (1.0f - pose.lookX * 0.2f) * scaleYY;
 
-    const int16_t eyeW = static_cast<int16_t>(min<uint16_t>(pose.eyeWidth, static_cast<uint16_t>(DISPLAY_WIDTH / 2 - 18)));
-    const int16_t eyeH = static_cast<int16_t>(min<uint16_t>(pose.eyeHeight, static_cast<uint16_t>(DISPLAY_HEIGHT / 2 - 18)));
-    const int16_t gap = max<int16_t>(12, DISPLAY_WIDTH / 12);
-    const int16_t totalW = (eyeW * 2) + gap;
-    const int16_t leftX = (DISPLAY_WIDTH - totalW) / 2 + pose.eyeXOffset;
-    const int16_t rightX = leftX + eyeW + gap;
-    const int16_t eyeY = (DISPLAY_HEIGHT - eyeH) / 2 + pose.eyeYOffset;
-    const int16_t radius = max<int16_t>((preset.radiusTop + preset.radiusBottom) / 2, 2);
-    const int16_t scaledRadius = max<int16_t>(4, min<int16_t>(eyeH / 2, lroundf(radius * (static_cast<float>(eyeH) / max<int16_t>(preset.height, 1)))));
-    const int16_t slopeLift = static_cast<int16_t>(lroundf(max(fabsf(preset.slopeTop), fabsf(preset.slopeBottom)) * eyeH * 0.22f));
-
-    lv_obj_set_size(lvglScreensaverLeftEye, eyeW, eyeH);
-    lv_obj_set_pos(lvglScreensaverLeftEye, leftX, eyeY + (preset.slopeTop < 0.0f ? slopeLift : 0));
-    lv_obj_set_style_radius(lvglScreensaverLeftEye, scaledRadius, 0);
-    lv_obj_set_size(lvglScreensaverRightEye, eyeW, eyeH);
-    lv_obj_set_pos(lvglScreensaverRightEye, rightX, eyeY + (preset.slopeTop > 0.0f ? slopeLift : 0));
-    lv_obj_set_style_radius(lvglScreensaverRightEye, scaledRadius, 0);
-
-    const int16_t pupilSize = static_cast<int16_t>(min<uint16_t>(pose.pupilSize, static_cast<uint16_t>(max<int16_t>(eyeH - 4, 2))));
-    if (!preset.pupilsVisible || pupilSize <= 2) {
-        lv_obj_add_flag(lvglScreensaverLeftPupil, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(lvglScreensaverRightPupil, LV_OBJ_FLAG_HIDDEN);
-        return;
-    }
-
-    const int16_t pupilRangeX = max<int16_t>(0, (eyeW - pupilSize) / 2 - 3);
-    const int16_t pupilRangeY = max<int16_t>(0, (eyeH - pupilSize) / 2 - 3);
-    const int16_t pupilX = constrain(static_cast<int16_t>(pose.lookX / 2), -pupilRangeX, pupilRangeX);
-    const int16_t pupilY = constrain(static_cast<int16_t>(pose.lookY / 2), -pupilRangeY, pupilRangeY);
-
-    lv_obj_clear_flag(lvglScreensaverLeftPupil, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(lvglScreensaverRightPupil, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_set_size(lvglScreensaverLeftPupil, pupilSize, pupilSize);
-    lv_obj_set_size(lvglScreensaverRightPupil, pupilSize, pupilSize);
-    lv_obj_set_style_radius(lvglScreensaverLeftPupil, pupilSize / 2, 0);
-    lv_obj_set_style_radius(lvglScreensaverRightPupil, pupilSize / 2, 0);
-    lv_obj_set_pos(lvglScreensaverLeftPupil, leftX + ((eyeW - pupilSize) / 2) + pupilX, eyeY + ((eyeH - pupilSize) / 2) + pupilY);
-    lv_obj_set_pos(lvglScreensaverRightPupil, rightX + ((eyeW - pupilSize) / 2) + pupilX, eyeY + ((eyeH - pupilSize) / 2) + pupilY);
+    tft.fillScreen(TFT_BLACK);
+    screensaverDrawEyeExact(centerX - eyeSize / 2 - interDistance, centerY, preset, true, eyeScale, eyeScale * leftScaleY, TFT_WHITE);
+    screensaverDrawEyeExact(centerX + eyeSize / 2 + interDistance, centerY, preset, false, eyeScale, eyeScale * rightScaleY, TFT_WHITE);
 }
 
 void screensaverSetActive(bool active)
