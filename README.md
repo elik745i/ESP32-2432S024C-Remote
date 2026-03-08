@@ -212,6 +212,8 @@ Audio, LEDs, Sensors:
 Notes:
 - `ESP32-S3` audio is currently disabled in firmware because the existing backend uses ESP32 internal DAC mode, which is not available on `ESP32-S3`.
 - Boot-time Wi-Fi and SD are kept conservative on the S3 build while the swap is being stabilized. Wi-Fi is enabled from explicit UI actions, and SD is mounted on demand from `Media`.
+- The initially remapped RGB pins (`35`, `36`, `37`) collide with `ESP32-S3-WROOM-1-N16R8` octal PSRAM/flash bus pins. On this module variant, those pins must not be driven for general GPIO use, so RGB output is disabled in the S3 firmware build.
+- After removing RGB output on the S3 build, explicit Wi-Fi radio startup and `Scan` became stable again. This points to the RGB-to-PSRAM pin conflict as the main cause of the earlier radio-init watchdog resets.
 
 ## Defaults
 

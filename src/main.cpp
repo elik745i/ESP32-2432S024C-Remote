@@ -155,10 +155,12 @@ static constexpr uint32_t AUDIO_FLAC_MIN_LARGEST_8BIT = 45000U;
 static constexpr int RGB_PIN_R = 36;
 static constexpr int RGB_PIN_G = 35;
 static constexpr int RGB_PIN_B = 37;
+static constexpr bool RGB_OUTPUT_SUPPORTED = false;
 #else
 static constexpr int RGB_PIN_R = 4;
 static constexpr int RGB_PIN_G = 17;
 static constexpr int RGB_PIN_B = 16;
+static constexpr bool RGB_OUTPUT_SUPPORTED = true;
 #endif
 static constexpr bool RGB_ACTIVE_LOW = true;
 static constexpr uint8_t TFT_BL_LEDC_CHANNEL = 0;
@@ -323,7 +325,7 @@ int32_t wifiRssiSafe();
 String wifiSsidSafe();
 String wifiIpSafe();
 void registerWifiEvents();
-static void wifiEnsureRuntimeEnabled(const char *reason, wifi_mode_t mode);
+static void wifiEnsureRuntimeEnabled(const char *reason, wifi_mode_t mode, bool startWebServer);
 void ensureApOnline(const char *reason);
 void disableApWhenStaConnected(const char *reason);
 static void stopDnsForAp();
@@ -6822,7 +6824,7 @@ const char *authName(wifi_auth_mode_t auth)
 
 void refreshWifiScan()
 {
-    wifiEnsureRuntimeEnabled("scan", WIFI_STA);
+    wifiEnsureRuntimeEnabled("scan", WIFI_STA, false);
     const int scanState = WiFi.scanComplete();
     if (scanState == WIFI_SCAN_RUNNING) return;
     WiFi.scanDelete();
@@ -7284,6 +7286,7 @@ String mediaFindAdjacentTrack(const String &sourcePath, bool nextDir)
 
 void rgbApplyNow(bool rOn, bool gOn, bool bOn)
 {
+    if (!RGB_OUTPUT_SUPPORTED) return;
     auto level = [](bool on) -> uint8_t {
         const uint8_t scaled = on ? static_cast<uint8_t>((static_cast<uint16_t>(255U) * rgbLedPercent) / 100U) : 0U;
         return RGB_ACTIVE_LOW ? static_cast<uint8_t>(255U - scaled) : scaled;
@@ -7310,6 +7313,7 @@ void rgbFlashAcknowledge()
 
 void rgbApplyPwm(uint8_t r, uint8_t g, uint8_t b)
 {
+    if (!RGB_OUTPUT_SUPPORTED) return;
     auto out = [](uint8_t val) -> uint8_t {
         const uint8_t scaled = static_cast<uint8_t>((static_cast<uint16_t>(val) * rgbLedPercent) / 100U);
         return RGB_ACTIVE_LOW ? static_cast<uint8_t>(255U - scaled) : scaled;
@@ -8325,7 +8329,7 @@ static void stopDnsForAp()
     dnsRunning = false;
 }
 
-static void wifiEnsureRuntimeEnabled(const char *reason, wifi_mode_t mode)
+static void wifiEnsureRuntimeEnabled(const char *reason, wifi_mode_t mode, bool startWebServer)
 {
     if (airplaneModeEnabled) return;
     registerWifiEvents();
@@ -8333,24 +8337,27 @@ static void wifiEnsureRuntimeEnabled(const char *reason, wifi_mode_t mode)
     WiFi.setAutoReconnect(false);
     WiFi.setSleep(false);
     if (WiFi.getMode() != mode) WiFi.mode(mode);
-    if (!webRoutesRegistered) {
-        setupWebRoutes();
-        webRoutesRegistered = true;
+    if (startWebServer) {
+        if (!webRoutesRegistered) {
+            setupWebRoutes();
+            webRoutesRegistered = true;
+        }
+        if (!webServerRunning) {
+            server.begin();
+            webServerRunning = true;
+        }
     }
-    if (!webServerRunning) {
-        server.begin();
-        webServerRunning = true;
-    }
-    Serial.printf("[WIFI] runtime enabled reason=%s mode=%d\n",
+    Serial.printf("[WIFI] runtime enabled reason=%s mode=%d web=%d\n",
                   reason ? reason : "-",
-                  static_cast<int>(mode));
+                  static_cast<int>(mode),
+                  startWebServer ? 1 : 0);
 }
 
 void ensureApOnline(const char *reason)
 {
     if (networkSuspendedForAudio || airplaneModeEnabled) return;
     if (apModeActive) return;
-    wifiEnsureRuntimeEnabled(reason ? reason : "ensure_ap", WIFI_AP_STA);
+    wifiEnsureRuntimeEnabled(reason ? reason : "ensure_ap", WIFI_AP_STA, true);
     const char *apSsid = savedApSsid.length() ? savedApSsid.c_str() : AP_SSID;
     const char *apPass = savedApPass.length() ? savedApPass.c_str() : AP_PASS;
     if (!WiFi.softAP(apSsid, apPass)) {
@@ -8382,7 +8389,7 @@ static void beginStaConnectAttempt(const char *reason)
     const String ssid = wifiDesiredStaSsid();
     const String pass = wifiDesiredStaPass();
     const wifi_mode_t mode = apModeActive ? WIFI_AP_STA : WIFI_STA;
-    wifiEnsureRuntimeEnabled(reason ? reason : "sta_connect", mode);
+    wifiEnsureRuntimeEnabled(reason ? reason : "sta_connect", mode, apModeActive);
     WiFi.begin(ssid.c_str(), pass.c_str());
     bootStaConnectInProgress = true;
     bootStaConnectStartedMs = millis();
@@ -11414,9 +11421,13 @@ void setup()
     Serial.println("[BOOT] step displayBacklightInit");
     displayBacklightInit();
     Serial.println("[BOOT] step rgb pinMode");
-    pinMode(RGB_PIN_R, OUTPUT);
-    pinMode(RGB_PIN_G, OUTPUT);
-    pinMode(RGB_PIN_B, OUTPUT);
+    if (RGB_OUTPUT_SUPPORTED) {
+        pinMode(RGB_PIN_R, OUTPUT);
+        pinMode(RGB_PIN_G, OUTPUT);
+        pinMode(RGB_PIN_B, OUTPUT);
+    } else {
+        Serial.println("[RGB] disabled on this board; configured pins overlap ESP32-S3 octal PSRAM");
+    }
     Serial.println("[BOOT] step touch irq pinMode");
     pinMode(TOUCH_IRQ, TOUCH_USE_IRQ ? INPUT_PULLUP : INPUT);
     Serial.println("[BOOT] step rgbApplyNow");
