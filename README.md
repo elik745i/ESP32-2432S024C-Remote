@@ -550,7 +550,8 @@ pio device monitor -b 115200
 
 ## Partition Map
 
-Configured via [partitions_3mb_no_ota.csv](partitions_3mb_no_ota.csv).
+- `ESP32-2432S024C` and `ESP32-3248S035` use [partitions_3mb_no_ota.csv](partitions_3mb_no_ota.csv).
+- `ESP32-S3-3248S035-N16R8` uses the stock Espressif `default_16MB.csv` OTA layout.
 
 ## Project Structure
 

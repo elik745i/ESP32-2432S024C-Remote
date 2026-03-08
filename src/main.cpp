@@ -67,6 +67,7 @@ static constexpr const char *DEVICE_SHORT_NAME = "ESP32-S3-3248S035";
 static constexpr const char *AP_SSID = "ESP32-S3-3248S035-FM";
 static constexpr const char *MDNS_HOST = "esp32-s3-3248s035";
 static constexpr const char *OTA_ASSET_NAME = "esp32-s3-3248s035-n16r8";
+static constexpr bool OTA_FIRMWARE_FLASH_SUPPORTED = true;
 #elif defined(BOARD_ESP32_3248S035)
 static constexpr int TOUCH_SDA = 33;
 static constexpr int TOUCH_SCL = 32;
@@ -79,6 +80,7 @@ static constexpr const char *DEVICE_SHORT_NAME = "ESP32-3248S035";
 static constexpr const char *AP_SSID = "ESP32-3248S035-FM";
 static constexpr const char *MDNS_HOST = "esp32-3248s035";
 static constexpr const char *OTA_ASSET_NAME = "esp32-3248s035";
+static constexpr bool OTA_FIRMWARE_FLASH_SUPPORTED = false;
 #else
 static constexpr int TOUCH_SDA = 33;
 static constexpr int TOUCH_SCL = 32;
@@ -91,6 +93,7 @@ static constexpr const char *DEVICE_SHORT_NAME = "ESP32-2432S024C";
 static constexpr const char *AP_SSID = "ESP32-2432S024C-FM";
 static constexpr const char *MDNS_HOST = "esp32-2432s024c";
 static constexpr const char *OTA_ASSET_NAME = "esp32-2432s024c";
+static constexpr bool OTA_FIRMWARE_FLASH_SUPPORTED = false;
 #endif
 
 static constexpr uint8_t CST820_ADDR = 0x15;
@@ -176,11 +179,17 @@ static constexpr uint8_t TFT_BL_LEDC_RES = 8;
 static constexpr uint8_t TFT_BL_LEVEL_ON = 255;
 static constexpr uint8_t TFT_BL_LEVEL_OFF = 0;
 static constexpr bool DISPLAY_BACKLIGHT_PWM_SUPPORTED = true;
-static constexpr unsigned long LCD_IDLE_TIMEOUT_MS = 120000;
+static constexpr unsigned long LCD_IDLE_TIMEOUT_MS_DEFAULT = 120000UL;
+static constexpr unsigned long LCD_IDLE_TIMEOUT_MS_MIN = 15000UL;
+static constexpr unsigned long LCD_IDLE_TIMEOUT_MS_MAX = 600000UL;
+static constexpr unsigned long LCD_IDLE_TIMEOUT_STEP_MS = 15000UL;
 static constexpr unsigned long SENSOR_SAMPLE_PERIOD_MS = 2000;
 static constexpr unsigned long LIGHT_SLEEP_AFTER_IDLE_MS = 20000;
 static constexpr bool LIGHT_SLEEP_TIMER_FALLBACK = false;
 static constexpr uint64_t LIGHT_SLEEP_TIMER_US = 5000000ULL;
+static constexpr unsigned long SCREENSAVER_POSE_MIN_MS = 1400UL;
+static constexpr unsigned long SCREENSAVER_POSE_MAX_MS = 3200UL;
+static constexpr unsigned long SCREENSAVER_BLINK_MS = 160UL;
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
 static constexpr int BATTERY_ADC_PIN = 7;
 static constexpr int LIGHT_ADC_PIN = 6;
@@ -215,7 +224,7 @@ static constexpr uint16_t LIGHT_RAW_CAL_MAX = 600;
 static constexpr bool LIGHT_LOG_RAW_TO_SERIAL = false;
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.1.4";
+static constexpr const char *FW_VERSION = "0.1.5";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 45000UL;
@@ -401,6 +410,8 @@ static void otaUpdateTask(void *param);
 void lvglOpenOtaScreenEvent(lv_event_t *e);
 void lvglOtaUpdateEvent(lv_event_t *e);
 void lvglRefreshOtaUi();
+void screensaverSetActive(bool active);
+void screensaverService();
 void tetrisRotate();
 void tetrisDrop();
 bool tetrisCellFor(int type, int rot, int i, int &ox, int &oy);
@@ -521,7 +532,6 @@ static constexpr int16_t UI_CONTENT_H = DISPLAY_HEIGHT - UI_CONTENT_TOP_Y;
 static constexpr uint8_t INFO_TEMP_BAR_MAX_C = 100;
 static constexpr uint8_t INFO_TEMP_WARN_C = 65;
 static constexpr uint8_t INFO_TEMP_HOT_C = 80;
-static constexpr int16_t SWIPE_EDGE_START_MAX_X = 28;
 static constexpr int16_t SWIPE_BACK_MIN_DX = 52;
 static constexpr int16_t SWIPE_BACK_MAX_DY = 30;
 static constexpr int16_t SWIPE_LOCK_MIN_DX = 18;
@@ -546,7 +556,9 @@ static lv_obj_t *lvglScrMedia = nullptr;
 static lv_obj_t *lvglScrInfo = nullptr;
 static lv_obj_t *lvglScrGames = nullptr;
 static lv_obj_t *lvglScrConfig = nullptr;
+static lv_obj_t *lvglScrStyle = nullptr;
 static lv_obj_t *lvglScrOta = nullptr;
+static lv_obj_t *lvglScrScreensaver = nullptr;
 static lv_obj_t *lvglScrMqttCfg = nullptr;
 static lv_obj_t *lvglScrMqttCtrl = nullptr;
 static lv_obj_t *lvglScrSnake = nullptr;
@@ -619,6 +631,9 @@ static lv_obj_t *lvglChatPeerScanBtn = nullptr;
 static lv_obj_t *lvglAirplaneBtn = nullptr;
 static lv_obj_t *lvglAirplaneBtnLabel = nullptr;
 static lv_obj_t *lvglConfigWrap = nullptr;
+static lv_obj_t *lvglStyleScreensaverSw = nullptr;
+static lv_obj_t *lvglStyleTimeoutSlider = nullptr;
+static lv_obj_t *lvglStyleTimeoutValueLabel = nullptr;
 static lv_obj_t *lvglOtaCurrentLabel = nullptr;
 static lv_obj_t *lvglOtaLatestLabel = nullptr;
 static lv_obj_t *lvglOtaStatusLabel = nullptr;
@@ -631,6 +646,10 @@ static lv_obj_t *lvglBrightnessSlider = nullptr;
 static lv_obj_t *lvglBrightnessValueLabel = nullptr;
 static lv_obj_t *lvglRgbLedSlider = nullptr;
 static lv_obj_t *lvglKb = nullptr;
+static lv_obj_t *lvglScreensaverLeftEye = nullptr;
+static lv_obj_t *lvglScreensaverRightEye = nullptr;
+static lv_obj_t *lvglScreensaverLeftPupil = nullptr;
+static lv_obj_t *lvglScreensaverRightPupil = nullptr;
 static lv_obj_t *lvglSnakeScoreLabel = nullptr;
 static lv_obj_t *lvglTetrisScoreLabel = nullptr;
 static lv_obj_t *lvglSnakeBoardObj = nullptr;
@@ -657,6 +676,7 @@ static unsigned long lvglSwipeStartMs = 0;
 static bool lvglSwipeBackPending = false;
 static bool lvglSwipeCandidate = false;
 static bool lvglSwipeHorizontalLocked = false;
+static bool lvglGestureBlocked = false;
 static unsigned long lvglClickSuppressUntilMs = 0;
 static unsigned long lvglLastTapReleaseMs = 0;
 static int16_t lvglLastTapReleaseX = 0;
@@ -887,6 +907,9 @@ unsigned long lastChargeEvalMs = 0;
 unsigned long lastChargeSeenMs = 0;
 bool displayAwake = true;
 uint8_t displayBrightnessPercent = 100;
+unsigned long displayIdleTimeoutMs = LCD_IDLE_TIMEOUT_MS_DEFAULT;
+bool screensaverEnabled = false;
+bool screensaverActive = false;
 uint8_t rgbLedPercent = 100;
 String deviceShortName = DEVICE_SHORT_NAME;
 uint8_t cpuLoadPercent = 0;
@@ -902,6 +925,8 @@ uint16_t lightMinObserved = 4095;
 uint16_t lightMaxObserved = 0;
 uint8_t wakeTouchConfirmCount = 0;
 bool wakeTouchReleaseGuard = false;
+unsigned long screensaverLastPoseMs = 0;
+unsigned long screensaverNextPoseDelayMs = SCREENSAVER_POSE_MIN_MS;
 
 enum UiScreen : uint8_t {
     UI_HOME,
@@ -912,7 +937,9 @@ enum UiScreen : uint8_t {
     UI_INFO,
     UI_GAMES,
     UI_CONFIG,
+    UI_CONFIG_STYLE,
     UI_CONFIG_OTA,
+    UI_SCREENSAVER,
     UI_CONFIG_MQTT_CONFIG,
     UI_CONFIG_MQTT_CONTROLS,
     UI_GAME_SNAKE,
@@ -920,6 +947,7 @@ enum UiScreen : uint8_t {
 };
 
 UiScreen uiScreen = UI_HOME;
+UiScreen screensaverReturnScreen = UI_HOME;
 String uiStatusLine = "Ready";
 
 void lvglEnsureScreenBuilt(UiScreen screen);
@@ -1037,6 +1065,26 @@ static int otaCompareVersions(const String &lhsRaw, const String &rhsRaw)
         ri++;
     }
     return 0;
+}
+
+static unsigned long clampIdleTimeoutMs(unsigned long ms)
+{
+    if (ms < LCD_IDLE_TIMEOUT_MS_MIN) ms = LCD_IDLE_TIMEOUT_MS_MIN;
+    if (ms > LCD_IDLE_TIMEOUT_MS_MAX) ms = LCD_IDLE_TIMEOUT_MS_MAX;
+    const unsigned long snapped = ((ms + (LCD_IDLE_TIMEOUT_STEP_MS / 2UL)) / LCD_IDLE_TIMEOUT_STEP_MS) * LCD_IDLE_TIMEOUT_STEP_MS;
+    if (snapped < LCD_IDLE_TIMEOUT_MS_MIN) return LCD_IDLE_TIMEOUT_MS_MIN;
+    if (snapped > LCD_IDLE_TIMEOUT_MS_MAX) return LCD_IDLE_TIMEOUT_MS_MAX;
+    return snapped;
+}
+
+static String formatIdleTimeoutLabel(unsigned long ms)
+{
+    const unsigned long totalSec = ms / 1000UL;
+    const unsigned long mins = totalSec / 60UL;
+    const unsigned long secs = totalSec % 60UL;
+    if (mins == 0UL) return String(secs) + " sec";
+    if (secs == 0UL) return String(mins) + " min";
+    return String(mins) + " min " + String(secs) + " sec";
 }
 
 static String chatSafeFileToken(const String &raw);
@@ -1158,7 +1206,7 @@ static constexpr int MAX_P2P_PEERS = 8;
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
 static constexpr int MAX_P2P_DISCOVERED = 12;
 #else
-static constexpr int MAX_P2P_DISCOVERED = 8;
+static constexpr int MAX_P2P_DISCOVERED = 6;
 #endif
 static constexpr size_t P2P_PUBLIC_KEY_BYTES = crypto_box_curve25519xchacha20poly1305_PUBLICKEYBYTES;
 static constexpr size_t P2P_SECRET_KEY_BYTES = crypto_box_curve25519xchacha20poly1305_SECRETKEYBYTES;
@@ -1911,6 +1959,29 @@ static inline void lvglResetGestureTracking()
     lvglSwipeHorizontalLocked = false;
 }
 
+static bool lvglTouchOwnsHorizontalGesture()
+{
+    lv_obj_t *obj = lv_indev_get_obj_act();
+    if (!obj || !lv_obj_is_valid(obj)) return false;
+
+    for (lv_obj_t *cur = obj; cur && lv_obj_is_valid(cur); cur = lv_obj_get_parent(cur)) {
+        if (lv_obj_check_type(cur, &lv_slider_class) || lv_obj_check_type(cur, &lv_switch_class)) {
+            return true;
+        }
+        if (lv_obj_has_flag(cur, LV_OBJ_FLAG_SCROLLABLE)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void lvglGestureBlockEvent(lv_event_t *e)
+{
+    const lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_PRESSED) lvglGestureBlocked = true;
+    else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST || code == LV_EVENT_CLICKED) lvglGestureBlocked = false;
+}
+
 static inline bool lvglClickSuppressed()
 {
     return static_cast<long>(lvglClickSuppressUntilMs - millis()) > 0;
@@ -1953,6 +2024,29 @@ void lvglTouchReadCb(lv_indev_drv_t *indev, lv_indev_data_t *data)
     if (rawDown) {
         lvglLastTouchX = x;
         lvglLastTouchY = y;
+    }
+    if (screensaverActive) {
+        if (rawDown && !wakeTouchReleaseGuard) {
+            wakeTouchReleaseGuard = true;
+            wakeTouchConfirmCount = WAKE_TOUCH_RELEASE_STABLE_POLLS;
+            screensaverSetActive(false);
+            lastUserActivityMs = millis();
+        }
+        if (wakeTouchReleaseGuard) {
+            if (rawDown) {
+                wakeTouchConfirmCount = WAKE_TOUCH_RELEASE_STABLE_POLLS;
+            } else if (wakeTouchConfirmCount > 0) {
+                wakeTouchConfirmCount--;
+            } else {
+                wakeTouchReleaseGuard = false;
+            }
+            lvglTouchDown = false;
+            lvglResetGestureTracking();
+            data->state = LV_INDEV_STATE_REL;
+            data->point.x = lvglLastTouchX;
+            data->point.y = lvglLastTouchY;
+            return;
+        }
     }
     if (!displayAwake) {
         if (rawDown && !wakeTouchReleaseGuard) {
@@ -2005,7 +2099,8 @@ void lvglTouchReadCb(lv_indev_drv_t *indev, lv_indev_data_t *data)
                 lvglLastTapReleaseMs = 0;
                 lvglTouchDown = false;
                 lvglResetGestureTracking();
-                displaySetAwake(false);
+                if (screensaverEnabled) screensaverSetActive(true);
+                else displaySetAwake(false);
                 wakeTouchReleaseGuard = true;
                 wakeTouchConfirmCount = WAKE_TOUCH_RELEASE_STABLE_POLLS;
                 data->state = LV_INDEV_STATE_REL;
@@ -3371,7 +3466,13 @@ void lvglOpenMqttCfgEvent(lv_event_t *e);
 void lvglOpenMqttCtrlEvent(lv_event_t *e);
 void lvglOpenChatPeersEvent(lv_event_t *e);
 void lvglChatDiscoveryToggleEvent(lv_event_t *e);
-void lvglStyleHintEvent(lv_event_t *e);
+void lvglOpenStyleScreenEvent(lv_event_t *e);
+void lvglStyleScreensaverToggleEvent(lv_event_t *e);
+void lvglStyleTimeoutEvent(lv_event_t *e);
+void lvglRefreshStyleUi();
+void lvglGestureBlockEvent(lv_event_t *e);
+void screensaverSetActive(bool active);
+void screensaverService();
 void lvglAirplaneToggleEvent(lv_event_t *e);
 void lvglChatAirplanePromptEvent(lv_event_t *e);
 void lvglShowChatAirplanePrompt();
@@ -3428,6 +3529,7 @@ static bool uiScreenSupportsSwipeBack(UiScreen screen)
         case UI_INFO:
         case UI_GAMES:
         case UI_CONFIG:
+        case UI_CONFIG_STYLE:
         case UI_CONFIG_OTA:
         case UI_CONFIG_MQTT_CONFIG:
         case UI_CONFIG_MQTT_CONTROLS:
@@ -3450,7 +3552,9 @@ lv_obj_t *lvglScreenForUi(UiScreen screen)
         case UI_INFO: return lvglScrInfo;
         case UI_GAMES: return lvglScrGames;
         case UI_CONFIG: return lvglScrConfig;
+        case UI_CONFIG_STYLE: return lvglScrStyle;
         case UI_CONFIG_OTA: return lvglScrOta;
+        case UI_SCREENSAVER: return lvglScrScreensaver;
         case UI_CONFIG_MQTT_CONFIG: return lvglScrMqttCfg;
         case UI_CONFIG_MQTT_CONTROLS: return lvglScrMqttCtrl;
         case UI_GAME_SNAKE: return lvglScrSnake;
@@ -3861,7 +3965,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglCreateMenuButton(lvglConfigWrap, "OTA Updates", lv_color_hex(0x2E6F95), lvglOpenOtaScreenEvent, nullptr);
             lvglAirplaneBtn = lvglCreateMenuButton(lvglConfigWrap, "Airplane: OFF", lv_color_hex(0x8A5A25), lvglAirplaneToggleEvent, nullptr);
             if (lvglAirplaneBtn) lvglAirplaneBtnLabel = lv_obj_get_child(lvglAirplaneBtn, 0);
-            lvglCreateMenuButton(lvglConfigWrap, "Style", lv_color_hex(0x2D6D8E), lvglStyleHintEvent, nullptr);
+            lvglCreateMenuButton(lvglConfigWrap, "Style", lv_color_hex(0x2D6D8E), lvglOpenStyleScreenEvent, nullptr);
             lvglCreateMenuButton(lvglConfigWrap, "MQTT Config", lv_color_hex(0x6D4B9A), lvglOpenMqttCfgEvent, nullptr);
             lvglCreateMenuButton(lvglConfigWrap, "MQTT Controls", lv_color_hex(0x2D6D8E), lvglOpenMqttCtrlEvent, nullptr);
             lvglCreateMenuButton(lvglConfigWrap, "Screenshot", lv_color_hex(0x6B5B2A), lvglScreenshotEvent, nullptr);
@@ -3967,6 +4071,86 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglRefreshConfigUi();
             break;
         }
+        case UI_CONFIG_STYLE: {
+            lvglScrStyle = lvglCreateScreenBase("Style", false);
+            lv_obj_t *wrap = lv_obj_create(lvglScrStyle);
+            lv_obj_set_size(wrap, lv_pct(100), UI_CONTENT_H);
+            lv_obj_align(wrap, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
+            lv_obj_set_style_bg_opa(wrap, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(wrap, 0, 0);
+            lv_obj_set_style_pad_all(wrap, 10, 0);
+            lv_obj_set_style_pad_row(wrap, 10, 0);
+            lv_obj_set_flex_flow(wrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_scrollbar_mode(wrap, LV_SCROLLBAR_MODE_OFF);
+
+            lv_obj_t *screensaverRow = lv_obj_create(wrap);
+            lv_obj_set_size(screensaverRow, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_color(screensaverRow, lv_color_hex(0x18222D), 0);
+            lv_obj_set_style_border_width(screensaverRow, 0, 0);
+            lv_obj_set_style_radius(screensaverRow, 12, 0);
+            lv_obj_set_style_pad_all(screensaverRow, 12, 0);
+            lv_obj_set_style_pad_column(screensaverRow, 8, 0);
+            lv_obj_set_flex_flow(screensaverRow, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(screensaverRow, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *screensaverLbl = lv_label_create(screensaverRow);
+            lv_label_set_text(screensaverLbl, "Screensaver");
+            lv_obj_set_style_text_color(screensaverLbl, lv_color_hex(0xE5ECF3), 0);
+            lv_obj_set_flex_grow(screensaverLbl, 1);
+
+            lvglStyleScreensaverSw = lv_switch_create(screensaverRow);
+            lv_obj_add_event_cb(lvglStyleScreensaverSw, lvglStyleScreensaverToggleEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+            lv_obj_add_event_cb(lvglStyleScreensaverSw, lvglGestureBlockEvent, LV_EVENT_PRESSED, nullptr);
+            lv_obj_add_event_cb(lvglStyleScreensaverSw, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
+            lv_obj_add_event_cb(lvglStyleScreensaverSw, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
+
+            lv_obj_t *timeWrap = lv_obj_create(wrap);
+            lv_obj_set_size(timeWrap, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_color(timeWrap, lv_color_hex(0x18222D), 0);
+            lv_obj_set_style_border_width(timeWrap, 0, 0);
+            lv_obj_set_style_radius(timeWrap, 12, 0);
+            lv_obj_set_style_pad_all(timeWrap, 10, 0);
+            lv_obj_set_style_pad_row(timeWrap, 6, 0);
+            lv_obj_set_flex_flow(timeWrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_clear_flag(timeWrap, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *timeHdr = lv_obj_create(timeWrap);
+            lv_obj_set_size(timeHdr, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(timeHdr, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(timeHdr, 0, 0);
+            lv_obj_set_style_pad_all(timeHdr, 0, 0);
+            lv_obj_set_style_pad_column(timeHdr, 8, 0);
+            lv_obj_set_flex_flow(timeHdr, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(timeHdr, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *timeLbl = lv_label_create(timeHdr);
+            lv_label_set_text(timeLbl, "Screen Timeoff");
+            lv_obj_set_style_text_color(timeLbl, lv_color_hex(0xE5ECF3), 0);
+            lv_obj_set_flex_grow(timeLbl, 1);
+
+            lvglStyleTimeoutValueLabel = lv_label_create(timeHdr);
+            lv_obj_set_style_text_color(lvglStyleTimeoutValueLabel, lv_color_hex(0xB7C4D1), 0);
+            lv_label_set_text(lvglStyleTimeoutValueLabel, "--");
+
+            lvglStyleTimeoutSlider = lv_slider_create(timeWrap);
+            lv_obj_set_width(lvglStyleTimeoutSlider, lv_pct(100));
+            lv_slider_set_range(lvglStyleTimeoutSlider,
+                                static_cast<int32_t>(LCD_IDLE_TIMEOUT_MS_MIN / LCD_IDLE_TIMEOUT_STEP_MS),
+                                static_cast<int32_t>(LCD_IDLE_TIMEOUT_MS_MAX / LCD_IDLE_TIMEOUT_STEP_MS));
+            lv_obj_add_event_cb(lvglStyleTimeoutSlider, lvglStyleTimeoutEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+            lv_obj_add_event_cb(lvglStyleTimeoutSlider, lvglGestureBlockEvent, LV_EVENT_PRESSED, nullptr);
+            lv_obj_add_event_cb(lvglStyleTimeoutSlider, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
+            lv_obj_add_event_cb(lvglStyleTimeoutSlider, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
+
+            lv_obj_t *hint = lv_label_create(timeWrap);
+            lv_obj_set_width(hint, lv_pct(100));
+            lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+            lv_obj_set_style_text_color(hint, lv_color_hex(0x9FB0C2), 0);
+            lv_label_set_text(hint, "Idle timeout can switch to a centered robot-eye screensaver inspired by esp32-eyes. Touch anywhere to return.");
+
+            lvglRefreshStyleUi();
+            break;
+        }
         case UI_CONFIG_OTA: {
             lvglScrOta = lvglCreateScreenBase("OTA Updates", false);
             lv_obj_t *wrap = lv_obj_create(lvglScrOta);
@@ -3983,6 +4167,8 @@ void lvglEnsureScreenBuilt(UiScreen screen)
                 lv_obj_t *card = lv_obj_create(wrap);
                 lv_obj_set_width(card, lv_pct(100));
                 lv_obj_set_height(card, LV_SIZE_CONTENT);
+                lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+                lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
                 lv_obj_set_style_bg_color(card, lv_color_hex(0x16212C), 0);
                 lv_obj_set_style_border_color(card, lv_color_hex(0x536274), 0);
                 lv_obj_set_style_border_width(card, 1, 0);
@@ -4021,6 +4207,37 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglOtaUpdateBtn = lvglCreateMenuButton(wrap, "Update", lv_color_hex(0x3A8F4B), lvglOtaUpdateEvent, nullptr);
             if (lvglOtaUpdateBtn) lvglOtaUpdateBtnLabel = lv_obj_get_child(lvglOtaUpdateBtn, 0);
             lvglRefreshOtaUi();
+            break;
+        }
+        case UI_SCREENSAVER: {
+            lvglScrScreensaver = lv_obj_create(nullptr);
+            lv_obj_set_style_bg_color(lvglScrScreensaver, lv_color_hex(0x000000), 0);
+            lv_obj_set_style_bg_opa(lvglScrScreensaver, LV_OPA_COVER, 0);
+            lv_obj_set_style_border_width(lvglScrScreensaver, 0, 0);
+            lv_obj_set_style_pad_all(lvglScrScreensaver, 0, 0);
+            lv_obj_clear_flag(lvglScrScreensaver, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+
+            lvglScreensaverLeftEye = lv_obj_create(lvglScrScreensaver);
+            lvglScreensaverRightEye = lv_obj_create(lvglScrScreensaver);
+            lvglScreensaverLeftPupil = lv_obj_create(lvglScrScreensaver);
+            lvglScreensaverRightPupil = lv_obj_create(lvglScrScreensaver);
+
+            lv_obj_t *eyes[] = {lvglScreensaverLeftEye, lvglScreensaverRightEye};
+            for (lv_obj_t *eye : eyes) {
+                if (!eye) continue;
+                lv_obj_set_style_bg_color(eye, lv_color_hex(0xF5F7FA), 0);
+                lv_obj_set_style_bg_opa(eye, LV_OPA_COVER, 0);
+                lv_obj_set_style_border_width(eye, 0, 0);
+                lv_obj_clear_flag(eye, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+            }
+            lv_obj_t *pupils[] = {lvglScreensaverLeftPupil, lvglScreensaverRightPupil};
+            for (lv_obj_t *pupil : pupils) {
+                if (!pupil) continue;
+                lv_obj_set_style_bg_color(pupil, lv_color_hex(0x0A0D11), 0);
+                lv_obj_set_style_bg_opa(pupil, LV_OPA_COVER, 0);
+                lv_obj_set_style_border_width(pupil, 0, 0);
+                lv_obj_clear_flag(pupil, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+            }
             break;
         }
         case UI_CONFIG_MQTT_CONFIG: {
@@ -4248,6 +4465,8 @@ void lvglOpenScreen(UiScreen screen, lv_scr_load_anim_t anim)
         lvglRefreshInfoPanel();
     } else if (screen == UI_CONFIG) {
         lvglRefreshConfigUi();
+    } else if (screen == UI_CONFIG_STYLE) {
+        lvglRefreshStyleUi();
     } else if (screen == UI_CONFIG_OTA) {
         lvglRefreshOtaUi();
     }
@@ -4282,6 +4501,9 @@ void lvglNavigateBackBySwipe()
             lvglOpenScreen(UI_CHAT, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
             break;
         case UI_WIFI_LIST:
+            lvglOpenScreen(UI_CONFIG, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
+            break;
+        case UI_CONFIG_STYLE:
             lvglOpenScreen(UI_CONFIG, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
             break;
         case UI_CONFIG_OTA:
@@ -6881,10 +7103,49 @@ void lvglBackToConfigEvent(lv_event_t *e)
     lvglOpenScreen(UI_CONFIG, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
 }
 
+void lvglOpenStyleScreenEvent(lv_event_t *e)
+{
+    (void)e;
+    lvglEnsureScreenBuilt(UI_CONFIG_STYLE);
+    lvglRefreshStyleUi();
+    lvglOpenScreen(UI_CONFIG_STYLE, LV_SCR_LOAD_ANIM_MOVE_LEFT);
+}
+
+void lvglStyleScreensaverToggleEvent(lv_event_t *e)
+{
+    lv_obj_t *target = e ? lv_event_get_target(e) : nullptr;
+    screensaverEnabled = target && lv_obj_has_state(target, LV_STATE_CHECKED);
+    uiPrefs.begin("ui", false);
+    uiPrefs.putBool("scrsvr_en", screensaverEnabled);
+    uiPrefs.end();
+    if (!screensaverEnabled && screensaverActive) screensaverSetActive(false);
+    lvglRefreshStyleUi();
+}
+
+void lvglStyleTimeoutEvent(lv_event_t *e)
+{
+    (void)e;
+    if (!lvglStyleTimeoutSlider) return;
+    const unsigned long stepValue = static_cast<unsigned long>(lv_slider_get_value(lvglStyleTimeoutSlider));
+    displayIdleTimeoutMs = clampIdleTimeoutMs(stepValue * LCD_IDLE_TIMEOUT_STEP_MS);
+    uiPrefs.begin("ui", false);
+    uiPrefs.putULong("disp_idle", displayIdleTimeoutMs);
+    uiPrefs.end();
+    lvglRefreshStyleUi();
+}
+
 void lvglOtaUpdateEvent(lv_event_t *e)
 {
     (void)e;
     if (otaUpdateTaskHandle || otaUiState == OTA_UI_DOWNLOADING || otaUiState == OTA_UI_FINALIZING) return;
+    if (!OTA_FIRMWARE_FLASH_SUPPORTED) {
+        otaUiState = OTA_UI_ERROR;
+        otaSetStatus("This board build does not have an OTA flash slot");
+        lvglRefreshOtaUi();
+        uiStatusLine = "OTA unsupported on current flash layout";
+        lvglSyncStatusLine();
+        return;
+    }
     if (!wifiConnectedSafe()) {
         uiStatusLine = "Connect WiFi before OTA";
         lvglSyncStatusLine();
@@ -6907,10 +7168,27 @@ void lvglOtaUpdateEvent(lv_event_t *e)
     lvglRefreshOtaUi();
 }
 
-void lvglStyleHintEvent(lv_event_t *e)
+void lvglRefreshStyleUi()
 {
-    (void)e;
-    lvglStatusPush("Style tuning now handled by LVGL theme");
+    if (lvglStyleScreensaverSw) {
+        if (screensaverEnabled) lv_obj_add_state(lvglStyleScreensaverSw, LV_STATE_CHECKED);
+        else lv_obj_clear_state(lvglStyleScreensaverSw, LV_STATE_CHECKED);
+        lv_obj_set_style_bg_color(lvglStyleScreensaverSw, lv_color_hex(0x48515C), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(lvglStyleScreensaverSw, lv_color_hex(0x3A8F4B), LV_PART_INDICATOR | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_color(lvglStyleScreensaverSw, lv_color_hex(0xDCE7F2), LV_PART_KNOB);
+    }
+    if (lvglStyleTimeoutSlider) {
+        const int32_t sliderValue = static_cast<int32_t>(clampIdleTimeoutMs(displayIdleTimeoutMs) / LCD_IDLE_TIMEOUT_STEP_MS);
+        if (lv_slider_get_value(lvglStyleTimeoutSlider) != sliderValue) {
+            lv_slider_set_value(lvglStyleTimeoutSlider, sliderValue, LV_ANIM_OFF);
+        }
+        lv_obj_set_style_bg_color(lvglStyleTimeoutSlider, lv_color_hex(0x2A3340), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(lvglStyleTimeoutSlider, lv_color_hex(0x4FC3F7), LV_PART_INDICATOR);
+        lv_obj_set_style_bg_color(lvglStyleTimeoutSlider, lv_color_hex(0xE5ECF3), LV_PART_KNOB);
+    }
+    if (lvglStyleTimeoutValueLabel) {
+        lv_label_set_text(lvglStyleTimeoutValueLabel, formatIdleTimeoutLabel(displayIdleTimeoutMs).c_str());
+    }
 }
 
 void lvglAirplaneToggleEvent(lv_event_t *e)
@@ -7008,11 +7286,13 @@ void lvglRefreshOtaUi()
 {
     if (lvglOtaCurrentLabel) lv_label_set_text(lvglOtaCurrentLabel, FW_VERSION);
     if (lvglOtaLatestLabel) {
-        if (otaLatestVersion[0] != '\0') lv_label_set_text(lvglOtaLatestLabel, otaLatestVersion);
+        if (!OTA_FIRMWARE_FLASH_SUPPORTED) lv_label_set_text(lvglOtaLatestLabel, "Unavailable on this board");
+        else if (otaLatestVersion[0] != '\0') lv_label_set_text(lvglOtaLatestLabel, otaLatestVersion);
         else lv_label_set_text(lvglOtaLatestLabel, otaUiState == OTA_UI_CHECKING ? "Checking..." : "Unknown");
     }
     if (lvglOtaStatusLabel) {
-        if (otaStatusText.length()) lv_label_set_text(lvglOtaStatusLabel, otaStatusText.c_str());
+        if (!OTA_FIRMWARE_FLASH_SUPPORTED) lv_label_set_text(lvglOtaStatusLabel, "Firmware image is too large for dual-slot OTA on the 4 MB layout.");
+        else if (otaStatusText.length()) lv_label_set_text(lvglOtaStatusLabel, otaStatusText.c_str());
         else if (otaUpdateAvailable) lv_label_set_text(lvglOtaStatusLabel, "Update available");
         else lv_label_set_text(lvglOtaStatusLabel, "Idle");
     }
@@ -7033,7 +7313,7 @@ void lvglRefreshOtaUi()
     }
     if (lvglOtaUpdateBtn && lvglOtaUpdateBtnLabel) {
         const bool busy = otaUiState == OTA_UI_CHECKING || otaUiState == OTA_UI_DOWNLOADING || otaUiState == OTA_UI_FINALIZING;
-        if (busy) {
+        if (busy || !OTA_FIRMWARE_FLASH_SUPPORTED) {
             lv_obj_add_flag(lvglOtaUpdateBtn, LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_clear_flag(lvglOtaUpdateBtn, LV_OBJ_FLAG_HIDDEN);
@@ -7043,6 +7323,165 @@ void lvglRefreshOtaUi()
             lv_obj_set_style_bg_color(lvglOtaUpdateBtn, btnCol, LV_PART_MAIN | LV_STATE_PRESSED);
         }
     }
+}
+
+struct ScreensaverEyePreset {
+    int16_t offsetX;
+    int16_t offsetY;
+    int16_t height;
+    int16_t width;
+    float slopeTop;
+    float slopeBottom;
+    int16_t radiusTop;
+    int16_t radiusBottom;
+    int16_t inverseRadiusTop;
+    int16_t inverseRadiusBottom;
+    int16_t inverseOffsetTop;
+    int16_t inverseOffsetBottom;
+    bool pupilsVisible;
+};
+
+struct ScreensaverPose {
+    const ScreensaverEyePreset *preset;
+    uint16_t eyeWidth;
+    uint16_t eyeHeight;
+    uint16_t pupilSize;
+    int16_t lookX;
+    int16_t lookY;
+    int16_t eyeYOffset;
+    int16_t eyeXOffset;
+};
+
+static constexpr ScreensaverEyePreset SCREENSAVER_PRESET_NORMAL = {0, 0, 40, 40, 0.0f, 0.0f, 8, 8, 0, 0, 0, 0, true};
+static constexpr ScreensaverEyePreset SCREENSAVER_PRESET_HAPPY = {0, 0, 10, 40, 0.0f, 0.0f, 10, 0, 0, 0, 0, 0, true};
+static constexpr ScreensaverEyePreset SCREENSAVER_PRESET_GLEE = {0, 0, 8, 40, 0.0f, 0.0f, 8, 0, 0, 5, 0, 0, true};
+static constexpr ScreensaverEyePreset SCREENSAVER_PRESET_SAD = {0, 0, 15, 40, -0.5f, 0.0f, 1, 10, 0, 0, 0, 0, true};
+static constexpr ScreensaverEyePreset SCREENSAVER_PRESET_FOCUSED = {0, 0, 14, 40, 0.2f, 0.0f, 3, 1, 0, 0, 0, 0, true};
+static constexpr ScreensaverEyePreset SCREENSAVER_PRESET_SURPRISED = {-2, 0, 45, 45, 0.0f, 0.0f, 16, 16, 0, 0, 0, 0, true};
+static constexpr ScreensaverEyePreset SCREENSAVER_PRESET_SKEPTIC_ALT = {0, -6, 26, 40, 0.3f, 0.0f, 1, 10, 0, 0, 0, 0, true};
+static constexpr ScreensaverEyePreset SCREENSAVER_PRESET_SLEEPY = {0, -2, 14, 40, -0.5f, -0.5f, 3, 3, 0, 0, 0, 0, false};
+static constexpr ScreensaverEyePreset SCREENSAVER_PRESET_SUSPICIOUS = {0, 0, 22, 40, 0.0f, 0.0f, 8, 3, 0, 0, 0, 0, true};
+static constexpr ScreensaverEyePreset SCREENSAVER_PRESET_BLINK = {0, 0, 5, 40, 0.0f, 0.0f, 3, 3, 0, 0, 0, 0, false};
+
+static const ScreensaverEyePreset *const SCREENSAVER_PRESETS[] = {
+    &SCREENSAVER_PRESET_NORMAL,
+    &SCREENSAVER_PRESET_HAPPY,
+    &SCREENSAVER_PRESET_GLEE,
+    &SCREENSAVER_PRESET_SAD,
+    &SCREENSAVER_PRESET_FOCUSED,
+    &SCREENSAVER_PRESET_SURPRISED,
+    &SCREENSAVER_PRESET_SKEPTIC_ALT,
+    &SCREENSAVER_PRESET_SLEEPY,
+    &SCREENSAVER_PRESET_SUSPICIOUS,
+};
+
+static ScreensaverPose screensaverRandomPose(bool blinkOnly)
+{
+    const int16_t lookLimitX = max<int16_t>(4, DISPLAY_WIDTH / 18);
+    const int16_t lookLimitY = max<int16_t>(3, DISPLAY_HEIGHT / 28);
+    const float scale = min(DISPLAY_WIDTH / 128.0f, DISPLAY_HEIGHT / 64.0f) * 0.9f;
+    const ScreensaverEyePreset *preset = blinkOnly
+                                             ? &SCREENSAVER_PRESET_BLINK
+                                             : SCREENSAVER_PRESETS[random(0, static_cast<int>(sizeof(SCREENSAVER_PRESETS) / sizeof(SCREENSAVER_PRESETS[0])))];
+    if (blinkOnly) {
+        return {
+            preset,
+            static_cast<uint16_t>(max<int16_t>(28, lroundf(preset->width * scale))),
+            static_cast<uint16_t>(max<int16_t>(4, lroundf(preset->height * scale))),
+            0U,
+            0,
+            0,
+            0,
+            0
+        };
+    }
+    ScreensaverPose pose = {
+        preset,
+        static_cast<uint16_t>(max<int16_t>(28, lroundf(preset->width * scale))),
+        static_cast<uint16_t>(max<int16_t>(8, lroundf(preset->height * scale))),
+        static_cast<uint16_t>(max<int16_t>(10, lroundf(min(preset->width, preset->height) * scale * 0.34f))),
+        static_cast<int16_t>(random(-lookLimitX, lookLimitX + 1)),
+        static_cast<int16_t>(random(-lookLimitY, lookLimitY + 1)),
+        static_cast<int16_t>(lroundf(preset->offsetY * scale)),
+        static_cast<int16_t>(lroundf(preset->offsetX * scale))
+    };
+    if (!preset->pupilsVisible) pose.pupilSize = 0;
+    return pose;
+}
+
+static void screensaverApplyPose(const ScreensaverPose &pose)
+{
+    if (!lvglScreensaverLeftEye || !lvglScreensaverRightEye || !lvglScreensaverLeftPupil || !lvglScreensaverRightPupil) return;
+    const ScreensaverEyePreset &preset = *pose.preset;
+
+    const int16_t eyeW = static_cast<int16_t>(min<uint16_t>(pose.eyeWidth, static_cast<uint16_t>(DISPLAY_WIDTH / 2 - 18)));
+    const int16_t eyeH = static_cast<int16_t>(min<uint16_t>(pose.eyeHeight, static_cast<uint16_t>(DISPLAY_HEIGHT / 2 - 18)));
+    const int16_t gap = max<int16_t>(12, DISPLAY_WIDTH / 12);
+    const int16_t totalW = (eyeW * 2) + gap;
+    const int16_t leftX = (DISPLAY_WIDTH - totalW) / 2 + pose.eyeXOffset;
+    const int16_t rightX = leftX + eyeW + gap;
+    const int16_t eyeY = (DISPLAY_HEIGHT - eyeH) / 2 + pose.eyeYOffset;
+    const int16_t radius = max<int16_t>((preset.radiusTop + preset.radiusBottom) / 2, 2);
+    const int16_t scaledRadius = max<int16_t>(4, min<int16_t>(eyeH / 2, lroundf(radius * (static_cast<float>(eyeH) / max<int16_t>(preset.height, 1)))));
+    const int16_t slopeLift = static_cast<int16_t>(lroundf(max(fabsf(preset.slopeTop), fabsf(preset.slopeBottom)) * eyeH * 0.22f));
+
+    lv_obj_set_size(lvglScreensaverLeftEye, eyeW, eyeH);
+    lv_obj_set_pos(lvglScreensaverLeftEye, leftX, eyeY + (preset.slopeTop < 0.0f ? slopeLift : 0));
+    lv_obj_set_style_radius(lvglScreensaverLeftEye, scaledRadius, 0);
+    lv_obj_set_size(lvglScreensaverRightEye, eyeW, eyeH);
+    lv_obj_set_pos(lvglScreensaverRightEye, rightX, eyeY + (preset.slopeTop > 0.0f ? slopeLift : 0));
+    lv_obj_set_style_radius(lvglScreensaverRightEye, scaledRadius, 0);
+
+    const int16_t pupilSize = static_cast<int16_t>(min<uint16_t>(pose.pupilSize, static_cast<uint16_t>(max<int16_t>(eyeH - 4, 2))));
+    if (!preset.pupilsVisible || pupilSize <= 2) {
+        lv_obj_add_flag(lvglScreensaverLeftPupil, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(lvglScreensaverRightPupil, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+
+    const int16_t pupilRangeX = max<int16_t>(0, (eyeW - pupilSize) / 2 - 3);
+    const int16_t pupilRangeY = max<int16_t>(0, (eyeH - pupilSize) / 2 - 3);
+    const int16_t pupilX = constrain(static_cast<int16_t>(pose.lookX / 2), -pupilRangeX, pupilRangeX);
+    const int16_t pupilY = constrain(static_cast<int16_t>(pose.lookY / 2), -pupilRangeY, pupilRangeY);
+
+    lv_obj_clear_flag(lvglScreensaverLeftPupil, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(lvglScreensaverRightPupil, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_size(lvglScreensaverLeftPupil, pupilSize, pupilSize);
+    lv_obj_set_size(lvglScreensaverRightPupil, pupilSize, pupilSize);
+    lv_obj_set_style_radius(lvglScreensaverLeftPupil, pupilSize / 2, 0);
+    lv_obj_set_style_radius(lvglScreensaverRightPupil, pupilSize / 2, 0);
+    lv_obj_set_pos(lvglScreensaverLeftPupil, leftX + ((eyeW - pupilSize) / 2) + pupilX, eyeY + ((eyeH - pupilSize) / 2) + pupilY);
+    lv_obj_set_pos(lvglScreensaverRightPupil, rightX + ((eyeW - pupilSize) / 2) + pupilX, eyeY + ((eyeH - pupilSize) / 2) + pupilY);
+}
+
+void screensaverSetActive(bool active)
+{
+    if (screensaverActive == active) return;
+    screensaverActive = active;
+    if (active) {
+        screensaverReturnScreen = uiScreen;
+        lvglEnsureScreenBuilt(UI_SCREENSAVER);
+        if (lvglTopBarRoot) lv_obj_add_flag(lvglTopBarRoot, LV_OBJ_FLAG_HIDDEN);
+        screensaverLastPoseMs = 0;
+        screensaverNextPoseDelayMs = SCREENSAVER_POSE_MIN_MS;
+        screensaverApplyPose(screensaverRandomPose(false));
+        lvglOpenScreen(UI_SCREENSAVER, LV_SCR_LOAD_ANIM_FADE_ON);
+    } else {
+        if (lvglTopBarRoot) lv_obj_clear_flag(lvglTopBarRoot, LV_OBJ_FLAG_HIDDEN);
+        lvglOpenScreen(screensaverReturnScreen, LV_SCR_LOAD_ANIM_FADE_ON);
+        lvglSuppressClicksAfterGesture();
+    }
+}
+
+void screensaverService()
+{
+    if (!screensaverActive || !lvglReady) return;
+    const unsigned long now = millis();
+    if (screensaverLastPoseMs != 0 && static_cast<unsigned long>(now - screensaverLastPoseMs) < screensaverNextPoseDelayMs) return;
+    const bool blinkNow = random(0, 100) < 24;
+    screensaverApplyPose(screensaverRandomPose(blinkNow));
+    screensaverLastPoseMs = now;
+    screensaverNextPoseDelayMs = blinkNow ? SCREENSAVER_BLINK_MS : static_cast<unsigned long>(random(static_cast<long>(SCREENSAVER_POSE_MIN_MS), static_cast<long>(SCREENSAVER_POSE_MAX_MS + 1UL)));
 }
 
 void lvglSetConfigKeyboardVisible(bool visible)
@@ -7178,7 +7617,7 @@ void lvglInitUi()
 void lvglService()
 {
     if (!lvglReady) return;
-    if (otaPostUpdatePopupPending && !lvglOtaPostUpdatePopupVisible) {
+    if (!screensaverActive && otaPostUpdatePopupPending && !lvglOtaPostUpdatePopupVisible) {
         static const char *btns[] = {"OK", ""};
         String prompt = String("Device updated to FW Version ") + FW_VERSION;
         lv_obj_t *m = lv_msgbox_create(nullptr, "Update Complete", prompt.c_str(), btns, false);
@@ -7189,7 +7628,7 @@ void lvglService()
             lvglOtaPostUpdatePopupVisible = true;
         }
     }
-    if (otaUpdatePromptPending && !lvglOtaUpdatePromptVisible && !otaPostUpdatePopupPending &&
+    if (!screensaverActive && otaUpdatePromptPending && !lvglOtaUpdatePromptVisible && !otaPostUpdatePopupPending &&
         otaUiState != OTA_UI_DOWNLOADING && otaUiState != OTA_UI_FINALIZING) {
         static const char *btns[] = {"Cancel", "Update", ""};
         String prompt = String("Firmware ") + (otaLatestVersion[0] ? otaLatestVersion : "?") + " is available.";
@@ -7201,7 +7640,7 @@ void lvglService()
             lvglOtaUpdatePromptVisible = true;
         }
     }
-    if (p2pPairRequestPending && !p2pPairPromptVisible) {
+    if (!screensaverActive && p2pPairRequestPending && !p2pPairPromptVisible) {
         static const char *btns[] = {"Reject", "Accept", ""};
         String prompt = "A device would like to pair.";
         if (p2pPairRequestDiscoveredIdx >= 0 && p2pPairRequestDiscoveredIdx < p2pDiscoveredCount) {
@@ -7251,11 +7690,17 @@ void lvglService()
             lvglSwipeLastX = lvglLastTouchX;
             lvglSwipeLastY = lvglLastTouchY;
             lvglSwipeStartMs = now;
-            lvglSwipeCandidate = uiScreenSupportsSwipeBack(uiScreen);
+            lvglSwipeCandidate = uiScreenSupportsSwipeBack(uiScreen) &&
+                                 !lvglGestureBlocked &&
+                                 !lvglTouchOwnsHorizontalGesture();
             lvglSwipeHorizontalLocked = false;
         } else if (lvglSwipeTracking) {
             lvglSwipeLastX = lvglLastTouchX;
             lvglSwipeLastY = lvglLastTouchY;
+            if (lvglGestureBlocked) {
+                lvglSwipeCandidate = false;
+                lvglSwipeHorizontalLocked = false;
+            }
             if (lvglSwipeCandidate) {
                 const int dx = static_cast<int>(lvglSwipeLastX) - static_cast<int>(lvglSwipeStartX);
                 const int dy = static_cast<int>(lvglSwipeLastY) - static_cast<int>(lvglSwipeStartY);
@@ -8740,10 +9185,16 @@ void loadUiRuntimeConfig()
     telemetryMaxKB = uiPrefs.getUInt("tele_kb", 512);
     serialLogWsMinIntervalMs = uiPrefs.getUInt("ser_rate", SERIAL_LOG_RATE_MS_DEFAULT);
     serialLogKeepLines = static_cast<size_t>(uiPrefs.getUInt("ser_keep", SERIAL_LOG_RING_SIZE));
+    screensaverEnabled = uiPrefs.getBool("scrsvr_en", false);
+    displayIdleTimeoutMs = clampIdleTimeoutMs(uiPrefs.getULong("disp_idle", LCD_IDLE_TIMEOUT_MS_DEFAULT));
     copyTextToBuf(otaPendingPopupVersion, sizeof(otaPendingPopupVersion), uiPrefs.getString("ota_popup", ""));
     copyTextToBuf(otaLatestVersion, sizeof(otaLatestVersion), otaNormalizedVersion(uiPrefs.getString("ota_latest", "")));
     otaUpdateAvailable = uiPrefs.getBool("ota_avail", false);
     uiPrefs.end();
+    if (!OTA_FIRMWARE_FLASH_SUPPORTED) {
+        otaLatestVersion[0] = '\0';
+        otaUpdateAvailable = false;
+    }
     if (otaLatestVersion[0] != '\0' && otaCompareVersions(String(FW_VERSION), String(otaLatestVersion)) >= 0) {
         otaUpdateAvailable = false;
     }
@@ -8846,6 +9297,7 @@ static void otaUpdateTask(void *param)
 
 void otaCheckService()
 {
+    if (!OTA_FIRMWARE_FLASH_SUPPORTED) return;
     if (otaCheckTaskHandle || otaUpdateTaskHandle) return;
     if (!wifiConnectedSafe()) return;
     const unsigned long now = millis();
@@ -10023,6 +10475,10 @@ static void otaSetStatus(const String &text)
 bool otaDownloadAndApplyFromUrl(const String &url, String &errorOut)
 {
     errorOut = "";
+    if (!OTA_FIRMWARE_FLASH_SUPPORTED) {
+        errorOut = "ota_partition_unsupported";
+        return false;
+    }
     if (!wifiConnectedSafe()) {
         errorOut = "no_wifi";
         return false;
@@ -12478,6 +12934,7 @@ void loop()
     const uint32_t loopStartUs = micros();
     cpuLoadService(loopStartUs);
     lvglService();
+    screensaverService();
     bool isDown = lvglReady ? lvglTouchDown : false;
 
     const unsigned long now = millis();
@@ -12563,12 +13020,15 @@ void loop()
         ESP.restart();
     }
 
-    if (!displayAwake && (millis() - lastUserActivityMs >= LCD_IDLE_TIMEOUT_MS)) {
+    if (!displayAwake && (millis() - lastUserActivityMs >= displayIdleTimeoutMs)) {
         // Keep state as-is while sleeping.
-    } else if (displayAwake && (millis() - lastUserActivityMs >= LCD_IDLE_TIMEOUT_MS)) {
+    } else if (!screensaverActive && displayAwake && (millis() - lastUserActivityMs >= displayIdleTimeoutMs)) {
         bool allowSleep = true;
         if (batteryCharging) allowSleep = animateChargingBeforeSleep();
-        if (allowSleep) displaySetAwake(false);
+        if (allowSleep) {
+            if (screensaverEnabled) screensaverSetActive(true);
+            else displaySetAwake(false);
+        }
     }
 
     if (!displayAwake) {
