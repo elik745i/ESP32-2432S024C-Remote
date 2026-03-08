@@ -37,6 +37,7 @@ Currently supported boards:
 - Boot now renders the first screen before enabling the backlight, then fades the backlight in
 - Charging-before-sleep animation now runs a single cycle and cancels immediately on touch
 - Wake touch handling now consumes the wake gesture fully before allowing normal menu taps
+- Added global double-tap-to-sleep while keeping single-tap wake unchanged
 - Shared on-screen keyboard now supports one-shot uppercase, caps lock on double-tap, and dismiss-on-tap-away/swipe
 - Added encrypted peer-to-peer chat over LAN using UDP and public-key cryptography
 - Added encrypted global chat relay over MQTT using per-peer inbox topics
@@ -48,8 +49,11 @@ Currently supported boards:
 - Selecting a contact opens its conversation, and conversation actions are available from a 3-dot menu
 - Conversation menu supports `Clear` and `Clear for All`
 - Swipe-back inside Chat now returns from a conversation to contacts before leaving Chat
+- Chat now shows per-message delivery state: airplane while pending, green check after delivery, plus a per-message delete button
+- Airplane mode now blocks Chat send actions with a popup; `Cancel` opens Chat read-only and keeps the draft queued until airplane mode is turned off
 - Added persistent device rename in `Config`
 - Renamed devices are used in chat/discovery UI and old conversation display is normalized to current names
+- Tapping the top-bar antenna icon now opens `WiFi Config`
 - Recovery browser access is no longer limited to fixed folders; it can browse all SD folders
 
 ## Supported Hardware
@@ -181,10 +185,12 @@ Board-specific defaults:
 
 - Vertical swipe scrolls list-style screens
 - Swipe right on supported sub-screens navigates back when a clear horizontal gesture is detected, even when started away from the left edge
+- Double-tap anywhere while the display is awake turns the screen off
 - Screenshot capture is available from the `Config` screen
 - Button color feedback is intentionally delayed until a click is confirmed on release, to avoid false visual tap feedback during swipes
 - `Config -> WiFi Config` shows the saved/current STA network first and starts scanning only when `Scan` is pressed
 - `WiFi Config` also includes editable AP SSID/password fields that are saved across reboots
+- Tapping the top-bar antenna icon jumps directly to `WiFi Config`
 - Tapping a secured AP opens an on-device password popup with keyboard support and password visibility toggle
 - Tapping the keyboard `OK`/tick button in the Wi-Fi password popup acts the same as `Save`
 - The AP password field and MQTT password field also include inline eye buttons
@@ -196,7 +202,11 @@ Board-specific defaults:
 - `Chat` now opens as a contacts list first, then switches to a single conversation after contact selection
 - In conversation view, the contact name is shown in the top bar and swipe-back returns to the contacts list
 - Chat message bubbles are left/right aligned by sender and capped to roughly `75%` width
+- Outgoing messages show a left-side status badge: airplane while pending, green check after delivery
+- Each message row also includes a trashcan button on the right to delete that one message from the UI, SD history, and pending outbox
 - The conversation menu is opened from the 3-dot button; tapping away dismisses it
+- If airplane mode is on, opening Chat shows a popup with `Cancel` and `Airplane Off`
+- Choosing `Cancel` opens Chat in read-only mode; if a draft send is attempted while still blocked, the popup is shown again and the draft is retained until airplane mode is disabled
 - `Chat -> Peers` shows paired devices and discovered devices in separate sections
 - The `Scan` button forces an immediate discovery broadcast; devices are still discovered automatically in the background
 - The `Scan` button shows inline state feedback: `Scanning...`, then `Done`, then back to `Scan`
@@ -300,6 +310,9 @@ Media browser/player accepts:
 - Recent chat history is reloaded from SD when a conversation is opened
 - Only the recent in-memory window is kept in RAM; older history remains on SD
 - Conversation history is stored per contact under `/Conversations`
+- Outgoing messages show delivery state in the conversation UI
+- Individual messages can be deleted from the conversation without clearing the whole thread
+- Airplane mode can open Chat read-only, with drafts retained until radios are enabled again
 
 ## Chat Usage
 
@@ -314,13 +327,14 @@ Media browser/player accepts:
 Notes:
 - LAN chat uses encrypted UDP directly between paired devices.
 - Paired devices remain available in the contacts list even after clearing conversation history.
+- Delivered messages show a green check; messages still waiting for delivery show an airplane marker.
 
 ### MQTT chat
 
 1. Pair the devices first using the LAN flow above.
 2. On both devices, open `Config -> MQTT Config`.
 3. Enable MQTT.
-4. Enter the same broker and `Chat room` on both devices.
+4. Enter the same broker settings on both devices.
 5. Save the settings and wait for MQTT to connect.
 6. When MQTT is connected, the top bar shows an MQTT icon next to the Wi-Fi indicator.
 7. Open `Chat`, select the paired contact, and send messages normally.
@@ -329,7 +343,7 @@ Notes:
 - MQTT is used as a global relay when direct LAN delivery is not enough.
 - MQTT payloads are end-to-end encrypted per trusted peer using the same peer keys.
 - The broker can relay messages but cannot read chat contents.
-- The `Chat room` is a namespace for routing, not the trust boundary. Trust still comes from pairing.
+- The MQTT chat namespace is fixed in firmware for all remotes, so only broker settings must match.
 - `Config -> MQTT Config` includes an inline eye toggle for the MQTT password field.
 
 ### Peer management
