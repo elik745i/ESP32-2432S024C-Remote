@@ -338,6 +338,7 @@ void applyAirplaneMode(bool enabled, const char *reason);
 void lvglRefreshConfigUi();
 void lvglSaveDeviceNameEvent(lv_event_t *e);
 void lvglSetConfigKeyboardVisible(bool visible);
+void lvglShowChatAirplanePrompt();
 void cpuLoadService(uint32_t loopStartUs);
 void rgbService();
 void loadP2pConfig();
@@ -885,6 +886,8 @@ static bool chatSendAndStoreMessage(const String &peerKey, const String &text);
 static void chatStageDeferredAirplaneMessage(const String &peerKey, const String &text);
 static void chatFlushDeferredAirplaneMessage();
 static bool chatMessagePendingForPeer(const String &peerKey, const String &messageId);
+static bool chatOpenPeerConversation(const String &peerKey);
+static bool chatOpenFirstUnreadConversation();
 static bool chatDeleteMessageById(const String &peerKey, const String &messageId, const String &status);
 static bool chatDeleteMessageAt(const String &peerKey, int index);
 void lvglDeleteChatMessageEvent(lv_event_t *e);
@@ -2075,6 +2078,14 @@ void lvglTopIndicatorsTapEvent(lv_event_t *e)
     lvglOpenScreen(UI_WIFI_LIST, LV_SCR_LOAD_ANIM_MOVE_LEFT);
 }
 
+void lvglTopUnreadTapEvent(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    if (!displayAwake) return;
+    if (lvglKb && !lv_obj_has_flag(lvglKb, LV_OBJ_FLAG_HIDDEN)) lvglHideKeyboard();
+    chatOpenFirstUnreadConversation();
+}
+
 void lvglCreateTopIndicators(lv_obj_t *header, bool backToHome)
 {
     if (!header) return;
@@ -2100,6 +2111,17 @@ void lvglCreateTopIndicators(lv_obj_t *header, bool backToHome)
     lv_obj_clear_flag(wifiTap, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(wifiTap, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(wifiTap, lvglTopIndicatorsTapEvent, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *mailTap = lv_obj_create(header);
+    if (!mailTap) return;
+    lv_obj_set_size(mailTap, 30, UI_TOP_BAR_H - 2);
+    lv_obj_align(mailTap, LV_ALIGN_TOP_RIGHT, -56, 0);
+    lv_obj_set_style_bg_opa(mailTap, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(mailTap, 0, 0);
+    lv_obj_set_style_pad_all(mailTap, 0, 0);
+    lv_obj_clear_flag(mailTap, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(mailTap, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(mailTap, lvglTopUnreadTapEvent, LV_EVENT_CLICKED, nullptr);
 }
 
 void lvglEnsurePersistentTopBar()
@@ -2839,6 +2861,40 @@ static void chatSelectFirstEnabledPeer()
             break;
         }
     }
+}
+
+static bool chatOpenPeerConversation(const String &peerKey)
+{
+    if (peerKey.isEmpty()) return false;
+    const int idx = p2pFindPeerByPubKeyHex(peerKey);
+    if (idx < 0 || !p2pPeers[idx].enabled) return false;
+
+    currentChatPeerKey = p2pPeers[idx].pubKeyHex;
+    chatSetPeerUnread(currentChatPeerKey, false);
+    chatReloadRecentMessagesFromSd(currentChatPeerKey);
+
+    if (airplaneModeEnabled) {
+        lvglShowChatAirplanePrompt();
+        return true;
+    }
+
+    lvglEnsureScreenBuilt(UI_CHAT);
+    lvglRefreshChatLayout();
+    lvglRefreshChatContactsUi();
+    lvglRefreshChatUi();
+    lvglOpenScreen(UI_CHAT, LV_SCR_LOAD_ANIM_MOVE_LEFT);
+    lvglRefreshTopIndicators();
+    return true;
+}
+
+static bool chatOpenFirstUnreadConversation()
+{
+    for (int i = 0; i < p2pPeerCount; ++i) {
+        if (p2pPeers[i].enabled && p2pPeers[i].unread) {
+            return chatOpenPeerConversation(p2pPeers[i].pubKeyHex);
+        }
+    }
+    return false;
 }
 
 void chatReloadRecentMessagesFromSd(const String &peerKey)
@@ -3846,8 +3902,7 @@ void lvglOpenScreen(UiScreen screen, lv_scr_load_anim_t anim)
     if (screen == UI_WIFI_LIST) {
         lvglRefreshWifiList();
     } else if (screen == UI_CHAT) {
-        currentChatPeerKey = "";
-        chatClearCache();
+        if (currentChatPeerKey.isEmpty()) chatClearCache();
         lvglRefreshChatLayout();
         lvglRefreshChatContactsUi();
         lvglRefreshChatUi();
@@ -3911,6 +3966,10 @@ void lvglNavigateBackBySwipe()
 void lvglHomeNavEvent(lv_event_t *e)
 {
     const UiScreen target = static_cast<UiScreen>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
+    if (target == UI_CHAT) {
+        currentChatPeerKey = "";
+        chatClearCache();
+    }
     if (target == UI_CHAT && airplaneModeEnabled) {
         lvglShowChatAirplanePrompt();
         return;
@@ -4509,13 +4568,7 @@ void lvglRefreshChatContactsUi()
             [](lv_event_t *e) {
                 const int idx = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
                 if (idx < 0 || idx >= p2pPeerCount) return;
-                currentChatPeerKey = p2pPeers[idx].pubKeyHex;
-                chatSetPeerUnread(currentChatPeerKey, false);
-                chatReloadRecentMessagesFromSd(currentChatPeerKey);
-                lvglRefreshChatLayout();
-                lvglRefreshChatContactsUi();
-                lvglRefreshChatUi();
-                lvglRefreshTopIndicators();
+                chatOpenPeerConversation(p2pPeers[idx].pubKeyHex);
             },
             reinterpret_cast<void *>(static_cast<intptr_t>(i)));
         if (!btn) continue;
