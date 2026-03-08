@@ -203,17 +203,17 @@ Audio, LEDs, Sensors:
 | Function | Original ESP32 | ESP32-S3 |
 |---|---:|---:|
 | Audio output pin | 26 | 18 |
-| RGB R | 4 | 36 |
-| RGB G | 17 | 35 |
-| RGB B | 16 | 37 |
+| RGB R | 4 | reserved by octal PSRAM |
+| RGB G | 17 | reserved by octal PSRAM |
+| RGB B | 16 | reserved by octal PSRAM |
 | Battery ADC | 35 | 7 |
 | Light ADC | 34 | 6 |
 
 Notes:
 - `ESP32-S3` audio is currently disabled in firmware because the existing backend uses ESP32 internal DAC mode, which is not available on `ESP32-S3`.
-- Boot-time Wi-Fi and SD are kept conservative on the S3 build while the swap is being stabilized. Wi-Fi is enabled from explicit UI actions, and SD is mounted on demand from `Media`.
+- After removing the conflicting RGB output, the S3 build now boots through the normal Wi-Fi and SD initialization flow again, including saved STA reconnect, fallback AP behavior, web server startup, and SD-backed file manager access.
 - The initially remapped RGB pins (`35`, `36`, `37`) collide with `ESP32-S3-WROOM-1-N16R8` octal PSRAM/flash bus pins. On this module variant, those pins must not be driven for general GPIO use, so RGB output is disabled in the S3 firmware build.
-- After removing RGB output on the S3 build, explicit Wi-Fi radio startup and `Scan` became stable again. This points to the RGB-to-PSRAM pin conflict as the main cause of the earlier radio-init watchdog resets.
+- After removing RGB output on the S3 build, boot Wi-Fi, Wi-Fi scan/connect, server startup, and SD boot mount became stable again. This points to the RGB-to-PSRAM pin conflict as the main cause of the earlier watchdog resets.
 
 ## Defaults
 

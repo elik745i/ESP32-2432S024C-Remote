@@ -790,6 +790,7 @@ bool sdSpiReady = false;
 unsigned long sdLastAutoRetryMs = 0;
 bool bootSdInitPending = true;
 bool bootWifiInitPending = true;
+bool wifiRuntimeManaged = true;
 bool wifiScanInProgress = false;
 unsigned long wifiScanAnimLastMs = 0;
 uint8_t wifiScanAnimPhase = 0;
@@ -8099,6 +8100,7 @@ void applyAirplaneMode(bool enabled, const char *reason)
         WiFi.softAPdisconnect(true);
         apModeActive = false;
         WiFi.disconnect(true, false);
+        wifiRuntimeManaged = false;
         WiFi.mode(WIFI_OFF);
         stopBluetoothRadio();
         bootStaConnectInProgress = false;
@@ -8332,6 +8334,7 @@ static void stopDnsForAp()
 static void wifiEnsureRuntimeEnabled(const char *reason, wifi_mode_t mode, bool startWebServer)
 {
     if (airplaneModeEnabled) return;
+    wifiRuntimeManaged = true;
     registerWifiEvents();
     WiFi.persistent(false);
     WiFi.setAutoReconnect(false);
@@ -11193,6 +11196,7 @@ void wifiConnectionService()
 {
     if (networkSuspendedForAudio || airplaneModeEnabled) return;
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
+    if (!wifiRuntimeManaged) return;
     if (!bootWifiInitPending && WiFi.getMode() == WIFI_OFF) return;
 #endif
 
@@ -11372,11 +11376,13 @@ bool networkResumeAfterAudio()
 void setupWifiAndServer()
 {
     if (airplaneModeEnabled) {
+        wifiRuntimeManaged = false;
         WiFi.mode(WIFI_OFF);
         apModeActive = false;
         stopDnsForAp();
         return;
     }
+    wifiRuntimeManaged = true;
     registerWifiEvents();
     WiFi.persistent(false);
     WiFi.setAutoReconnect(false);
@@ -11489,18 +11495,14 @@ void setup()
     Serial.println("[BOOT] step displayBacklightFadeIn done");
     Serial.println("[BOOT] SD/network init deferred to loop");
     bootDeferredStartMs = millis();
-#if defined(BOARD_ESP32S3_3248S035_N16R8)
-    bootSdInitPending = false;
-    Serial.println("[BOOT] SD auto-init disabled on ESP32-S3 during bring-up");
-#else
     bootSdInitPending = true;
-#endif
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
-    bootWifiInitPending = false;
-    WiFi.mode(WIFI_OFF);
-    Serial.println("[BOOT] WiFi auto-init disabled on ESP32-S3 pending network stabilization");
-#else
+    Serial.println("[BOOT] SD boot init enabled on ESP32-S3 after RGB/PSRAM fix");
+#endif
     bootWifiInitPending = true;
+    wifiRuntimeManaged = true;
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+    Serial.println("[BOOT] WiFi boot init enabled on ESP32-S3 after RGB/PSRAM fix");
 #endif
     delay(20);
     sdStatsLogSnapshot(sdStatsSnapshot(), "boot");
