@@ -190,6 +190,7 @@ static constexpr uint64_t LIGHT_SLEEP_TIMER_US = 5000000ULL;
 static constexpr unsigned long SCREENSAVER_POSE_MIN_MS = 1400UL;
 static constexpr unsigned long SCREENSAVER_POSE_MAX_MS = 3200UL;
 static constexpr unsigned long SCREENSAVER_BLINK_MS = 160UL;
+static constexpr uint32_t SCREENSAVER_EYE_COLOR_RGB = 0x19E0C3UL;
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
 static constexpr int BATTERY_ADC_PIN = 7;
 static constexpr int LIGHT_ADC_PIN = 6;
@@ -227,9 +228,10 @@ static constexpr const char *AP_PASS = "12345678";
 static constexpr const char *FW_VERSION = "0.1.6";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
-static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 45000UL;
+static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
 static constexpr unsigned long OTA_RETRY_DELAY_MS = 10UL * 60UL * 1000UL;
 static constexpr size_t OTA_VERSION_TEXT_MAX = 32;
+static constexpr size_t OTA_DOWNLOAD_BUF_SIZE = 2048U;
 static constexpr unsigned long STA_RETRY_INTERVAL_MS = 5000UL;
 static constexpr bool SERIAL_TERMINAL_TRANSFER_ENABLED = false;
 static constexpr size_t SERIAL_LOG_RING_SIZE = 200;
@@ -7374,10 +7376,14 @@ static void screensaverFillRect(int32_t x0, int32_t y0, int32_t x1, int32_t y1, 
     tft.fillRect(l, t, w, h, color);
 }
 
-static void screensaverFillRectTriangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, bool flip, uint16_t color)
+static inline uint16_t screensaverDrawColor(uint8_t drawValue, uint16_t eyeColor)
 {
-    if (!flip) tft.fillTriangle(x0, y0, x1, y1, x1, y0, color);
-    else tft.fillTriangle(x0, y0, x1, y1, x0, y1, color);
+    return drawValue ? eyeColor : TFT_BLACK;
+}
+
+static void screensaverFillRectTriangle(int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint8_t drawValue, uint16_t eyeColor)
+{
+    tft.fillTriangle(x0, y0, x1, y1, x1, y0, screensaverDrawColor(drawValue, eyeColor));
 }
 
 static void screensaverFillEllipseCorner(ScreensaverCornerType corner, int16_t x0, int16_t y0, int32_t rx, int32_t ry, uint16_t color)
@@ -7489,18 +7495,18 @@ static void screensaverDrawEyeExact(int16_t centerX, int16_t centerY, const Scre
     screensaverFillRect(BLcX, BLcY, BRcX, BRcY + radiusBottom, color);
 
     if (config.slopeTop > 0) {
-        screensaverFillRectTriangle(TLcX, TLcY - radiusTop, TRcX, TRcY - radiusTop, false, color);
-        screensaverFillRectTriangle(TRcX, TRcY - radiusTop, TLcX, TLcY - radiusTop, true, color);
+        screensaverFillRectTriangle(TLcX, TLcY - radiusTop, TRcX, TRcY - radiusTop, 0, color);
+        screensaverFillRectTriangle(TRcX, TRcY - radiusTop, TLcX, TLcY - radiusTop, 1, color);
     } else if (config.slopeTop < 0) {
-        screensaverFillRectTriangle(TRcX, TRcY - radiusTop, TLcX, TLcY - radiusTop, false, color);
-        screensaverFillRectTriangle(TLcX, TLcY - radiusTop, TRcX, TRcY - radiusTop, true, color);
+        screensaverFillRectTriangle(TRcX, TRcY - radiusTop, TLcX, TLcY - radiusTop, 0, color);
+        screensaverFillRectTriangle(TLcX, TLcY - radiusTop, TRcX, TRcY - radiusTop, 1, color);
     }
     if (config.slopeBottom > 0) {
-        screensaverFillRectTriangle(BRcX + radiusBottom, BRcY + radiusBottom, BLcX - radiusBottom, BLcY + radiusBottom, false, color);
-        screensaverFillRectTriangle(BLcX - radiusBottom, BLcY + radiusBottom, BRcX + radiusBottom, BRcY + radiusBottom, true, color);
+        screensaverFillRectTriangle(BRcX + radiusBottom, BRcY + radiusBottom, BLcX - radiusBottom, BLcY + radiusBottom, 0, color);
+        screensaverFillRectTriangle(BLcX - radiusBottom, BLcY + radiusBottom, BRcX + radiusBottom, BRcY + radiusBottom, 1, color);
     } else if (config.slopeBottom < 0) {
-        screensaverFillRectTriangle(BLcX - radiusBottom, BLcY + radiusBottom, BRcX + radiusBottom, BRcY + radiusBottom, false, color);
-        screensaverFillRectTriangle(BRcX + radiusBottom, BRcY + radiusBottom, BLcX - radiusBottom, BLcY + radiusBottom, true, color);
+        screensaverFillRectTriangle(BLcX - radiusBottom, BLcY + radiusBottom, BRcX + radiusBottom, BRcY + radiusBottom, 0, color);
+        screensaverFillRectTriangle(BRcX + radiusBottom, BRcY + radiusBottom, BLcX - radiusBottom, BLcY + radiusBottom, 1, color);
     }
 
     if (radiusTop > 0) {
@@ -7524,10 +7530,14 @@ static void screensaverApplyPose(const ScreensaverPose &pose)
     const float scaleYY = 1.0f - fabsf(pose.lookY) * 0.4f;
     const float leftScaleY = (1.0f + pose.lookX * 0.2f) * scaleYY;
     const float rightScaleY = (1.0f - pose.lookX * 0.2f) * scaleYY;
+    const uint16_t eyeColor = tft.color565(
+        static_cast<uint8_t>((SCREENSAVER_EYE_COLOR_RGB >> 16) & 0xFF),
+        static_cast<uint8_t>((SCREENSAVER_EYE_COLOR_RGB >> 8) & 0xFF),
+        static_cast<uint8_t>(SCREENSAVER_EYE_COLOR_RGB & 0xFF));
 
     tft.fillScreen(TFT_BLACK);
-    screensaverDrawEyeExact(centerX - eyeSize / 2 - interDistance, centerY, preset, true, eyeScale, eyeScale * leftScaleY, TFT_WHITE);
-    screensaverDrawEyeExact(centerX + eyeSize / 2 + interDistance, centerY, preset, false, eyeScale, eyeScale * rightScaleY, TFT_WHITE);
+    screensaverDrawEyeExact(centerX - eyeSize / 2 - interDistance, centerY, preset, true, eyeScale, eyeScale * leftScaleY, eyeColor);
+    screensaverDrawEyeExact(centerX + eyeSize / 2 + interDistance, centerY, preset, false, eyeScale, eyeScale * rightScaleY, eyeColor);
 }
 
 void screensaverSetActive(bool active)
@@ -10570,6 +10580,7 @@ bool otaDownloadAndApplyFromUrl(const String &url, String &errorOut)
     HTTPClient http;
     http.setConnectTimeout(7000);
     http.setTimeout(12000);
+    http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
     if (!http.begin(client, url)) {
         errorOut = "http_begin_failed";
         return false;
@@ -10596,7 +10607,7 @@ bool otaDownloadAndApplyFromUrl(const String &url, String &errorOut)
         return false;
     }
 
-    uint8_t *buf = reinterpret_cast<uint8_t *>(allocPreferPsram(2048));
+    uint8_t *buf = reinterpret_cast<uint8_t *>(allocPreferPsram(OTA_DOWNLOAD_BUF_SIZE));
     if (!buf) {
         errorOut = "oom_buffer";
         Update.abort();
@@ -10614,7 +10625,7 @@ bool otaDownloadAndApplyFromUrl(const String &url, String &errorOut)
             delay(1);
             continue;
         }
-        const size_t toRead = avail > sizeof(buf) ? sizeof(buf) : avail;
+        const size_t toRead = avail > OTA_DOWNLOAD_BUF_SIZE ? OTA_DOWNLOAD_BUF_SIZE : avail;
         const int n = stream->readBytes(buf, toRead);
         if (n <= 0) {
             delay(1);
@@ -13119,11 +13130,14 @@ void loop()
     static wl_status_t lastWiFi = WL_DISCONNECTED;
     wl_status_t cur = wifiStatusSafe();
 
-    if (cur != lastWiFi) {
+        if (cur != lastWiFi) {
         if (cur == WL_CONNECTED) {
             bootStaConnectInProgress = false;
             const String ssid = wifiSsidSafe();
             uiStatusLine = "Connected: " + ssid;
+            if (OTA_FIRMWARE_FLASH_SUPPORTED && otaLastCheckMs == 0 && !otaCheckTaskHandle && !otaUpdateTaskHandle) {
+                otaCheckRequested = true;
+            }
             if (pendingSaveCreds && ssid == pendingSaveSsid) {
                 saveStaCreds(pendingSaveSsid, pendingSavePass);
                 pendingSaveCreds = false;

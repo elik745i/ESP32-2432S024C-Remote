@@ -2,7 +2,7 @@
 
 Firmware for Sunton-style ESP32 touch display boards with an LVGL touch UI, Wi-Fi/AP management, SD-backed recovery tools, MQTT controls, and encrypted device-to-device chat.
 
-Current firmware version: **`0.1.4`**
+Current firmware version: **`0.1.7`**
 
 Supported boards:
 - `ESP32-2432S024C` (`240x320`, `ILI9341`, `CST820`)
@@ -20,7 +20,7 @@ Supported boards:
 - Saved backlight brightness and RGB LED intensity controls in `Config`
 - Brightness and RGB slider values are persisted in `Preferences`
 - `WiFi Config` screen with current network info, manual scan, saved-network actions, and editable AP SSID/password
-- `OTA Updates` screen with periodic update checks, update-available indicator/popup, progress bar, and post-update confirmation
+- `OTA Updates` screen with boot-time and periodic update checks, update-available indicator/popup, progress bar, and post-update confirmation
 - `MQTT Config` screen for broker settings, status, and connection control
 - SD recovery browser that can browse all rooted SD folders
 - SD-backed chat history stored per contact under `/Conversations`
@@ -30,6 +30,7 @@ Supported boards:
 - `Info` screen with battery, Wi-Fi, light, CPU, SRAM, PSRAM, and SD usage indicators
 - S3 build uses PSRAM-first allocation for major UI/work buffers to reduce internal SRAM pressure
 - Swipe-back and scroll gestures are filtered to avoid triggering button clicks while navigating lists and menus
+- Screensaver now renders the exact `esp32-eyes` eye geometry adapted to each supported display resolution
 
 ## Supported Hardware
 
@@ -259,6 +260,7 @@ Board-specific defaults:
 
 - Buttons visually react on confirmed release, not on initial touch
 - Horizontal swipe-back works on supported sub-screens and no longer has to start at the far left edge
+- Swipe-back is suppressed when a drag starts on sliders, switches, or scrollable UI regions
 - Single tap wakes the display, and the wake tap is consumed before normal UI interaction resumes
 - Double-tap anywhere while awake turns the screen off
 - Double-tap sleep is ignored while the on-screen keyboard is visible
@@ -552,6 +554,12 @@ pio device monitor -b 115200
 
 - `ESP32-2432S024C` and `ESP32-3248S035` use [partitions_3mb_no_ota.csv](partitions_3mb_no_ota.csv).
 - `ESP32-S3-3248S035-N16R8` uses the stock Espressif `default_16MB.csv` OTA layout.
+
+## OTA Notes
+
+- `ESP32-S3-3248S035-N16R8` supports firmware OTA using the stock 16 MB dual-slot layout.
+- The two 4 MB ESP32 builds keep the larger single-app layout and therefore do not support firmware OTA flashing.
+- Update availability is checked shortly after boot once Wi-Fi is connected, and then rechecked periodically afterward.
 
 ## Project Structure
 
