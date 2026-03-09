@@ -2,7 +2,7 @@
 
 Firmware for Sunton-style ESP32 touch display boards with an LVGL touch UI, Wi-Fi/AP management, SD-backed recovery tools, MQTT controls, and encrypted device-to-device chat.
 
-Current firmware version: **`0.1.9`**
+Current firmware version: **`0.2.0`**
 
 Supported boards:
 - `ESP32-2432S024C` (`240x320`, `ILI9341`, `CST820`)
@@ -27,8 +27,10 @@ Supported boards:
 - Encrypted peer-to-peer LAN chat over UDP
 - Encrypted global chat relay over MQTT
 - On-device peer discovery, pairing, unpair, enable/disable, unread markers, and conversation actions
-- Built-in `Snake`, `Tetris`, and `Checkers` games with a shared touch control layout
+- Built-in `Snake`, `Tetris`, `Checkers`, and PSRAM-only `Snake 3D` games with a shared touch control layout
 - `Checkers` supports both local play against the ESP32 and contact-invite multiplayer started from chat
+- `Checkers` includes American, International, Russian, Pool, and Canadian/Sri Lankan rulesets
+- `Snake 3D` is enabled on the `ESP32-S3-3248S035-N16R8` target with a software-rendered chase camera prototype
 - `Info` screen with battery, Wi-Fi, light, CPU, SRAM, PSRAM, and SD usage indicators
 - S3 build uses PSRAM-first allocation for major UI/work buffers to reduce internal SRAM pressure
 - Swipe-back and scroll gestures are filtered to avoid triggering button clicks while navigating lists and menus

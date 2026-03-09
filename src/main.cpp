@@ -226,7 +226,7 @@ static constexpr uint16_t LIGHT_RAW_CAL_MAX = 600;
 static constexpr bool LIGHT_LOG_RAW_TO_SERIAL = false;
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.1.9";
+static constexpr const char *FW_VERSION = "0.2.0";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -356,6 +356,9 @@ void clearWifiScanResults();
 static bool normalizeSavedApCreds();
 static void snakeMaybeStoreHighScore(bool persist = false);
 static void tetrisMaybeStoreHighScore(bool persist = false);
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+static void snake3dMaybeStoreHighScore(bool persist = false);
+#endif
 void tryBootStaReconnect();
 void sampleTopIndicators();
 const char *authName(wifi_auth_mode_t auth);
@@ -404,6 +407,11 @@ uint8_t displayBacklightLevelFromPercent(uint8_t percent);
 void snakeResetGame();
 void snakePrepareGame();
 void snakeStartGame();
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+void snake3dResetGame();
+void snake3dPrepareGame();
+void snake3dStartGame();
+#endif
 void tetrisResetGame();
 void tetrisPrepareGame();
 void tetrisStartGame();
@@ -586,6 +594,9 @@ static lv_obj_t *lvglScrMqttCtrl = nullptr;
 static lv_obj_t *lvglScrSnake = nullptr;
 static lv_obj_t *lvglScrTetris = nullptr;
 static lv_obj_t *lvglScrCheckers = nullptr;
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+static lv_obj_t *lvglScrSnake3d = nullptr;
+#endif
 static lv_obj_t *lvglStatusLabel = nullptr;
 static lv_obj_t *lvglInfoList = nullptr;
 static lv_obj_t *lvglInfoBatteryValueLabel = nullptr;
@@ -698,6 +709,20 @@ static lv_obj_t *lvglCheckersOverlayBtnLabel = nullptr;
 static lv_obj_t *lvglCheckersPeerPopup = nullptr;
 static lv_obj_t *lvglCheckersPeerPopupTitle = nullptr;
 static lv_obj_t *lvglCheckersPeerPopupList = nullptr;
+static lv_obj_t *lvglCheckersVariantPopup = nullptr;
+static lv_obj_t *lvglCheckersVariantPopupTitle = nullptr;
+static lv_obj_t *lvglCheckersVariantPopupList = nullptr;
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+static lv_obj_t *lvglSnake3dBoardObj = nullptr;
+static lv_obj_t *lvglSnake3dScoreLabel = nullptr;
+static lv_obj_t *lvglSnake3dBestLabel = nullptr;
+static lv_obj_t *lvglSnake3dPauseBtnLabel = nullptr;
+static lv_obj_t *lvglSnake3dOverlay = nullptr;
+static lv_obj_t *lvglSnake3dOverlayTitle = nullptr;
+static lv_obj_t *lvglSnake3dOverlaySubLabel = nullptr;
+static lv_obj_t *lvglSnake3dOverlayBtn = nullptr;
+static lv_obj_t *lvglSnake3dOverlayBtnLabel = nullptr;
+#endif
 static lv_obj_t *lvglTopBarRoot = nullptr;
 static constexpr uint8_t LVGL_MAX_TOP_INDICATORS = 16;
 static lv_obj_t *lvglTopIndicators[LVGL_MAX_TOP_INDICATORS] = {};
@@ -988,7 +1013,8 @@ enum UiScreen : uint8_t {
     UI_CONFIG_MQTT_CONTROLS,
     UI_GAME_SNAKE,
     UI_GAME_TETRIS,
-    UI_GAME_CHECKERS
+    UI_GAME_CHECKERS,
+    UI_GAME_SNAKE3D
 };
 
 UiScreen uiScreen = UI_HOME;
@@ -1325,6 +1351,32 @@ uint16_t snakeScore = 0;
 uint16_t snakeHighScore = 0;
 unsigned long snakeLastStepMs = 0;
 
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+static constexpr int SNAKE3D_COLS = 5;
+static constexpr int SNAKE3D_ROWS = 5;
+static constexpr int SNAKE3D_LAYERS = 6;
+static constexpr int SNAKE3D_MAX_CELLS = SNAKE3D_COLS * SNAKE3D_ROWS * SNAKE3D_LAYERS;
+static constexpr unsigned long SNAKE3D_STEP_MS_START = 720;
+static constexpr unsigned long SNAKE3D_STEP_MS_MIN = 280;
+static constexpr unsigned long SNAKE3D_STEP_MS_DELTA_PER_FOOD = 12;
+int8_t snake3dDir = 1; // 0 up,1 right,2 down,3 left,4 climb,5 dive
+int8_t snake3dNextDir = 1;
+int8_t snake3dViewDir = 1;
+int snake3dLen = 0;
+int8_t snake3dX[SNAKE3D_MAX_CELLS];
+int8_t snake3dY[SNAKE3D_MAX_CELLS];
+int8_t snake3dZ[SNAKE3D_MAX_CELLS];
+int8_t snake3dFoodX = 0;
+int8_t snake3dFoodY = 0;
+int8_t snake3dFoodZ = 0;
+bool snake3dStarted = false;
+bool snake3dPaused = false;
+bool snake3dGameOver = false;
+uint16_t snake3dScore = 0;
+uint16_t snake3dHighScore = 0;
+unsigned long snake3dLastStepMs = 0;
+#endif
+
 static constexpr int TETRIS_COLS = 10;
 static constexpr int TETRIS_ROWS = 16;
 static constexpr int TETRIS_CELL = 12;
@@ -1345,8 +1397,8 @@ uint16_t tetrisScore = 0;
 uint16_t tetrisHighScore = 0;
 unsigned long tetrisLastStepMs = 0;
 
-static constexpr int CHECKERS_SIZE = 8;
-static constexpr int CHECKERS_MAX_HINT_MOVES = 8;
+static constexpr int CHECKERS_MAX_BOARD_SIZE = 12;
+static constexpr int CHECKERS_MAX_HINT_MOVES = 32;
 static constexpr int CHECKERS_ACTION_BAR_H = 46;
 static constexpr int CHECKERS_CONTROL_MSG_MARKERS = 4;
 static const char *const CHECKERS_CONTROL_PREFIXES[CHECKERS_CONTROL_MSG_MARKERS] = {
@@ -1362,6 +1414,16 @@ enum CheckersMode : uint8_t {
     CHECKERS_MODE_TAG
 };
 
+enum CheckersVariant : uint8_t {
+    CHECKERS_VARIANT_AMERICAN = 0,
+    CHECKERS_VARIANT_INTERNATIONAL,
+    CHECKERS_VARIANT_RUSSIAN,
+    CHECKERS_VARIANT_POOL,
+    CHECKERS_VARIANT_CANADIAN
+};
+
+static const char *checkersVariantName(CheckersVariant variant);
+
 struct CheckersMove {
     int8_t fromX;
     int8_t fromY;
@@ -1372,9 +1434,10 @@ struct CheckersMove {
     bool capture;
 };
 
-static constexpr int CHECKERS_MAX_MOVES = 32;
-int8_t checkersBoard[CHECKERS_SIZE][CHECKERS_SIZE] = {};
+static constexpr int CHECKERS_MAX_MOVES = 128;
+int8_t checkersBoard[CHECKERS_MAX_BOARD_SIZE][CHECKERS_MAX_BOARD_SIZE] = {};
 CheckersMode checkersMode = CHECKERS_MODE_IDLE;
+CheckersVariant checkersVariant = CHECKERS_VARIANT_AMERICAN;
 String checkersSessionId;
 String checkersPeerKey;
 int8_t checkersLocalSide = 0;
@@ -1386,6 +1449,7 @@ int8_t checkersForcedY = -1;
 bool checkersStarted = false;
 bool checkersWaitingForRemote = false;
 bool checkersPeerPopupOpen = false;
+bool checkersVariantPopupOpen = true;
 bool checkersGameOver = false;
 int8_t checkersWinnerSide = 0;
 unsigned long checkersAiDueMs = 0;
@@ -2507,7 +2571,7 @@ static inline bool lvglClickSuppressed()
 
 static inline bool uiScreenKeepsDisplayAwake()
 {
-    return uiScreen == UI_GAME_SNAKE || uiScreen == UI_GAME_TETRIS || uiScreen == UI_GAME_CHECKERS;
+    return uiScreen == UI_GAME_SNAKE || uiScreen == UI_GAME_TETRIS || uiScreen == UI_GAME_CHECKERS || uiScreen == UI_GAME_SNAKE3D;
 }
 
 static inline void lvglSuppressClicksAfterGesture()
@@ -3067,6 +3131,7 @@ static const char *uiScreenName(UiScreen screen)
         case UI_CONFIG_MQTT_CONFIG: return "MQTT Config";
         case UI_CONFIG_MQTT_CONTROLS: return "MQTT Controls";
         case UI_GAME_CHECKERS: return "Checkers";
+        case UI_GAME_SNAKE3D: return "Snake 3D";
         default: return "Screen";
     }
 }
@@ -3427,15 +3492,24 @@ static String checkersVisibleBodyFromRawText(const String &text)
     return text.substring(nl + 1);
 }
 
-static bool checkersParseInviteText(const String &text, String &sessionId)
+static bool checkersParseInviteText(const String &text, String &sessionId, CheckersVariant *variantOut = nullptr)
 {
     if (!checkersRawTextStartsWith(text, "@CHK_INVITE|")) return false;
     const int lineEnd = text.indexOf('\n');
     const String marker = (lineEnd >= 0) ? text.substring(0, lineEnd) : text;
     const int firstSep = marker.indexOf('|');
+    const int secondSep = (firstSep >= 0) ? marker.indexOf('|', firstSep + 1) : -1;
     if (firstSep < 0 || firstSep >= (marker.length() - 1)) return false;
-    sessionId = marker.substring(firstSep + 1);
+    sessionId = (secondSep > firstSep) ? marker.substring(firstSep + 1, secondSep) : marker.substring(firstSep + 1);
     sessionId.trim();
+    if (variantOut) {
+        int rawVariant = static_cast<int>(CHECKERS_VARIANT_AMERICAN);
+        if (secondSep > firstSep && secondSep < (marker.length() - 1)) rawVariant = marker.substring(secondSep + 1).toInt();
+        if (rawVariant < static_cast<int>(CHECKERS_VARIANT_AMERICAN) || rawVariant > static_cast<int>(CHECKERS_VARIANT_CANADIAN)) {
+            rawVariant = static_cast<int>(CHECKERS_VARIANT_AMERICAN);
+        }
+        *variantOut = static_cast<CheckersVariant>(rawVariant);
+    }
     return !sessionId.isEmpty();
 }
 
@@ -3486,7 +3560,8 @@ static bool checkersParseMoveText(const String &text, String &sessionId, Checker
 
 static String checkersBuildInviteText(const String &sessionId, const String &name)
 {
-    return "@CHK_INVITE|" + sessionId + "\nCheckers invite from " + name + "\nTag multiplayer\nTap Play to join.";
+    return "@CHK_INVITE|" + sessionId + "|" + String(static_cast<int>(checkersVariant)) +
+           "\nCheckers invite from " + name + "\n" + checkersVariantName(checkersVariant) + "\nTap Play to join.";
 }
 
 static String checkersBuildAcceptText(const String &sessionId)
@@ -4225,6 +4300,9 @@ static void mediaEnsureStorageReadyForUi();
 void lvglOpenSnakeEvent(lv_event_t *e);
 void lvglOpenTetrisEvent(lv_event_t *e);
 void lvglOpenCheckersEvent(lv_event_t *e);
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+void lvglOpenSnake3dEvent(lv_event_t *e);
+#endif
 void lvglOpenMqttCfgEvent(lv_event_t *e);
 void lvglOpenMqttCtrlEvent(lv_event_t *e);
 void lvglOpenChatPeersEvent(lv_event_t *e);
@@ -4267,6 +4345,9 @@ void lvglOtaAvailablePromptEvent(lv_event_t *e);
 void lvglRefreshSnakeBoard();
 void lvglRefreshTetrisBoard();
 void lvglRefreshCheckersBoard();
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+void lvglRefreshSnake3dBoard();
+#endif
 void lvglSnakeBoardDrawEvent(lv_event_t *e);
 void lvglSnakeRestartEvent(lv_event_t *e);
 void lvglSnakeDirEvent(lv_event_t *e);
@@ -4286,8 +4367,23 @@ void lvglCheckersBackEvent(lv_event_t *e);
 void lvglCheckersReplayEvent(lv_event_t *e);
 void lvglCheckersInvitePlayEvent(lv_event_t *e);
 void lvglCheckersPeerSelectEvent(lv_event_t *e);
+void lvglCheckersVariantSelectEvent(lv_event_t *e);
 void lvglChatPeerActionEvent(lv_event_t *e);
 void checkersTick();
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+void lvglSnake3dBoardDrawEvent(lv_event_t *e);
+void lvglSnake3dRestartEvent(lv_event_t *e);
+void lvglSnake3dDirEvent(lv_event_t *e);
+void lvglSnake3dPauseEvent(lv_event_t *e);
+void snake3dTick();
+#else
+inline void snake3dTick() {}
+#endif
+static int checkersBoardSize();
+static int checkersStartRows();
+static bool checkersMenCaptureBackward();
+static bool checkersFlyingKings();
+static bool checkersPromotionContinuesCapture();
 
 inline void lvglLoadScreen(lv_obj_t *target, lv_scr_load_anim_t anim)
 {
@@ -4312,6 +4408,7 @@ static bool uiScreenSupportsSwipeBack(UiScreen screen)
         case UI_GAME_SNAKE:
         case UI_GAME_TETRIS:
         case UI_GAME_CHECKERS:
+        case UI_GAME_SNAKE3D:
             return true;
         default:
             return false;
@@ -4337,6 +4434,9 @@ lv_obj_t *lvglScreenForUi(UiScreen screen)
         case UI_GAME_SNAKE: return lvglScrSnake;
         case UI_GAME_TETRIS: return lvglScrTetris;
         case UI_GAME_CHECKERS: return lvglScrCheckers;
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+        case UI_GAME_SNAKE3D: return lvglScrSnake3d;
+#endif
         default: return nullptr;
     }
 }
@@ -4728,6 +4828,9 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglCreateMenuButton(gamesWrap, "Snake", lv_color_hex(0x3A8F4B), lvglOpenSnakeEvent, nullptr);
             lvglCreateMenuButton(gamesWrap, "Tetris", lv_color_hex(0x376B93), lvglOpenTetrisEvent, nullptr);
             lvglCreateMenuButton(gamesWrap, "Checkers", lv_color_hex(0x8A5A25), lvglOpenCheckersEvent, nullptr);
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+            lvglCreateMenuButton(gamesWrap, "Snake 3D", lv_color_hex(0x5A4CC7), lvglOpenSnake3dEvent, nullptr);
+#endif
             break;
         }
         case UI_CONFIG: {
@@ -5172,10 +5275,10 @@ void lvglEnsureScreenBuilt(UiScreen screen)
                     lv_obj_set_style_text_color(lvglSnakeBestLabel, lv_color_hex(0xBBD2E6), 0);
                 }
 
-                lvglSnakeOverlay = lv_obj_create(lvglScrSnake);
+                lvglSnakeOverlay = lv_obj_create(lvglSnakeBoardObj);
                 if (lvglSnakeOverlay) {
-                    lv_obj_set_size(lvglSnakeOverlay, min<lv_coord_t>(DISPLAY_WIDTH - 40, 180), min<lv_coord_t>(UI_CONTENT_H - 24, 144));
-                    lv_obj_align(lvglSnakeOverlay, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y + 8);
+                    lv_obj_set_size(lvglSnakeOverlay, min<lv_coord_t>(snakeBoardWidth - 16, 324), min<lv_coord_t>(snakeBoardHeight - 16, 389));
+                    lv_obj_center(lvglSnakeOverlay);
                     lv_obj_set_style_bg_color(lvglSnakeOverlay, lv_color_hex(0x12202B), 0);
                     lv_obj_set_style_bg_opa(lvglSnakeOverlay, LV_OPA_90, 0);
                     lv_obj_set_style_border_width(lvglSnakeOverlay, 1, 0);
@@ -5415,6 +5518,39 @@ void lvglEnsureScreenBuilt(UiScreen screen)
                 }
             }
 
+            lvglCheckersVariantPopup = lv_obj_create(lvglScrCheckers);
+            if (lvglCheckersVariantPopup) {
+                lv_obj_set_size(lvglCheckersVariantPopup, DISPLAY_WIDTH - 28, min<lv_coord_t>(UI_CONTENT_H - 40, 220));
+                lv_obj_align(lvglCheckersVariantPopup, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y + 8);
+                lv_obj_set_style_bg_color(lvglCheckersVariantPopup, lv_color_hex(0x16212C), 0);
+                lv_obj_set_style_border_color(lvglCheckersVariantPopup, lv_color_hex(0x536274), 0);
+                lv_obj_set_style_border_width(lvglCheckersVariantPopup, 1, 0);
+                lv_obj_set_style_radius(lvglCheckersVariantPopup, 12, 0);
+                lv_obj_set_style_pad_all(lvglCheckersVariantPopup, 8, 0);
+                lv_obj_set_style_pad_row(lvglCheckersVariantPopup, 6, 0);
+                lv_obj_set_flex_flow(lvglCheckersVariantPopup, LV_FLEX_FLOW_COLUMN);
+                lv_obj_clear_flag(lvglCheckersVariantPopup, LV_OBJ_FLAG_SCROLLABLE);
+                lv_obj_add_flag(lvglCheckersVariantPopup, LV_OBJ_FLAG_HIDDEN);
+
+                lvglCheckersVariantPopupTitle = lv_label_create(lvglCheckersVariantPopup);
+                if (lvglCheckersVariantPopupTitle) {
+                    lv_label_set_text(lvglCheckersVariantPopupTitle, "Choose Rule Set");
+                    lv_obj_set_style_text_color(lvglCheckersVariantPopupTitle, lv_color_hex(0xEAF2F9), 0);
+                }
+
+                lvglCheckersVariantPopupList = lv_obj_create(lvglCheckersVariantPopup);
+                if (lvglCheckersVariantPopupList) {
+                    lv_obj_set_size(lvglCheckersVariantPopupList, lv_pct(100), min<lv_coord_t>(148, UI_CONTENT_H - 110));
+                    lv_obj_set_style_bg_opa(lvglCheckersVariantPopupList, LV_OPA_TRANSP, 0);
+                    lv_obj_set_style_border_width(lvglCheckersVariantPopupList, 0, 0);
+                    lv_obj_set_style_pad_all(lvglCheckersVariantPopupList, 0, 0);
+                    lv_obj_set_style_pad_row(lvglCheckersVariantPopupList, 6, 0);
+                    lv_obj_set_flex_flow(lvglCheckersVariantPopupList, LV_FLEX_FLOW_COLUMN);
+                    lv_obj_set_scroll_dir(lvglCheckersVariantPopupList, LV_DIR_VER);
+                    lv_obj_set_scrollbar_mode(lvglCheckersVariantPopupList, LV_SCROLLBAR_MODE_OFF);
+                }
+            }
+
             lv_obj_t *checkersBar = lv_obj_create(lvglScrCheckers);
             lv_obj_set_size(checkersBar, lv_pct(100), CHECKERS_ACTION_BAR_H);
             lv_obj_align(checkersBar, LV_ALIGN_BOTTOM_MID, 0, 0);
@@ -5436,12 +5572,105 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             checkersStarted = false;
             checkersGameOver = false;
             checkersPeerPopupOpen = false;
+            checkersVariantPopupOpen = true;
             checkersWinnerSide = 0;
             checkersClearSelection();
             checkersClearSession();
             lvglRefreshCheckersBoard();
             break;
         }
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+        case UI_GAME_SNAKE3D: {
+            lvglScrSnake3d = lvglCreateScreenBase("Snake 3D", false);
+            const lv_coord_t snake3dControlsHeight = 138;
+            const lv_coord_t snake3dBoardTop = UI_CONTENT_TOP_Y + 4;
+            const lv_coord_t snake3dBoardWidth = DISPLAY_WIDTH - 10;
+            const lv_coord_t snake3dBoardHeight = UI_CONTENT_H - snake3dControlsHeight - 10;
+            const lv_coord_t snake3dPadBtn = (DISPLAY_WIDTH >= 460) ? 54 : 40;
+
+            lvglSnake3dBoardObj = lv_obj_create(lvglScrSnake3d);
+            if (lvglSnake3dBoardObj) {
+                lv_obj_set_size(lvglSnake3dBoardObj, snake3dBoardWidth, snake3dBoardHeight);
+                lv_obj_align(lvglSnake3dBoardObj, LV_ALIGN_TOP_MID, 0, snake3dBoardTop);
+                lv_obj_set_style_bg_color(lvglSnake3dBoardObj, lv_color_hex(0x07111A), 0);
+                lv_obj_set_style_border_width(lvglSnake3dBoardObj, 0, 0);
+                lv_obj_set_style_radius(lvglSnake3dBoardObj, 8, 0);
+                lv_obj_clear_flag(lvglSnake3dBoardObj, LV_OBJ_FLAG_SCROLLABLE);
+                lv_obj_add_event_cb(lvglSnake3dBoardObj, lvglSnake3dBoardDrawEvent, LV_EVENT_DRAW_MAIN, nullptr);
+
+                lvglSnake3dScoreLabel = lv_label_create(lvglSnake3dBoardObj);
+                if (lvglSnake3dScoreLabel) {
+                    lv_obj_align(lvglSnake3dScoreLabel, LV_ALIGN_TOP_LEFT, 10, 8);
+                    lv_obj_set_style_text_color(lvglSnake3dScoreLabel, lv_color_hex(0xEAF2F9), 0);
+                }
+                lvglSnake3dBestLabel = lv_label_create(lvglSnake3dBoardObj);
+                if (lvglSnake3dBestLabel) {
+                    lv_obj_align(lvglSnake3dBestLabel, LV_ALIGN_TOP_RIGHT, -10, 8);
+                    lv_obj_set_style_text_color(lvglSnake3dBestLabel, lv_color_hex(0xBBD2E6), 0);
+                }
+
+                lvglSnake3dOverlay = lv_obj_create(lvglSnake3dBoardObj);
+                if (lvglSnake3dOverlay) {
+                    lv_obj_set_size(lvglSnake3dOverlay, min<lv_coord_t>(snake3dBoardWidth - 16, 250), min<lv_coord_t>(snake3dBoardHeight - 16, 196));
+                    lv_obj_center(lvglSnake3dOverlay);
+                    lv_obj_set_style_bg_color(lvglSnake3dOverlay, lv_color_hex(0x102030), 0);
+                    lv_obj_set_style_bg_opa(lvglSnake3dOverlay, LV_OPA_90, 0);
+                    lv_obj_set_style_border_width(lvglSnake3dOverlay, 1, 0);
+                    lv_obj_set_style_border_color(lvglSnake3dOverlay, lv_color_hex(0x48627A), 0);
+                    lv_obj_set_style_radius(lvglSnake3dOverlay, 14, 0);
+                    lv_obj_set_style_pad_all(lvglSnake3dOverlay, 12, 0);
+                    lv_obj_set_style_pad_row(lvglSnake3dOverlay, 10, 0);
+                    lv_obj_set_flex_flow(lvglSnake3dOverlay, LV_FLEX_FLOW_COLUMN);
+                    lv_obj_set_flex_align(lvglSnake3dOverlay, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+                    lv_obj_clear_flag(lvglSnake3dOverlay, LV_OBJ_FLAG_SCROLLABLE);
+
+                    lvglSnake3dOverlayTitle = lv_label_create(lvglSnake3dOverlay);
+                    if (lvglSnake3dOverlayTitle) lv_obj_set_style_text_color(lvglSnake3dOverlayTitle, lv_color_hex(0xF4F7FB), 0);
+                    lvglSnake3dOverlaySubLabel = lv_label_create(lvglSnake3dOverlay);
+                    if (lvglSnake3dOverlaySubLabel) {
+                        lv_obj_set_width(lvglSnake3dOverlaySubLabel, lv_pct(100));
+                        lv_label_set_long_mode(lvglSnake3dOverlaySubLabel, LV_LABEL_LONG_WRAP);
+                        lv_obj_set_style_text_align(lvglSnake3dOverlaySubLabel, LV_TEXT_ALIGN_CENTER, 0);
+                        lv_obj_set_style_text_color(lvglSnake3dOverlaySubLabel, lv_color_hex(0xB7C8D7), 0);
+                    }
+                    lvglSnake3dOverlayBtn = makeSmallBtn(lvglSnake3dOverlay, "Start", 128, 42, lv_color_hex(0x5A4CC7), lvglSnake3dRestartEvent);
+                    if (lvglSnake3dOverlayBtn) lvglSnake3dOverlayBtnLabel = lv_obj_get_child(lvglSnake3dOverlayBtn, 0);
+                }
+            }
+
+            lv_obj_t *snake3dCtl = lv_obj_create(lvglScrSnake3d);
+            lv_obj_set_size(snake3dCtl, lv_pct(100), snake3dControlsHeight);
+            lv_obj_align(snake3dCtl, LV_ALIGN_BOTTOM_MID, 0, 0);
+            lv_obj_set_style_bg_color(snake3dCtl, lv_color_hex(0x101922), 0);
+            lv_obj_set_style_bg_opa(snake3dCtl, LV_OPA_COVER, 0);
+            lv_obj_set_style_border_width(snake3dCtl, 0, 0);
+            lv_obj_set_style_radius(snake3dCtl, 0, 0);
+            lv_obj_set_style_pad_all(snake3dCtl, 0, 0);
+            lv_obj_clear_flag(snake3dCtl, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *upBtn = makeSmallBtn(snake3dCtl, LV_SYMBOL_UP, snake3dPadBtn * 2, snake3dPadBtn - 2, lv_color_hex(0x2F6D86), lvglSnake3dDirEvent, reinterpret_cast<void *>(static_cast<intptr_t>(0)));
+            if (upBtn) lv_obj_align(upBtn, LV_ALIGN_TOP_MID, 0, 4);
+            lv_obj_t *leftBtn = makeSmallBtn(snake3dCtl, LV_SYMBOL_LEFT, snake3dPadBtn * 2, snake3dPadBtn - 2, lv_color_hex(0x2F6D86), lvglSnake3dDirEvent, reinterpret_cast<void *>(static_cast<intptr_t>(3)));
+            if (leftBtn) lv_obj_align(leftBtn, LV_ALIGN_CENTER, -(snake3dPadBtn + 34), 8);
+            lv_obj_t *pauseBtn = makeSmallBtn(snake3dCtl, LV_SYMBOL_PLAY, snake3dPadBtn * 2, snake3dPadBtn - 2, lv_color_hex(0x5A4CC7), lvglSnake3dPauseEvent, nullptr);
+            if (pauseBtn) {
+                lv_obj_align(pauseBtn, LV_ALIGN_CENTER, 0, 8);
+                lvglSnake3dPauseBtnLabel = lv_obj_get_child(pauseBtn, 0);
+            }
+            lv_obj_t *rightBtn = makeSmallBtn(snake3dCtl, LV_SYMBOL_RIGHT, snake3dPadBtn * 2, snake3dPadBtn - 2, lv_color_hex(0x2F6D86), lvglSnake3dDirEvent, reinterpret_cast<void *>(static_cast<intptr_t>(1)));
+            if (rightBtn) lv_obj_align(rightBtn, LV_ALIGN_CENTER, snake3dPadBtn + 34, 8);
+            lv_obj_t *downBtn = makeSmallBtn(snake3dCtl, LV_SYMBOL_DOWN, snake3dPadBtn * 2, snake3dPadBtn - 2, lv_color_hex(0x2F6D86), lvglSnake3dDirEvent, reinterpret_cast<void *>(static_cast<intptr_t>(2)));
+            if (downBtn) lv_obj_align(downBtn, LV_ALIGN_BOTTOM_MID, 0, -6);
+            lv_obj_t *ascendBtn = makeSmallBtn(snake3dCtl, "Z+", snake3dPadBtn * 2, 28, lv_color_hex(0x355C9A), lvglSnake3dDirEvent, reinterpret_cast<void *>(static_cast<intptr_t>(4)));
+            if (ascendBtn) lv_obj_align(ascendBtn, LV_ALIGN_TOP_LEFT, 8, 8);
+            lv_obj_t *descendBtn = makeSmallBtn(snake3dCtl, "Z-", snake3dPadBtn * 2, 28, lv_color_hex(0x6C4CA0), lvglSnake3dDirEvent, reinterpret_cast<void *>(static_cast<intptr_t>(5)));
+            if (descendBtn) lv_obj_align(descendBtn, LV_ALIGN_TOP_RIGHT, -8, 8);
+
+            snake3dPrepareGame();
+            lvglRefreshSnake3dBoard();
+            break;
+        }
+#endif
         default:
             break;
     }
@@ -5517,6 +5746,7 @@ void lvglNavigateBackBySwipe()
         case UI_GAME_SNAKE:
         case UI_GAME_TETRIS:
         case UI_GAME_CHECKERS:
+        case UI_GAME_SNAKE3D:
             lvglOpenScreen(UI_GAMES, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
             break;
         case UI_CONFIG_MQTT_CONFIG:
@@ -7031,9 +7261,21 @@ void lvglRefreshInfoPanel()
     }
 
     const uint32_t psramUsed = (psramTotal >= psramFree) ? (psramTotal - psramFree) : 0U;
-    const uint8_t psramPct = (psramTotal > 0) ? static_cast<uint8_t>((static_cast<uint64_t>(psramUsed) * 100ULL) / psramTotal) : 0U;
+    const uint32_t psramPctTenths = (psramTotal > 0)
+                                        ? static_cast<uint32_t>((static_cast<uint64_t>(psramUsed) * 1000ULL + (psramTotal / 2ULL)) / psramTotal)
+                                        : 0U;
+    const uint8_t psramPct = static_cast<uint8_t>(min<uint32_t>(100U, (psramPctTenths + 5U) / 10U));
     if (lv_obj_t *psramValue = lvglInfoCardValueLabel(lvglInfoPsramCard)) {
-        if (psramTotal > 0) lv_label_set_text_fmt(psramValue, "%u%%", static_cast<unsigned int>(psramPct));
+        if (psramTotal > 0) {
+            if (psramPctTenths < 100U) {
+                lv_label_set_text_fmt(psramValue,
+                                      "%u.%u%%",
+                                      static_cast<unsigned int>(psramPctTenths / 10U),
+                                      static_cast<unsigned int>(psramPctTenths % 10U));
+            } else {
+                lv_label_set_text_fmt(psramValue, "%u%%", static_cast<unsigned int>(psramPct));
+            }
+        }
         else lv_label_set_text(psramValue, "--");
     }
     if (lv_obj_t *psramSub = lvglInfoCardSubLabel(lvglInfoPsramCard)) {
@@ -8135,22 +8377,18 @@ void lvglRefreshSnakeBoard()
     if (lvglSnakeOverlay) {
         const bool showOverlay = !snakeStarted || snakeGameOver || snakePaused;
         const bool pauseOverlay = snakePaused && snakeStarted && !snakeGameOver;
-        lv_coord_t overlayW = pauseOverlay ? min<lv_coord_t>(DISPLAY_WIDTH - 64, 140) : min<lv_coord_t>(DISPLAY_WIDTH - 40, 180);
-        lv_coord_t overlayH = pauseOverlay ? 76 : min<lv_coord_t>(UI_CONTENT_H - 24, 144);
-        lv_coord_t overlayX = (DISPLAY_WIDTH - overlayW) / 2;
-        lv_coord_t overlayY = UI_CONTENT_TOP_Y + 8;
+        lv_coord_t overlayW = pauseOverlay ? min<lv_coord_t>(DISPLAY_WIDTH - 64, 140) : min<lv_coord_t>(DISPLAY_WIDTH - 20, 324);
+        lv_coord_t overlayH = pauseOverlay ? 76 : min<lv_coord_t>(UI_CONTENT_H - 8, 389);
         if (lvglSnakeBoardObj) {
             lv_area_t boardCoords;
             lv_obj_get_coords(lvglSnakeBoardObj, &boardCoords);
             const lv_coord_t boardWidth = static_cast<lv_coord_t>(boardCoords.x2 - boardCoords.x1 + 1);
             const lv_coord_t boardHeight = static_cast<lv_coord_t>(boardCoords.y2 - boardCoords.y1 + 1);
             overlayW = min<lv_coord_t>(overlayW, max<lv_coord_t>(120, boardWidth - 16));
-            overlayH = min<lv_coord_t>(overlayH, max<lv_coord_t>(76, boardHeight - 16));
-            overlayX = boardCoords.x1 + ((boardWidth - overlayW) / 2);
-            overlayY = boardCoords.y1 + ((boardHeight - overlayH) / 2);
+            overlayH = min<lv_coord_t>(overlayH, max<lv_coord_t>(114, boardHeight - 16));
         }
         lv_obj_set_size(lvglSnakeOverlay, overlayW, overlayH);
-        lv_obj_set_pos(lvglSnakeOverlay, overlayX, overlayY);
+        lv_obj_center(lvglSnakeOverlay);
         lv_obj_move_foreground(lvglSnakeOverlay);
         if (showOverlay) lv_obj_clear_flag(lvglSnakeOverlay, LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(lvglSnakeOverlay, LV_OBJ_FLAG_HIDDEN);
@@ -8172,6 +8410,380 @@ void lvglRefreshSnakeBoard()
     }
     if (lvglSnakePauseBtnLabel) lv_label_set_text(lvglSnakePauseBtnLabel, (!snakeStarted || snakePaused) ? LV_SYMBOL_PLAY : LV_SYMBOL_PAUSE);
 }
+
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+struct Snake3dVec {
+    float x;
+    float y;
+    float z;
+};
+
+struct Snake3dCamera {
+    Snake3dVec pos;
+    Snake3dVec forward;
+    Snake3dVec right;
+    Snake3dVec up;
+};
+
+static Snake3dVec snake3dVecSub(const Snake3dVec &a, const Snake3dVec &b)
+{
+    return {a.x - b.x, a.y - b.y, a.z - b.z};
+}
+
+static Snake3dVec snake3dVecAdd(const Snake3dVec &a, const Snake3dVec &b)
+{
+    return {a.x + b.x, a.y + b.y, a.z + b.z};
+}
+
+static Snake3dVec snake3dVecScale(const Snake3dVec &v, float s)
+{
+    return {v.x * s, v.y * s, v.z * s};
+}
+
+static float snake3dVecDot(const Snake3dVec &a, const Snake3dVec &b)
+{
+    return (a.x * b.x) + (a.y * b.y) + (a.z * b.z);
+}
+
+static Snake3dVec snake3dVecCross(const Snake3dVec &a, const Snake3dVec &b)
+{
+    return {
+        (a.y * b.z) - (a.z * b.y),
+        (a.z * b.x) - (a.x * b.z),
+        (a.x * b.y) - (a.y * b.x)
+    };
+}
+
+static Snake3dVec snake3dVecNormalize(const Snake3dVec &v)
+{
+    const float len = sqrtf((v.x * v.x) + (v.y * v.y) + (v.z * v.z));
+    if (len <= 0.0001f) return {0.0f, 0.0f, 1.0f};
+    return {v.x / len, v.y / len, v.z / len};
+}
+
+static lv_color_t snake3dMixColor(lv_color_t a, lv_color_t b, uint8_t mix)
+{
+    return lv_color_mix(a, b, mix);
+}
+
+static void snake3dFillQuad(lv_draw_ctx_t *drawCtx, const lv_point_t pts[4], lv_color_t color, lv_opa_t opa = LV_OPA_COVER)
+{
+    if (!drawCtx) return;
+    int minY = pts[0].y;
+    int maxY = pts[0].y;
+    for (int i = 1; i < 4; ++i) {
+        if (pts[i].y < minY) minY = pts[i].y;
+        if (pts[i].y > maxY) maxY = pts[i].y;
+    }
+    for (int y = minY; y <= maxY; ++y) {
+        int hits[8];
+        int hitCount = 0;
+        for (int i = 0; i < 4; ++i) {
+            const lv_point_t a = pts[i];
+            const lv_point_t b = pts[(i + 1) & 3];
+            if (a.y == b.y) continue;
+            const int yMin = min(a.y, b.y);
+            const int yMax = max(a.y, b.y);
+            if (y < yMin || y >= yMax) continue;
+            const float t = static_cast<float>(y - a.y) / static_cast<float>(b.y - a.y);
+            hits[hitCount++] = a.x + static_cast<int>((b.x - a.x) * t);
+        }
+        if (hitCount < 2) continue;
+        if (hits[1] < hits[0]) {
+            const int tmp = hits[0];
+            hits[0] = hits[1];
+            hits[1] = tmp;
+        }
+        lvglDrawLineSeg(drawCtx, hits[0], y, hits[1], y, color, 1, opa);
+    }
+}
+
+static Snake3dVec snake3dGridToWorld(float gx, float gy, float gz, float spacing)
+{
+    Snake3dVec v = {};
+    v.x = (gx - ((SNAKE3D_COLS - 1) * 0.5f)) * spacing;
+    v.y = gz * (spacing * 0.78f);
+    v.z = (((SNAKE3D_ROWS - 1) * 0.5f) - gy) * spacing;
+    return v;
+}
+
+static Snake3dVec snake3dForwardForDir(int8_t dir)
+{
+    switch (dir) {
+        case 0: return {0.0f, 0.0f, 1.0f};
+        case 1: return {1.0f, 0.0f, 0.0f};
+        case 2: return {0.0f, 0.0f, -1.0f};
+        case 3: return {-1.0f, 0.0f, 0.0f};
+        default: return snake3dForwardForDir(snake3dViewDir);
+    }
+}
+
+static Snake3dCamera snake3dBuildCamera(float spacing)
+{
+    const Snake3dVec head = snake3dGridToWorld(static_cast<float>(snake3dX[0]),
+                                               static_cast<float>(snake3dY[0]),
+                                               static_cast<float>(snake3dZ[0]),
+                                               spacing);
+    const Snake3dVec globalUp = {0.0f, 1.0f, 0.0f};
+    const Snake3dVec planarForward = snake3dForwardForDir(snake3dViewDir);
+    const Snake3dVec camPos = snake3dVecAdd(head,
+                                            snake3dVecAdd(snake3dVecScale(planarForward, -spacing * 5.4f),
+                                                          {0.0f, spacing * 3.9f, 0.0f}));
+    const Snake3dVec target = snake3dVecAdd(head,
+                                            snake3dVecAdd(snake3dVecScale(planarForward, spacing * 2.8f),
+                                                          {0.0f, spacing * 0.15f, 0.0f}));
+    Snake3dCamera cam = {};
+    cam.pos = camPos;
+    cam.forward = snake3dVecNormalize(snake3dVecSub(target, camPos));
+    cam.right = snake3dVecNormalize(snake3dVecCross(cam.forward, globalUp));
+    if (fabsf(cam.right.x) < 0.001f && fabsf(cam.right.y) < 0.001f && fabsf(cam.right.z) < 0.001f) cam.right = {1.0f, 0.0f, 0.0f};
+    cam.up = snake3dVecNormalize(snake3dVecCross(cam.right, cam.forward));
+    return cam;
+}
+
+static bool snake3dProjectPoint(const Snake3dVec &v, const Snake3dCamera &cam, int cx, int cy, float focal, int &sx, int &sy, float &depth)
+{
+    const Snake3dVec rel = snake3dVecSub(v, cam.pos);
+    const float rx = snake3dVecDot(rel, cam.right);
+    const float ry = snake3dVecDot(rel, cam.up);
+    depth = snake3dVecDot(rel, cam.forward);
+    if (depth <= 4.0f) return false;
+    const float scale = focal / depth;
+    sx = cx + static_cast<int>(rx * scale);
+    sy = cy - static_cast<int>(ry * scale);
+    return true;
+}
+
+static void snake3dDrawCube(lv_draw_ctx_t *drawCtx, int cx, int cy, float focal, const Snake3dCamera &cam, const Snake3dVec &center, float halfSize, lv_color_t color, uint8_t width)
+{
+    static const uint8_t faces[6][4] = {
+        {0, 1, 2, 3},
+        {4, 5, 6, 7},
+        {0, 1, 5, 4},
+        {1, 2, 6, 5},
+        {2, 3, 7, 6},
+        {3, 0, 4, 7}
+    };
+    const float offs[8][3] = {
+        {-1, -1, -1}, {1, -1, -1}, {1, 1, -1}, {-1, 1, -1},
+        {-1, -1, 1}, {1, -1, 1}, {1, 1, 1}, {-1, 1, 1}
+    };
+    Snake3dVec verts[8] = {};
+    int px[8] = {};
+    int py[8] = {};
+    float pz[8] = {};
+    bool ok[8] = {};
+    for (int i = 0; i < 8; ++i) {
+        verts[i] = {
+            center.x + (offs[i][0] * halfSize),
+            center.y + (offs[i][1] * halfSize),
+            center.z + (offs[i][2] * halfSize)
+        };
+        ok[i] = snake3dProjectPoint(verts[i], cam, cx, cy, focal, px[i], py[i], pz[i]);
+    }
+
+    struct FaceInfo {
+        int idx;
+        float depth;
+    };
+    FaceInfo visible[6];
+    int visibleCount = 0;
+    for (int i = 0; i < 6; ++i) {
+        const uint8_t a = faces[i][0];
+        const uint8_t b = faces[i][1];
+        const uint8_t c = faces[i][2];
+        const uint8_t d = faces[i][3];
+        if (!(ok[a] && ok[b] && ok[c] && ok[d])) continue;
+        const Snake3dVec ab = snake3dVecSub(verts[b], verts[a]);
+        const Snake3dVec ac = snake3dVecSub(verts[c], verts[a]);
+        const Snake3dVec normal = snake3dVecCross(ab, ac);
+        const Snake3dVec toCam = snake3dVecSub(cam.pos, verts[a]);
+        if (snake3dVecDot(normal, toCam) <= 0.0f) continue;
+        visible[visibleCount++] = {i, (pz[a] + pz[b] + pz[c] + pz[d]) * 0.25f};
+    }
+
+    for (int i = 0; i < visibleCount - 1; ++i) {
+        for (int j = i + 1; j < visibleCount; ++j) {
+            if (visible[j].depth > visible[i].depth) {
+                const FaceInfo tmp = visible[i];
+                visible[i] = visible[j];
+                visible[j] = tmp;
+            }
+        }
+    }
+
+    for (int i = 0; i < visibleCount; ++i) {
+        const uint8_t *face = faces[visible[i].idx];
+        lv_point_t quad[4] = {
+            {static_cast<lv_coord_t>(px[face[0]]), static_cast<lv_coord_t>(py[face[0]])},
+            {static_cast<lv_coord_t>(px[face[1]]), static_cast<lv_coord_t>(py[face[1]])},
+            {static_cast<lv_coord_t>(px[face[2]]), static_cast<lv_coord_t>(py[face[2]])},
+            {static_cast<lv_coord_t>(px[face[3]]), static_cast<lv_coord_t>(py[face[3]])}
+        };
+        const uint8_t shade = static_cast<uint8_t>(50 + (i * 35));
+        const lv_color_t faceColor = snake3dMixColor(color, lv_color_hex(0x081018), shade);
+        snake3dFillQuad(drawCtx, quad, faceColor, LV_OPA_90);
+        for (int e = 0; e < 4; ++e) {
+            const int n = (e + 1) & 3;
+            lvglDrawLineSeg(drawCtx, quad[e].x, quad[e].y, quad[n].x, quad[n].y, snake3dMixColor(color, lv_color_white(), 80), width, LV_OPA_COVER);
+        }
+    }
+}
+
+static void snake3dDrawFloorTile(lv_draw_ctx_t *drawCtx, int cx, int cy, float focal, const Snake3dCamera &cam, int gx, int gy, float spacing)
+{
+    const float floorY = -spacing * 0.22f;
+    const float tileInset = spacing * 0.06f;
+    const float left = (static_cast<float>(gx) - (SNAKE3D_COLS * 0.5f)) * spacing + tileInset;
+    const float right = left + spacing - (tileInset * 2.0f);
+    const float back = (((SNAKE3D_ROWS * 0.5f) - static_cast<float>(gy)) * spacing) - tileInset;
+    const float front = back - spacing + (tileInset * 2.0f);
+    Snake3dVec corners[4] = {
+        {left, floorY, back},
+        {right, floorY, back},
+        {right, floorY, front},
+        {left, floorY, front}
+    };
+    int px[4] = {};
+    int py[4] = {};
+    bool ok[4] = {};
+    for (int i = 0; i < 4; ++i) {
+        float depth = 0.0f;
+        ok[i] = snake3dProjectPoint(corners[i], cam, cx, cy, focal, px[i], py[i], depth);
+    }
+    if (!(ok[0] && ok[1] && ok[2] && ok[3])) return;
+
+    const uint8_t hue = static_cast<uint8_t>(min(255, (gx * 16) + (gy * 10) + 30));
+    const lv_color_t fill = lv_color_mix(lv_color_hex(0x39F0FF), lv_color_hex(0x133D96), hue);
+    const lv_color_t edge = snake3dMixColor(fill, lv_color_white(), 110);
+    const lv_point_t quad[4] = {
+        {static_cast<lv_coord_t>(px[0]), static_cast<lv_coord_t>(py[0])},
+        {static_cast<lv_coord_t>(px[1]), static_cast<lv_coord_t>(py[1])},
+        {static_cast<lv_coord_t>(px[2]), static_cast<lv_coord_t>(py[2])},
+        {static_cast<lv_coord_t>(px[3]), static_cast<lv_coord_t>(py[3])}
+    };
+    snake3dFillQuad(drawCtx, quad, fill, LV_OPA_70);
+    lvglDrawLineSeg(drawCtx, px[0], py[0], px[1], py[1], edge, 2, LV_OPA_COVER);
+    lvglDrawLineSeg(drawCtx, px[1], py[1], px[2], py[2], edge, 2, LV_OPA_COVER);
+    lvglDrawLineSeg(drawCtx, px[2], py[2], px[3], py[3], edge, 2, LV_OPA_COVER);
+    lvglDrawLineSeg(drawCtx, px[3], py[3], px[0], py[0], edge, 2, LV_OPA_COVER);
+}
+
+void lvglSnake3dBoardDrawEvent(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_DRAW_MAIN) return;
+    lv_obj_t *obj = lv_event_get_target(e);
+    lv_draw_ctx_t *drawCtx = lv_event_get_draw_ctx(e);
+    if (!obj || !drawCtx) return;
+
+    lv_area_t coords;
+    lv_obj_get_coords(obj, &coords);
+    const int width = static_cast<int>(coords.x2 - coords.x1 + 1);
+    const int height = static_cast<int>(coords.y2 - coords.y1 + 1);
+    const int centerX = static_cast<int>(coords.x1) + (width / 2);
+    const int centerY = static_cast<int>(coords.y1) + (height / 2) + 30;
+    const float spacing = static_cast<float>(min(width, height)) * 0.16f;
+    const float cubeHalf = spacing * 0.34f;
+    const float focal = static_cast<float>(min(width, height)) * 1.35f;
+    const Snake3dCamera cam = snake3dBuildCamera(spacing);
+
+    for (int gy = 0; gy < SNAKE3D_ROWS; ++gy) {
+        for (int gx = 0; gx < SNAKE3D_COLS; ++gx) {
+            snake3dDrawFloorTile(drawCtx, centerX, centerY, focal, cam, gx, gy, spacing);
+        }
+    }
+
+    for (int i = snake3dLen - 1; i >= 0; --i) {
+        const Snake3dVec center = snake3dGridToWorld(static_cast<float>(snake3dX[i]),
+                                                     static_cast<float>(snake3dY[i]),
+                                                     static_cast<float>(snake3dZ[i]),
+                                                     spacing);
+        const lv_color_t color = (i == 0) ? lv_color_hex(0xD7FF7A) : lv_color_hex(0x58D06D);
+        snake3dDrawCube(drawCtx, centerX, centerY, focal, cam, center, cubeHalf, color, (i == 0) ? 3 : 2);
+    }
+
+    const Snake3dVec foodCenter = snake3dGridToWorld(static_cast<float>(snake3dFoodX),
+                                                     static_cast<float>(snake3dFoodY),
+                                                     static_cast<float>(snake3dFoodZ),
+                                                     spacing);
+    snake3dDrawCube(drawCtx, centerX, centerY, focal, cam, foodCenter, cubeHalf * 0.8f, lv_color_hex(0xFF6C62), 2);
+}
+
+void lvglSnake3dDirEvent(lv_event_t *e)
+{
+    const int d = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
+    if (!snake3dStarted || snake3dPaused || snake3dGameOver) return;
+    if ((d == 0 && snake3dDir != 2) || (d == 2 && snake3dDir != 0) ||
+        (d == 1 && snake3dDir != 3) || (d == 3 && snake3dDir != 1) ||
+        (d == 4 && snake3dDir != 5) || (d == 5 && snake3dDir != 4)) {
+        snake3dNextDir = static_cast<int8_t>(d);
+        if (d >= 0 && d <= 3) snake3dViewDir = static_cast<int8_t>(d);
+    }
+}
+
+void lvglSnake3dPauseEvent(lv_event_t *e)
+{
+    (void)e;
+    if (snake3dGameOver) return;
+    if (!snake3dStarted) {
+        snake3dStartGame();
+    } else {
+        snake3dPaused = !snake3dPaused;
+        if (!snake3dPaused) snake3dLastStepMs = millis();
+    }
+    lvglRefreshSnake3dBoard();
+}
+
+void lvglSnake3dRestartEvent(lv_event_t *e)
+{
+    (void)e;
+    snake3dStartGame();
+    lvglRefreshSnake3dBoard();
+}
+
+void lvglRefreshSnake3dBoard()
+{
+    if (lvglSnake3dBoardObj) lv_obj_invalidate(lvglSnake3dBoardObj);
+    if (lvglSnake3dScoreLabel) lv_label_set_text_fmt(lvglSnake3dScoreLabel, "Score %u", snake3dScore);
+    if (lvglSnake3dBestLabel) lv_label_set_text_fmt(lvglSnake3dBestLabel, "Best %u", snake3dHighScore);
+    if (lvglSnake3dPauseBtnLabel) lv_label_set_text(lvglSnake3dPauseBtnLabel, (!snake3dStarted || snake3dPaused) ? LV_SYMBOL_PLAY : LV_SYMBOL_PAUSE);
+
+    if (!lvglSnake3dOverlay) return;
+    const bool showOverlay = !snake3dStarted || snake3dPaused || snake3dGameOver;
+    const bool pauseOverlay = snake3dPaused && snake3dStarted && !snake3dGameOver;
+    lv_coord_t overlayW = pauseOverlay ? min<lv_coord_t>(DISPLAY_WIDTH - 64, 150) : min<lv_coord_t>(DISPLAY_WIDTH - 24, 250);
+    lv_coord_t overlayH = pauseOverlay ? 84 : min<lv_coord_t>(UI_CONTENT_H - 24, 196);
+    if (lvglSnake3dBoardObj) {
+        lv_area_t boardCoords;
+        lv_obj_get_coords(lvglSnake3dBoardObj, &boardCoords);
+        const lv_coord_t boardWidth = static_cast<lv_coord_t>(boardCoords.x2 - boardCoords.x1 + 1);
+        const lv_coord_t boardHeight = static_cast<lv_coord_t>(boardCoords.y2 - boardCoords.y1 + 1);
+        overlayW = min<lv_coord_t>(overlayW, max<lv_coord_t>(140, boardWidth - 16));
+        overlayH = min<lv_coord_t>(overlayH, max<lv_coord_t>(84, boardHeight - 16));
+    }
+    lv_obj_set_size(lvglSnake3dOverlay, overlayW, overlayH);
+    lv_obj_center(lvglSnake3dOverlay);
+    lv_obj_move_foreground(lvglSnake3dOverlay);
+    if (showOverlay) lv_obj_clear_flag(lvglSnake3dOverlay, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(lvglSnake3dOverlay, LV_OBJ_FLAG_HIDDEN);
+
+    if (lvglSnake3dOverlayTitle) {
+        if (pauseOverlay) lv_label_set_text(lvglSnake3dOverlayTitle, "PAUSE");
+        else lv_label_set_text(lvglSnake3dOverlayTitle, snake3dGameOver ? "Game Over" : "Snake 3D");
+    }
+    if (lvglSnake3dOverlaySubLabel) {
+        String msg = pauseOverlay ? String("Resume to keep climbing the 3D grid")
+                                  : (snake3dGameOver ? ("Score " + String(snake3dScore) + "\nBest " + String(snake3dHighScore))
+                                                     : String("Chase camera 3D snake\nArrows move on the floor, Z+/Z- change height"));
+        lv_label_set_text(lvglSnake3dOverlaySubLabel, msg.c_str());
+    }
+    if (lvglSnake3dOverlayBtn) {
+        if (pauseOverlay) lv_obj_add_flag(lvglSnake3dOverlayBtn, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_clear_flag(lvglSnake3dOverlayBtn, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (lvglSnake3dOverlayBtnLabel && !pauseOverlay) lv_label_set_text(lvglSnake3dOverlayBtnLabel, snake3dGameOver ? "Replay" : "Start");
+}
+#endif
 
 void lvglRefreshTetrisBoard()
 {
@@ -8234,6 +8846,20 @@ void lvglOpenSnakeEvent(lv_event_t *e)
     lvglRefreshSnakeBoard();
     lvglOpenScreen(UI_GAME_SNAKE, LV_SCR_LOAD_ANIM_MOVE_LEFT);
 }
+
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+void lvglOpenSnake3dEvent(lv_event_t *e)
+{
+    (void)e;
+    lvglEnsureScreenBuilt(UI_GAME_SNAKE3D);
+    snake3dPrepareGame();
+    if (screensaverActive) screensaverSetActive(false);
+    if (!displayAwake) displaySetAwake(true);
+    lastUserActivityMs = millis();
+    lvglRefreshSnake3dBoard();
+    lvglOpenScreen(UI_GAME_SNAKE3D, LV_SCR_LOAD_ANIM_MOVE_LEFT);
+}
+#endif
 
 void lvglOpenTetrisEvent(lv_event_t *e)
 {
@@ -9493,6 +10119,132 @@ void snakeTick()
     lvglRefreshSnakeBoard();
 }
 
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+static bool snake3dCellOccupied(int x, int y, int z)
+{
+    for (int i = 0; i < snake3dLen; ++i) {
+        if (snake3dX[i] == x && snake3dY[i] == y && snake3dZ[i] == z) return true;
+    }
+    return false;
+}
+
+static void snake3dSpawnFood()
+{
+    for (int tries = 0; tries < 400; ++tries) {
+        const int fx = random(0, SNAKE3D_COLS);
+        const int fy = random(0, SNAKE3D_ROWS);
+        const int fz = random(0, SNAKE3D_LAYERS);
+        if (!snake3dCellOccupied(fx, fy, fz)) {
+            snake3dFoodX = static_cast<int8_t>(fx);
+            snake3dFoodY = static_cast<int8_t>(fy);
+            snake3dFoodZ = static_cast<int8_t>(fz);
+            return;
+        }
+    }
+    snake3dFoodX = 0;
+    snake3dFoodY = 0;
+    snake3dFoodZ = 0;
+}
+
+void snake3dResetGame()
+{
+    snake3dLen = 4;
+    snake3dDir = 1;
+    snake3dNextDir = 1;
+    snake3dViewDir = 1;
+    snake3dStarted = true;
+    snake3dPaused = false;
+    snake3dGameOver = false;
+    snake3dScore = 0;
+    const int cy = SNAKE3D_ROWS / 2;
+    const int cz = SNAKE3D_LAYERS / 2;
+    for (int i = 0; i < snake3dLen; ++i) {
+        snake3dX[i] = static_cast<int8_t>((SNAKE3D_COLS - 2) - i);
+        snake3dY[i] = static_cast<int8_t>(cy);
+        snake3dZ[i] = static_cast<int8_t>(cz);
+    }
+    snake3dSpawnFood();
+    snake3dLastStepMs = millis();
+}
+
+void snake3dPrepareGame()
+{
+    snake3dResetGame();
+    snake3dStarted = false;
+    snake3dPaused = false;
+    snake3dGameOver = false;
+}
+
+void snake3dStartGame()
+{
+    snake3dResetGame();
+    snake3dStarted = true;
+    snake3dPaused = false;
+    snake3dLastStepMs = millis();
+}
+
+static unsigned long snake3dCurrentStepMs()
+{
+    const unsigned long foods = static_cast<unsigned long>(snake3dScore / 10U);
+    const unsigned long reduction = foods * SNAKE3D_STEP_MS_DELTA_PER_FOOD;
+    if (reduction >= (SNAKE3D_STEP_MS_START - SNAKE3D_STEP_MS_MIN)) return SNAKE3D_STEP_MS_MIN;
+    return SNAKE3D_STEP_MS_START - reduction;
+}
+
+static void snake3dStep()
+{
+    if (!snake3dStarted || snake3dPaused || snake3dGameOver) return;
+    snake3dDir = snake3dNextDir;
+    int nx = snake3dX[0];
+    int ny = snake3dY[0];
+    int nz = snake3dZ[0];
+    if (snake3dDir == 0) ny--;
+    else if (snake3dDir == 1) nx++;
+    else if (snake3dDir == 2) ny++;
+    else if (snake3dDir == 3) nx--;
+    else if (snake3dDir == 4) nz++;
+    else nz--;
+
+    if (nx < 0 || nx >= SNAKE3D_COLS || ny < 0 || ny >= SNAKE3D_ROWS || nz < 0 || nz >= SNAKE3D_LAYERS || snake3dCellOccupied(nx, ny, nz)) {
+        snake3dGameOver = true;
+        snake3dStarted = false;
+        snake3dMaybeStoreHighScore(true);
+        return;
+    }
+
+    const bool ate = (nx == snake3dFoodX && ny == snake3dFoodY && nz == snake3dFoodZ);
+    const int oldLen = snake3dLen;
+    if (ate && snake3dLen < SNAKE3D_MAX_CELLS) snake3dLen++;
+    for (int i = snake3dLen - 1; i > 0; --i) {
+        snake3dX[i] = snake3dX[i - 1];
+        snake3dY[i] = snake3dY[i - 1];
+        snake3dZ[i] = snake3dZ[i - 1];
+    }
+    snake3dX[0] = static_cast<int8_t>(nx);
+    snake3dY[0] = static_cast<int8_t>(ny);
+    snake3dZ[0] = static_cast<int8_t>(nz);
+
+    if (ate) {
+        snake3dScore += 10;
+        snake3dMaybeStoreHighScore(false);
+        snake3dSpawnFood();
+    } else if (oldLen < snake3dLen) {
+        snake3dLen = oldLen;
+    }
+}
+
+void snake3dTick()
+{
+    if (uiScreen != UI_GAME_SNAKE3D) return;
+    const unsigned long now = millis();
+    if (!snake3dStarted || snake3dPaused || snake3dGameOver) return;
+    if (now - snake3dLastStepMs < snake3dCurrentStepMs()) return;
+    snake3dLastStepMs = now;
+    snake3dStep();
+    lvglRefreshSnake3dBoard();
+}
+#endif
+
 static const int8_t TETRIS_BASE[7][4][2] = {
     {{0, 1}, {1, 1}, {2, 1}, {3, 1}}, // I
     {{0, 0}, {0, 1}, {1, 1}, {2, 1}}, // J
@@ -9673,7 +10425,8 @@ void tetrisTick()
 
 static bool checkersInBounds(int x, int y)
 {
-    return x >= 0 && x < CHECKERS_SIZE && y >= 0 && y < CHECKERS_SIZE;
+    const int boardSize = checkersBoardSize();
+    return x >= 0 && x < boardSize && y >= 0 && y < boardSize;
 }
 
 static int8_t checkersPieceSide(int8_t piece)
@@ -9691,6 +10444,57 @@ static bool checkersIsKing(int8_t piece)
 static bool checkersIsDarkSquare(int x, int y)
 {
     return ((x + y) & 1) == 1;
+}
+
+static int checkersBoardSize()
+{
+    switch (checkersVariant) {
+        case CHECKERS_VARIANT_INTERNATIONAL:
+            return 10;
+        case CHECKERS_VARIANT_CANADIAN:
+            return 12;
+        default:
+            return 8;
+    }
+}
+
+static int checkersStartRows()
+{
+    switch (checkersVariant) {
+        case CHECKERS_VARIANT_INTERNATIONAL:
+            return 4;
+        case CHECKERS_VARIANT_CANADIAN:
+            return 5;
+        default:
+            return 3;
+    }
+}
+
+static bool checkersMenCaptureBackward()
+{
+    return checkersVariant != CHECKERS_VARIANT_AMERICAN;
+}
+
+static bool checkersFlyingKings()
+{
+    return checkersVariant != CHECKERS_VARIANT_AMERICAN;
+}
+
+static bool checkersPromotionContinuesCapture()
+{
+    return checkersVariant == CHECKERS_VARIANT_RUSSIAN;
+}
+
+static const char *checkersVariantName(CheckersVariant variant)
+{
+    switch (variant) {
+        case CHECKERS_VARIANT_AMERICAN: return "American Checkers";
+        case CHECKERS_VARIANT_INTERNATIONAL: return "International Draughts";
+        case CHECKERS_VARIANT_RUSSIAN: return "Russian Checkers";
+        case CHECKERS_VARIANT_POOL: return "Pool Checkers";
+        case CHECKERS_VARIANT_CANADIAN: return "Canadian/Sri Lankan";
+        default: return "Checkers";
+    }
 }
 
 static void checkersClearSelection()
@@ -9719,12 +10523,15 @@ static String checkersPeerDisplayName()
 
 static void checkersResetBoard()
 {
-    for (int y = 0; y < CHECKERS_SIZE; ++y) {
-        for (int x = 0; x < CHECKERS_SIZE; ++x) {
+    const int boardSize = checkersBoardSize();
+    const int startRows = checkersStartRows();
+    for (int y = 0; y < CHECKERS_MAX_BOARD_SIZE; ++y) {
+        for (int x = 0; x < CHECKERS_MAX_BOARD_SIZE; ++x) {
             checkersBoard[y][x] = 0;
+            if (x >= boardSize || y >= boardSize) continue;
             if (!checkersIsDarkSquare(x, y)) continue;
-            if (y < 3) checkersBoard[y][x] = -1;
-            else if (y > 4) checkersBoard[y][x] = 1;
+            if (y < startRows) checkersBoard[y][x] = -1;
+            else if (y >= (boardSize - startRows)) checkersBoard[y][x] = 1;
         }
     }
     checkersTurn = 1;
@@ -9732,6 +10539,7 @@ static void checkersResetBoard()
     checkersGameOver = false;
     checkersWinnerSide = 0;
     checkersAiDueMs = 0;
+    checkersVariantPopupOpen = false;
     checkersClearSelection();
 }
 
@@ -9748,9 +10556,48 @@ static int checkersCollectPieceMoves(int x, int y, bool captureOnly, CheckersMov
     for (int i = 0; i < 4; ++i) {
         const int dx = dirs[i][0];
         const int dy = dirs[i][1];
-        if (!king) {
+        if (!king && !checkersMenCaptureBackward()) {
             if (side == 1 && dy != -1) continue;
             if (side == -1 && dy != 1) continue;
+        }
+
+        if (king && checkersFlyingKings()) {
+            int step = 1;
+            int capX = -1;
+            int capY = -1;
+            while (true) {
+                const int toX = x + (dx * step);
+                const int toY = y + (dy * step);
+                if (!checkersInBounds(toX, toY)) break;
+                const int8_t target = checkersBoard[toY][toX];
+                if (!captureOnly) {
+                    if (target != 0) break;
+                    if (out && count < maxOut) {
+                        out[count] = {static_cast<int8_t>(x), static_cast<int8_t>(y), static_cast<int8_t>(toX), static_cast<int8_t>(toY), -1, -1, false};
+                    }
+                    count++;
+                    step++;
+                    continue;
+                }
+
+                if (target == 0) {
+                    if (capX >= 0) {
+                        if (out && count < maxOut) {
+                            out[count] = {static_cast<int8_t>(x), static_cast<int8_t>(y), static_cast<int8_t>(toX), static_cast<int8_t>(toY), static_cast<int8_t>(capX), static_cast<int8_t>(capY), true};
+                        }
+                        count++;
+                    }
+                    step++;
+                    continue;
+                }
+
+                if (checkersPieceSide(target) == side || capX >= 0) break;
+                capX = toX;
+                capY = toY;
+                step++;
+                continue;
+            }
+            continue;
         }
 
         if (captureOnly) {
@@ -9762,27 +10609,19 @@ static int checkersCollectPieceMoves(int x, int y, bool captureOnly, CheckersMov
             const int8_t midPiece = checkersBoard[midY][midX];
             if (midPiece == 0 || checkersPieceSide(midPiece) == side || checkersBoard[toY][toX] != 0) continue;
             if (out && count < maxOut) {
-                out[count].fromX = static_cast<int8_t>(x);
-                out[count].fromY = static_cast<int8_t>(y);
-                out[count].toX = static_cast<int8_t>(toX);
-                out[count].toY = static_cast<int8_t>(toY);
-                out[count].captureX = static_cast<int8_t>(midX);
-                out[count].captureY = static_cast<int8_t>(midY);
-                out[count].capture = true;
+                out[count] = {static_cast<int8_t>(x), static_cast<int8_t>(y), static_cast<int8_t>(toX), static_cast<int8_t>(toY), static_cast<int8_t>(midX), static_cast<int8_t>(midY), true};
             }
             count++;
         } else {
+            if (!king) {
+                if (side == 1 && dy != -1) continue;
+                if (side == -1 && dy != 1) continue;
+            }
             const int toX = x + dx;
             const int toY = y + dy;
             if (!checkersInBounds(toX, toY) || checkersBoard[toY][toX] != 0) continue;
             if (out && count < maxOut) {
-                out[count].fromX = static_cast<int8_t>(x);
-                out[count].fromY = static_cast<int8_t>(y);
-                out[count].toX = static_cast<int8_t>(toX);
-                out[count].toY = static_cast<int8_t>(toY);
-                out[count].captureX = -1;
-                out[count].captureY = -1;
-                out[count].capture = false;
+                out[count] = {static_cast<int8_t>(x), static_cast<int8_t>(y), static_cast<int8_t>(toX), static_cast<int8_t>(toY), -1, -1, false};
             }
             count++;
         }
@@ -9797,8 +10636,9 @@ static bool checkersSideHasCapture(int8_t side)
         return checkersCollectPieceMoves(checkersForcedX, checkersForcedY, true, nullptr, 0) > 0;
     }
 
-    for (int y = 0; y < CHECKERS_SIZE; ++y) {
-        for (int x = 0; x < CHECKERS_SIZE; ++x) {
+    const int boardSize = checkersBoardSize();
+    for (int y = 0; y < boardSize; ++y) {
+        for (int x = 0; x < boardSize; ++x) {
             if (checkersPieceSide(checkersBoard[y][x]) != side) continue;
             if (checkersCollectPieceMoves(x, y, true, nullptr, 0) > 0) return true;
         }
@@ -9823,11 +10663,12 @@ static int checkersCollectLegalMovesForTurn(CheckersMove *out, int maxOut)
     }
 
     const bool requireCapture = checkersSideHasCapture(checkersTurn);
-    for (int y = 0; y < CHECKERS_SIZE; ++y) {
-        for (int x = 0; x < CHECKERS_SIZE; ++x) {
+    const int boardSize = checkersBoardSize();
+    for (int y = 0; y < boardSize; ++y) {
+        for (int x = 0; x < boardSize; ++x) {
             if (checkersPieceSide(checkersBoard[y][x]) != checkersTurn) continue;
-            CheckersMove local[8];
-            const int localCount = checkersCollectPieceMoves(x, y, requireCapture, local, 8);
+            CheckersMove local[CHECKERS_MAX_HINT_MOVES];
+            const int localCount = checkersCollectPieceMoves(x, y, requireCapture, local, CHECKERS_MAX_HINT_MOVES);
             for (int i = 0; i < localCount; ++i) {
                 if (out && count < maxOut) out[count] = local[i];
                 count++;
@@ -9850,14 +10691,15 @@ static void checkersUpdateHintMoves()
 
 static String checkersModeLabelText()
 {
+    const String variant = String(checkersVariantName(checkersVariant));
     switch (checkersMode) {
         case CHECKERS_MODE_ESP32:
-            return "ESP32";
+            return variant + " / ESP32";
         case CHECKERS_MODE_TAG:
-            if (!checkersPeerKey.isEmpty()) return "Tag MP: " + checkersPeerDisplayName();
-            return "Tag Multiplayer";
+            if (!checkersPeerKey.isEmpty()) return variant + " / Tag MP: " + checkersPeerDisplayName();
+            return variant + " / Tag Multiplayer";
         default:
-            return "Checkers";
+            return variant;
     }
 }
 
@@ -9905,6 +10747,7 @@ static void checkersEvaluateGameOver()
 
 static bool checkersApplyMove(const CheckersMove &move, bool broadcastMove)
 {
+    const int boardSize = checkersBoardSize();
     CheckersMove legal[CHECKERS_MAX_MOVES];
     const int legalCount = checkersCollectLegalMovesForPiece(move.fromX, move.fromY, legal, CHECKERS_MAX_MOVES);
     int match = -1;
@@ -9921,15 +10764,22 @@ static bool checkersApplyMove(const CheckersMove &move, bool broadcastMove)
     checkersBoard[applied.fromY][applied.fromX] = 0;
     checkersBoard[applied.toY][applied.toX] = piece;
     if (applied.capture) checkersBoard[applied.captureY][applied.captureX] = 0;
-    if (piece == 1 && applied.toY == 0) piece = 2;
-    else if (piece == -1 && applied.toY == (CHECKERS_SIZE - 1)) piece = -2;
+    bool promoted = false;
+    if (piece == 1 && applied.toY == 0) {
+        piece = 2;
+        promoted = true;
+    } else if (piece == -1 && applied.toY == (boardSize - 1)) {
+        piece = -2;
+        promoted = true;
+    }
     checkersBoard[applied.toY][applied.toX] = piece;
 
     if (broadcastMove && checkersMode == CHECKERS_MODE_TAG && !checkersPeerKey.isEmpty() && !checkersSessionId.isEmpty()) {
         chatSendRawReliableMessage(checkersPeerKey, checkersBuildMoveText(checkersSessionId, applied), false);
     }
 
-    if (applied.capture && checkersCollectPieceMoves(applied.toX, applied.toY, true, nullptr, 0) > 0) {
+    const bool allowFollowUpCapture = applied.capture && (!promoted || checkersPromotionContinuesCapture());
+    if (allowFollowUpCapture && checkersCollectPieceMoves(applied.toX, applied.toY, true, nullptr, 0) > 0) {
         checkersForcedX = applied.toX;
         checkersForcedY = applied.toY;
         if (checkersTurn == checkersLocalSide) {
@@ -9962,7 +10812,7 @@ static void checkersStartEsp32Game()
     checkersPeerPopupOpen = false;
     checkersResetBoard();
     checkersUpdateHintMoves();
-    uiStatusLine = "Checkers vs ESP32";
+    uiStatusLine = String(checkersVariantName(checkersVariant)) + " vs ESP32";
     if (lvglReady) lvglSyncStatusLine();
 }
 
@@ -9978,13 +10828,14 @@ static void checkersStartPendingInvite(const String &peerKey)
     checkersResetBoard();
     checkersUpdateHintMoves();
     chatSendRawReliableMessage(peerKey, checkersBuildInviteText(checkersSessionId, deviceShortNameValue()), true);
-    uiStatusLine = "Checkers invite sent to " + checkersPeerDisplayName();
+    uiStatusLine = String(checkersVariantName(checkersVariant)) + " invite sent to " + checkersPeerDisplayName();
     if (lvglReady) lvglSyncStatusLine();
 }
 
-static void checkersStartAcceptedInvite(const String &peerKey, const String &sessionId)
+static void checkersStartAcceptedInvite(const String &peerKey, const String &sessionId, CheckersVariant variant)
 {
     if (peerKey.isEmpty() || sessionId.isEmpty()) return;
+    checkersVariant = variant;
     checkersMode = CHECKERS_MODE_TAG;
     checkersPeerKey = peerKey;
     checkersSessionId = sessionId;
@@ -9994,7 +10845,7 @@ static void checkersStartAcceptedInvite(const String &peerKey, const String &ses
     checkersResetBoard();
     checkersUpdateHintMoves();
     chatSendRawReliableMessage(peerKey, checkersBuildAcceptText(sessionId), false);
-    uiStatusLine = "Checkers started with " + checkersPeerDisplayName();
+    uiStatusLine = String(checkersVariantName(checkersVariant)) + " started with " + checkersPeerDisplayName();
     if (lvglReady) lvglSyncStatusLine();
 }
 
@@ -10078,7 +10929,7 @@ static bool checkersHandleIncomingChatPayload(const String &peerKey,
 
 static bool checkersLocalTurnActive()
 {
-    if (!checkersStarted || checkersGameOver || checkersWaitingForRemote) return false;
+    if (!checkersStarted || checkersGameOver || checkersWaitingForRemote || checkersVariantPopupOpen) return false;
     if (checkersMode == CHECKERS_MODE_ESP32) return checkersTurn == 1;
     if (checkersMode == CHECKERS_MODE_TAG) return checkersTurn == checkersLocalSide;
     return false;
@@ -10142,10 +10993,11 @@ void lvglCheckersBoardEvent(lv_event_t *e)
     lv_indev_get_point(indev, &pt);
     lv_area_t coords;
     lv_obj_get_coords(obj, &coords);
+    const int boardSize = checkersBoardSize();
     const int width = static_cast<int>(coords.x2 - coords.x1 + 1);
     const int height = static_cast<int>(coords.y2 - coords.y1 + 1);
-    const int cellW = width / CHECKERS_SIZE;
-    const int cellH = height / CHECKERS_SIZE;
+    const int cellW = width / boardSize;
+    const int cellH = height / boardSize;
     if (cellW <= 0 || cellH <= 0) return;
     const int localX = pt.x - coords.x1;
     const int localY = pt.y - coords.y1;
@@ -10198,18 +11050,19 @@ void lvglCheckersBoardDrawEvent(lv_event_t *e)
 
     lv_area_t coords;
     lv_obj_get_coords(obj, &coords);
+    const int boardSize = checkersBoardSize();
     const int width = static_cast<int>(coords.x2 - coords.x1 + 1);
     const int height = static_cast<int>(coords.y2 - coords.y1 + 1);
-    const int cellW = width / CHECKERS_SIZE;
-    const int cellH = height / CHECKERS_SIZE;
-    if (cellW < 8 || cellH < 8) return;
+    const int cellW = width / boardSize;
+    const int cellH = height / boardSize;
+    if (cellW < 5 || cellH < 5) return;
     CheckersMove hintMoves[CHECKERS_MAX_HINT_MOVES];
     const int hintMoveCount = (checkersSelectedX >= 0 && checkersSelectedY >= 0)
                                   ? checkersCollectLegalMovesForPiece(checkersSelectedX, checkersSelectedY, hintMoves, CHECKERS_MAX_HINT_MOVES)
                                   : 0;
 
-    for (int y = 0; y < CHECKERS_SIZE; ++y) {
-        for (int x = 0; x < CHECKERS_SIZE; ++x) {
+    for (int y = 0; y < boardSize; ++y) {
+        for (int x = 0; x < boardSize; ++x) {
             const int px = static_cast<int>(coords.x1) + (x * cellW);
             const int py = static_cast<int>(coords.y1) + (y * cellH);
             lv_color_t square = checkersIsDarkSquare(x, y) ? lv_color_hex(0x314355) : lv_color_hex(0xD5C7AF);
@@ -10277,6 +11130,51 @@ static void checkersRefreshPeerPopup()
     }
 }
 
+static void checkersRefreshVariantPopup()
+{
+    if (!lvglCheckersVariantPopup || !lvglCheckersVariantPopupList) return;
+    if (!checkersVariantPopupOpen) {
+        lv_obj_add_flag(lvglCheckersVariantPopup, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+
+    lv_obj_clear_flag(lvglCheckersVariantPopup, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(lvglCheckersVariantPopup);
+    lv_obj_clean(lvglCheckersVariantPopupList);
+
+    if (lvglCheckersVariantPopupTitle) lv_label_set_text(lvglCheckersVariantPopupTitle, "Choose Rule Set");
+
+    static const CheckersVariant variants[] = {
+        CHECKERS_VARIANT_AMERICAN,
+        CHECKERS_VARIANT_INTERNATIONAL,
+        CHECKERS_VARIANT_RUSSIAN,
+        CHECKERS_VARIANT_POOL,
+        CHECKERS_VARIANT_CANADIAN
+    };
+
+    for (size_t i = 0; i < (sizeof(variants) / sizeof(variants[0])); ++i) {
+        lv_obj_t *btn = lv_btn_create(lvglCheckersVariantPopupList);
+        if (!btn) continue;
+        lv_obj_set_width(btn, lv_pct(100));
+        lv_obj_set_height(btn, 28);
+        lv_obj_set_style_radius(btn, 10, 0);
+        lv_obj_set_style_border_width(btn, 0, 0);
+        lv_obj_set_style_bg_color(btn,
+                                  variants[i] == checkersVariant ? lv_color_hex(0x3A7A3A) : lv_color_hex(0x2F4658),
+                                  0);
+        lv_obj_add_event_cb(btn, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
+        lv_obj_add_event_cb(btn, lvglFilteredClickFlashEvent, LV_EVENT_CLICKED, nullptr);
+        lv_obj_add_event_cb(btn,
+                            lvglCheckersVariantSelectEvent,
+                            LV_EVENT_CLICKED,
+                            reinterpret_cast<void *>(static_cast<intptr_t>(variants[i])));
+        lv_obj_t *lbl = lv_label_create(btn);
+        if (!lbl) continue;
+        lv_label_set_text(lbl, checkersVariantName(variants[i]));
+        lv_obj_center(lbl);
+    }
+}
+
 void lvglRefreshCheckersBoard()
 {
     checkersUpdateHintMoves();
@@ -10286,7 +11184,7 @@ void lvglRefreshCheckersBoard()
 
     if (lvglCheckersOverlay) {
         bool showOverlay = false;
-        String title = "Checkers";
+        String title = checkersVariantName(checkersVariant);
         String msg = "";
         bool showBtn = false;
         String btnText = "Replay";
@@ -10304,8 +11202,10 @@ void lvglRefreshCheckersBoard()
             msg = "Invitation sent to " + checkersPeerDisplayName() + "\nWaiting for Play...";
         } else if (!checkersStarted) {
             showOverlay = true;
-            title = "Checkers";
-            msg = "Tap ESP32 for solo or Tag MP to invite a contact.";
+            title = checkersVariantPopupOpen ? "Select Checkers Type" : String(checkersVariantName(checkersVariant));
+            msg = checkersVariantPopupOpen
+                      ? "Pick a rule set, then start ESP32 or Tag MP."
+                      : ("Tap ESP32 for solo or Tag MP to invite a contact.\nCurrent: " + String(checkersVariantName(checkersVariant)));
         }
 
         if (showOverlay) lv_obj_clear_flag(lvglCheckersOverlay, LV_OBJ_FLAG_HIDDEN);
@@ -10320,11 +11220,13 @@ void lvglRefreshCheckersBoard()
     }
 
     checkersRefreshPeerPopup();
+    checkersRefreshVariantPopup();
 }
 
 void lvglCheckersEsp32Event(lv_event_t *e)
 {
     (void)e;
+    if (checkersVariantPopupOpen) return;
     checkersStartEsp32Game();
     lvglRefreshCheckersBoard();
 }
@@ -10332,6 +11234,7 @@ void lvglCheckersEsp32Event(lv_event_t *e)
 void lvglCheckersTagEvent(lv_event_t *e)
 {
     (void)e;
+    if (checkersVariantPopupOpen) return;
     if (checkersPeerPopupOpen) checkersClosePeerPopup();
     else checkersOpenPeerPopup();
     lvglRefreshCheckersBoard();
@@ -10366,16 +11269,33 @@ void lvglCheckersPeerSelectEvent(lv_event_t *e)
     lvglRefreshCheckersBoard();
 }
 
+void lvglCheckersVariantSelectEvent(lv_event_t *e)
+{
+    const int idx = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
+    if (idx < static_cast<int>(CHECKERS_VARIANT_AMERICAN) || idx > static_cast<int>(CHECKERS_VARIANT_CANADIAN)) return;
+    checkersVariant = static_cast<CheckersVariant>(idx);
+    checkersVariantPopupOpen = false;
+    checkersPeerPopupOpen = false;
+    checkersStarted = false;
+    checkersGameOver = false;
+    checkersWinnerSide = 0;
+    checkersMode = CHECKERS_MODE_IDLE;
+    checkersClearSelection();
+    checkersClearSession();
+    lvglRefreshCheckersBoard();
+}
+
 void lvglCheckersInvitePlayEvent(lv_event_t *e)
 {
     const int idx = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
     if (idx < 0 || idx >= chatMessageCount) return;
     String sessionId;
-    if (!checkersParseInviteText(chatMessages[idx].text, sessionId)) return;
+    CheckersVariant inviteVariant = CHECKERS_VARIANT_AMERICAN;
+    if (!checkersParseInviteText(chatMessages[idx].text, sessionId, &inviteVariant)) return;
     const String peerKey = currentChatPeerKey;
     if (peerKey.isEmpty()) return;
     lvglEnsureScreenBuilt(UI_GAME_CHECKERS);
-    checkersStartAcceptedInvite(peerKey, sessionId);
+    checkersStartAcceptedInvite(peerKey, sessionId, inviteVariant);
     if (screensaverActive) screensaverSetActive(false);
     if (!displayAwake) displaySetAwake(true);
     lastUserActivityMs = millis();
@@ -10389,6 +11309,7 @@ void lvglOpenCheckersEvent(lv_event_t *e)
     lvglEnsureScreenBuilt(UI_GAME_CHECKERS);
     checkersMode = CHECKERS_MODE_IDLE;
     checkersPeerPopupOpen = false;
+    checkersVariantPopupOpen = true;
     checkersStarted = false;
     checkersGameOver = false;
     checkersWinnerSide = 0;
@@ -10403,6 +11324,7 @@ void lvglOpenCheckersEvent(lv_event_t *e)
 
 static bool checkersChooseAiMove(CheckersMove &bestMove)
 {
+    const int boardSize = checkersBoardSize();
     CheckersMove legal[CHECKERS_MAX_MOVES];
     const int legalCount = checkersCollectLegalMovesForTurn(legal, CHECKERS_MAX_MOVES);
     if (legalCount <= 0) return false;
@@ -10412,7 +11334,7 @@ static bool checkersChooseAiMove(CheckersMove &bestMove)
     for (int i = 0; i < legalCount; ++i) {
         int score = legal[i].capture ? 100 : 10;
         const int8_t piece = checkersBoard[legal[i].fromY][legal[i].fromX];
-        if (piece == -1 && legal[i].toY == (CHECKERS_SIZE - 1)) score += 25;
+        if (piece == -1 && legal[i].toY == (boardSize - 1)) score += 25;
         if (checkersIsKing(piece)) score += 12;
         score += static_cast<int>(esp_random() & 0x0F);
         if (score > bestScore) {
@@ -11274,6 +12196,9 @@ void loadGamePrefs()
     gamePrefs.begin("games", true);
     snakeHighScore = static_cast<uint16_t>(gamePrefs.getUInt("snake_best", 0));
     tetrisHighScore = static_cast<uint16_t>(gamePrefs.getUInt("tetris_best", 0));
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+    snake3dHighScore = static_cast<uint16_t>(gamePrefs.getUInt("snake3d_best", 0));
+#endif
     gamePrefs.end();
 }
 
@@ -11298,6 +12223,15 @@ static void tetrisMaybeStoreHighScore(bool persist)
     tetrisHighScore = tetrisScore;
     if (persist) saveGameHighScore("tetris_best", tetrisHighScore);
 }
+
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+static void snake3dMaybeStoreHighScore(bool persist)
+{
+    if (snake3dScore <= snake3dHighScore) return;
+    snake3dHighScore = snake3dScore;
+    if (persist) saveGameHighScore("snake3d_best", snake3dHighScore);
+}
+#endif
 
 void saveApCreds(const String &ssid, const String &pass)
 {
@@ -15474,6 +16408,7 @@ void loop()
     snakeTick();
     tetrisTick();
     checkersTick();
+    snake3dTick();
 
     static wl_status_t lastWiFi = WL_DISCONNECTED;
     wl_status_t cur = wifiStatusSafe();
