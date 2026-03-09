@@ -229,6 +229,10 @@ Optional HC-12 UART on the `ESP32-S3` build:
 | HC-12 `TXD` | 5 |
 | HC-12 `SET` | 3 |
 
+HC-12 circuit reference:
+
+![HC-12 wiring](documents/SWAP.png)
+
 Notes:
 - `ESP32-S3` audio is currently disabled in firmware because the existing backend uses ESP32 internal DAC mode, which is not available on `ESP32-S3`.
 - After removing the conflicting RGB output, the S3 build now boots through the normal Wi-Fi and SD initialization flow again, including saved STA reconnect, fallback AP behavior, web server startup, and SD-backed file manager access.
