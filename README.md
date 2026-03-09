@@ -2,7 +2,7 @@
 
 Firmware for Sunton-style ESP32 touch display boards with an LVGL touch UI, Wi-Fi/AP management, SD-backed recovery tools, MQTT controls, and encrypted device-to-device chat.
 
-Current firmware version: **`0.2.0`**
+Current firmware version: **`0.2.1`**
 
 Supported boards:
 - `ESP32-2432S024C` (`240x320`, `ILI9341`, `CST820`)
@@ -20,6 +20,7 @@ Supported boards:
 - Saved backlight brightness and RGB LED intensity controls in `Config`
 - Brightness and RGB slider values are persisted in `Preferences`
 - `WiFi Config` screen with current network info, manual scan, saved-network actions, and editable AP SSID/password
+- PSRAM `HC12 Config` screen on the `ESP32-S3-3248S035-N16R8` build with `SET` control and a live UART terminal for the HC-12 radio module
 - `OTA Updates` screen with boot-time and periodic update checks, update-available indicator/popup, progress bar, and post-update confirmation
 - `MQTT Config` screen for broker settings, status, and connection control
 - SD recovery browser that can browse all rooted SD folders
@@ -30,6 +31,7 @@ Supported boards:
 - Built-in `Snake`, `Tetris`, `Checkers`, and PSRAM-only `Snake 3D` games with a shared touch control layout
 - `Checkers` supports both local play against the ESP32 and contact-invite multiplayer started from chat
 - `Checkers` includes American, International, Russian, Pool, and Canadian/Sri Lankan rulesets
+- `Snake`, `Tetris`, `Snake 3D`, and `Checkers` save scores or win counts in `Preferences`
 - `Snake 3D` is enabled on the `ESP32-S3-3248S035-N16R8` target with a software-rendered chase camera prototype
 - `Info` screen with battery, Wi-Fi, light, CPU, SRAM, PSRAM, and SD usage indicators
 - S3 build uses PSRAM-first allocation for major UI/work buffers to reduce internal SRAM pressure
@@ -218,6 +220,14 @@ Audio, LEDs, Sensors:
 | RGB B | 16 | reserved by octal PSRAM |
 | Battery ADC | 35 | 7 |
 | Light ADC | 34 | 6 |
+
+Optional HC-12 UART on the `ESP32-S3` build:
+
+| Signal | ESP32-S3 |
+|---|---:|
+| HC-12 `RXD` | 4 |
+| HC-12 `TXD` | 5 |
+| HC-12 `SET` | 3 |
 
 Notes:
 - `ESP32-S3` audio is currently disabled in firmware because the existing backend uses ESP32 internal DAC mode, which is not available on `ESP32-S3`.

@@ -226,7 +226,7 @@ static constexpr uint16_t LIGHT_RAW_CAL_MAX = 600;
 static constexpr bool LIGHT_LOG_RAW_TO_SERIAL = false;
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.2.0";
+static constexpr const char *FW_VERSION = "0.2.1";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -239,6 +239,15 @@ static constexpr size_t SERIAL_LOG_RING_SIZE = 200;
 static constexpr size_t SERIAL_LOG_LINE_MAX = 192;
 static constexpr uint32_t SERIAL_LOG_RATE_MS_DEFAULT = 40;
 static constexpr uint32_t WS_TELEMETRY_MIN_FREE_HEAP = 50000U;
+
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+static constexpr int HC12_UART_NUM = 1;
+static constexpr int HC12_RX_PIN = 5;
+static constexpr int HC12_TX_PIN = 4;
+static constexpr int HC12_SET_PIN = 3;
+static constexpr unsigned long HC12_BAUD = 9600UL;
+static constexpr size_t HC12_TERMINAL_MAX_CHARS = 2800;
+#endif
 
 void serialLogPushLine(const char *line, bool sendWs = true);
 void executeSerialCommand(String input);
@@ -359,6 +368,7 @@ static void tetrisMaybeStoreHighScore(bool persist = false);
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
 static void snake3dMaybeStoreHighScore(bool persist = false);
 #endif
+static void saveGameValue(const char *key, uint16_t value);
 void tryBootStaReconnect();
 void sampleTopIndicators();
 const char *authName(wifi_auth_mode_t auth);
@@ -437,8 +447,10 @@ static void otaClearPopupVersion();
 static void otaCheckTask(void *param);
 static void otaUpdateTask(void *param);
 void lvglOpenOtaScreenEvent(lv_event_t *e);
+void lvglOpenHc12ScreenEvent(lv_event_t *e);
 void lvglOtaUpdateEvent(lv_event_t *e);
 void lvglRefreshOtaUi();
+void lvglRefreshHc12Ui();
 void loadGamePrefs();
 void screensaverSetActive(bool active);
 void screensaverService();
@@ -464,6 +476,8 @@ bool handleUiSettingMessage(const char *msg);
 void loadUiRuntimeConfig();
 void applyAirplaneMode(bool enabled, const char *reason);
 void lvglRefreshConfigUi();
+void lvglHc12ToggleSetEvent(lv_event_t *e);
+void lvglHc12SendEvent(lv_event_t *e);
 void lvglSaveDeviceNameEvent(lv_event_t *e);
 void lvglSetConfigKeyboardVisible(bool visible);
 void lvglShowChatAirplanePrompt();
@@ -589,6 +603,7 @@ static lv_obj_t *lvglScrConfig = nullptr;
 static lv_obj_t *lvglScrStyle = nullptr;
 static lv_obj_t *lvglScrOta = nullptr;
 static lv_obj_t *lvglScrScreensaver = nullptr;
+static lv_obj_t *lvglScrHc12 = nullptr;
 static lv_obj_t *lvglScrMqttCfg = nullptr;
 static lv_obj_t *lvglScrMqttCtrl = nullptr;
 static lv_obj_t *lvglScrSnake = nullptr;
@@ -633,6 +648,10 @@ static lv_obj_t *lvglMediaVolSlider = nullptr;
 static lv_obj_t *lvglMediaVolValueLabel = nullptr;
 static lv_obj_t *lvglMediaProgressBar = nullptr;
 static lv_obj_t *lvglMediaProgressLabel = nullptr;
+static lv_obj_t *lvglHc12SetBtn = nullptr;
+static lv_obj_t *lvglHc12SetBtnLabel = nullptr;
+static lv_obj_t *lvglHc12TerminalTa = nullptr;
+static lv_obj_t *lvglHc12CmdTa = nullptr;
 static lv_obj_t *lvglMqttStatusLabel = nullptr;
 static lv_obj_t *lvglMqttStatusPanel = nullptr;
 static lv_obj_t *lvglMqttCountLabel = nullptr;
@@ -665,6 +684,8 @@ static lv_obj_t *lvglChatPeerScanBtn = nullptr;
 static lv_obj_t *lvglAirplaneBtn = nullptr;
 static lv_obj_t *lvglAirplaneBtnLabel = nullptr;
 static lv_obj_t *lvglConfigWrap = nullptr;
+static lv_obj_t *lvglHc12Wrap = nullptr;
+static lv_obj_t *lvglHc12CmdRow = nullptr;
 static lv_obj_t *lvglStyleScreensaverSw = nullptr;
 static lv_obj_t *lvglStyleTimeoutSlider = nullptr;
 static lv_obj_t *lvglStyleTimeoutValueLabel = nullptr;
@@ -1009,6 +1030,7 @@ enum UiScreen : uint8_t {
     UI_CONFIG_STYLE,
     UI_CONFIG_OTA,
     UI_SCREENSAVER,
+    UI_CONFIG_HC12,
     UI_CONFIG_MQTT_CONFIG,
     UI_CONFIG_MQTT_CONTROLS,
     UI_GAME_SNAKE,
@@ -1349,6 +1371,7 @@ bool snakePaused = false;
 bool snakeGameOver = false;
 uint16_t snakeScore = 0;
 uint16_t snakeHighScore = 0;
+uint16_t snakeLastScore = 0;
 unsigned long snakeLastStepMs = 0;
 
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
@@ -1374,6 +1397,7 @@ bool snake3dPaused = false;
 bool snake3dGameOver = false;
 uint16_t snake3dScore = 0;
 uint16_t snake3dHighScore = 0;
+uint16_t snake3dLastScore = 0;
 unsigned long snake3dLastStepMs = 0;
 #endif
 
@@ -1395,6 +1419,7 @@ bool tetrisPaused = false;
 bool tetrisGameOver = false;
 uint16_t tetrisScore = 0;
 uint16_t tetrisHighScore = 0;
+uint16_t tetrisLastScore = 0;
 unsigned long tetrisLastStepMs = 0;
 
 static constexpr int CHECKERS_MAX_BOARD_SIZE = 12;
@@ -1452,6 +1477,8 @@ bool checkersPeerPopupOpen = false;
 bool checkersVariantPopupOpen = true;
 bool checkersGameOver = false;
 int8_t checkersWinnerSide = 0;
+uint16_t checkersLocalWins = 0;
+uint16_t checkersRemoteWins = 0;
 unsigned long checkersAiDueMs = 0;
 
 struct GameBoardLayout {
@@ -1512,6 +1539,12 @@ Preferences mqttPrefs;
 Preferences uiPrefs;
 Preferences p2pPrefs;
 Preferences gamePrefs;
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+HardwareSerial hc12Serial(HC12_UART_NUM);
+bool hc12SerialReady = false;
+bool hc12SetAsserted = false;
+String hc12TerminalLog;
+#endif
 char *serialLogRing = nullptr;
 size_t serialLogHead = 0;
 size_t serialLogCount = 0;
@@ -3128,6 +3161,7 @@ static const char *uiScreenName(UiScreen screen)
         case UI_CONFIG: return "Config";
         case UI_CONFIG_STYLE: return "Style";
         case UI_CONFIG_OTA: return "OTA Updates";
+        case UI_CONFIG_HC12: return "HC12 Config";
         case UI_CONFIG_MQTT_CONFIG: return "MQTT Config";
         case UI_CONFIG_MQTT_CONTROLS: return "MQTT Controls";
         case UI_GAME_CHECKERS: return "Checkers";
@@ -3154,6 +3188,7 @@ static bool lvglCanBuildScreen(UiScreen screen)
         case UI_CONFIG:
         case UI_CONFIG_STYLE:
         case UI_CONFIG_OTA:
+        case UI_CONFIG_HC12:
             freeMin = 32000U;
             largestMin = 14000U;
             break;
@@ -4322,6 +4357,12 @@ void lvglScreenshotEvent(lv_event_t *e);
 void lvglBrightnessEvent(lv_event_t *e);
 void lvglRgbLedEvent(lv_event_t *e);
 void lvglTextAreaFocusEvent(lv_event_t *e);
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+static void hc12InitIfNeeded();
+static void hc12AppendTerminal(const char *text);
+static void hc12SendLine(const String &line);
+static void hc12Service();
+#endif
 void lvglWifiApShowToggleEvent(lv_event_t *e);
 void lvglWifiPwdCancelEvent(lv_event_t *e);
 void lvglWifiPwdConnectEvent(lv_event_t *e);
@@ -4403,6 +4444,7 @@ static bool uiScreenSupportsSwipeBack(UiScreen screen)
         case UI_CONFIG:
         case UI_CONFIG_STYLE:
         case UI_CONFIG_OTA:
+        case UI_CONFIG_HC12:
         case UI_CONFIG_MQTT_CONFIG:
         case UI_CONFIG_MQTT_CONTROLS:
         case UI_GAME_SNAKE:
@@ -4428,6 +4470,7 @@ lv_obj_t *lvglScreenForUi(UiScreen screen)
         case UI_CONFIG: return lvglScrConfig;
         case UI_CONFIG_STYLE: return lvglScrStyle;
         case UI_CONFIG_OTA: return lvglScrOta;
+        case UI_CONFIG_HC12: return lvglScrHc12;
         case UI_SCREENSAVER: return lvglScrScreensaver;
         case UI_CONFIG_MQTT_CONFIG: return lvglScrMqttCfg;
         case UI_CONFIG_MQTT_CONTROLS: return lvglScrMqttCtrl;
@@ -4845,13 +4888,16 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_flex_flow(lvglConfigWrap, LV_FLEX_FLOW_COLUMN);
             lv_obj_set_scrollbar_mode(lvglConfigWrap, LV_SCROLLBAR_MODE_OFF);
             lvglCreateMenuButton(lvglConfigWrap, "WiFi Config", lv_color_hex(0x3A8F4B), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_WIFI_LIST)));
-            lvglCreateMenuButton(lvglConfigWrap, "OTA Updates", lv_color_hex(0x2E6F95), lvglOpenOtaScreenEvent, nullptr);
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+            lvglCreateMenuButton(lvglConfigWrap, "HC12 Config", lv_color_hex(0x7A5C2E), lvglOpenHc12ScreenEvent, nullptr);
+#endif
             lvglAirplaneBtn = lvglCreateMenuButton(lvglConfigWrap, "Airplane: OFF", lv_color_hex(0x8A5A25), lvglAirplaneToggleEvent, nullptr);
             if (lvglAirplaneBtn) lvglAirplaneBtnLabel = lv_obj_get_child(lvglAirplaneBtn, 0);
             lvglCreateMenuButton(lvglConfigWrap, "Style", lv_color_hex(0x2D6D8E), lvglOpenStyleScreenEvent, nullptr);
             lvglCreateMenuButton(lvglConfigWrap, "MQTT Config", lv_color_hex(0x6D4B9A), lvglOpenMqttCfgEvent, nullptr);
             lvglCreateMenuButton(lvglConfigWrap, "MQTT Controls", lv_color_hex(0x2D6D8E), lvglOpenMqttCtrlEvent, nullptr);
             lvglCreateMenuButton(lvglConfigWrap, "Screenshot", lv_color_hex(0x6B5B2A), lvglScreenshotEvent, nullptr);
+            lvglCreateMenuButton(lvglConfigWrap, "OTA Updates", lv_color_hex(0x2E6F95), lvglOpenOtaScreenEvent, nullptr);
 
             lv_obj_t *nameWrap = lv_obj_create(lvglConfigWrap);
             lv_obj_set_size(nameWrap, lv_pct(100), LV_SIZE_CONTENT);
@@ -5092,6 +5138,78 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglRefreshOtaUi();
             break;
         }
+        case UI_CONFIG_HC12: {
+            lvglScrHc12 = lvglCreateScreenBase("HC12 Config", false);
+            lvglHc12Wrap = lv_obj_create(lvglScrHc12);
+            lv_obj_set_size(lvglHc12Wrap, lv_pct(100), UI_CONTENT_H);
+            lv_obj_align(lvglHc12Wrap, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
+            lv_obj_set_style_bg_color(lvglHc12Wrap, lv_color_hex(0x111922), 0);
+            lv_obj_set_style_border_width(lvglHc12Wrap, 0, 0);
+            lv_obj_set_style_pad_all(lvglHc12Wrap, 8, 0);
+            lv_obj_set_style_pad_row(lvglHc12Wrap, 8, 0);
+            lv_obj_set_flex_flow(lvglHc12Wrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_scroll_dir(lvglHc12Wrap, LV_DIR_VER);
+            lv_obj_set_scrollbar_mode(lvglHc12Wrap, LV_SCROLLBAR_MODE_OFF);
+
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+            lv_obj_t *topRow = lv_obj_create(lvglHc12Wrap);
+            lv_obj_set_size(topRow, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(topRow, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(topRow, 0, 0);
+            lv_obj_set_style_pad_all(topRow, 0, 0);
+            lv_obj_set_style_pad_column(topRow, 8, 0);
+            lv_obj_set_flex_flow(topRow, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(topRow, LV_OBJ_FLAG_SCROLLABLE);
+
+            lvglHc12SetBtn = makeSmallBtn(topRow, "SET: OFF", 96, 34, lv_color_hex(0x7A5C2E), lvglHc12ToggleSetEvent, nullptr);
+            if (lvglHc12SetBtn) lvglHc12SetBtnLabel = lv_obj_get_child(lvglHc12SetBtn, 0);
+
+            lv_obj_t *pinLbl = lv_label_create(topRow);
+            lv_obj_set_flex_grow(pinLbl, 1);
+            lv_obj_set_style_text_color(pinLbl, lv_color_hex(0xC9D7E3), 0);
+            lv_label_set_text(pinLbl, "HC12 RXD 4  TXD 5  SET 3  9600 baud");
+
+            lvglHc12TerminalTa = lv_textarea_create(lvglHc12Wrap);
+            lv_obj_set_width(lvglHc12TerminalTa, lv_pct(100));
+            lv_obj_set_height(lvglHc12TerminalTa, UI_CONTENT_H - 108);
+            lv_textarea_set_one_line(lvglHc12TerminalTa, false);
+            lv_textarea_set_placeholder_text(lvglHc12TerminalTa, "HC-12 terminal output");
+            lv_obj_set_style_bg_color(lvglHc12TerminalTa, lv_color_hex(0x091118), 0);
+            lv_obj_set_style_text_color(lvglHc12TerminalTa, lv_color_hex(0x82F6A2), 0);
+            lv_obj_set_style_border_color(lvglHc12TerminalTa, lv_color_hex(0x2D495E), 0);
+            lv_obj_set_style_border_width(lvglHc12TerminalTa, 1, 0);
+            lv_obj_clear_flag(lvglHc12TerminalTa, LV_OBJ_FLAG_CLICKABLE);
+            lv_textarea_set_cursor_click_pos(lvglHc12TerminalTa, false);
+
+            lvglHc12CmdRow = lv_obj_create(lvglHc12Wrap);
+            lv_obj_set_size(lvglHc12CmdRow, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(lvglHc12CmdRow, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(lvglHc12CmdRow, 0, 0);
+            lv_obj_set_style_pad_all(lvglHc12CmdRow, 0, 0);
+            lv_obj_set_style_pad_column(lvglHc12CmdRow, 8, 0);
+            lv_obj_set_flex_flow(lvglHc12CmdRow, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(lvglHc12CmdRow, LV_OBJ_FLAG_SCROLLABLE);
+
+            lvglHc12CmdTa = lv_textarea_create(lvglHc12CmdRow);
+            lv_obj_set_height(lvglHc12CmdTa, 36);
+            lv_obj_set_width(lvglHc12CmdTa, lv_pct(100));
+            lv_obj_set_flex_grow(lvglHc12CmdTa, 1);
+            lv_textarea_set_one_line(lvglHc12CmdTa, true);
+            lv_textarea_set_placeholder_text(lvglHc12CmdTa, "AT or text to send");
+            lv_obj_add_event_cb(lvglHc12CmdTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
+
+            makeSmallBtn(lvglHc12CmdRow, "Send", 70, 36, lv_color_hex(0x2F6D86), lvglHc12SendEvent, nullptr);
+            hc12InitIfNeeded();
+#else
+            lv_obj_t *note = lv_label_create(lvglHc12Wrap);
+            lv_obj_set_width(note, lv_pct(100));
+            lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
+            lv_obj_set_style_text_color(note, lv_color_hex(0xE5ECF3), 0);
+            lv_label_set_text(note, "HC12 Config is available only on the ESP32-S3 PSRAM board. The requested GPIO4, GPIO5, and GPIO3 pins conflict with older board wiring.");
+#endif
+            lvglRefreshHc12Ui();
+            break;
+        }
         case UI_SCREENSAVER: {
             lvglScrScreensaver = lv_obj_create(nullptr);
             lv_obj_set_style_bg_color(lvglScrScreensaver, lv_color_hex(0x000000), 0);
@@ -5277,7 +5395,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
 
                 lvglSnakeOverlay = lv_obj_create(lvglSnakeBoardObj);
                 if (lvglSnakeOverlay) {
-                    lv_obj_set_size(lvglSnakeOverlay, min<lv_coord_t>(snakeBoardWidth - 16, 324), min<lv_coord_t>(snakeBoardHeight - 16, 389));
+                    lv_obj_set_size(lvglSnakeOverlay, min<lv_coord_t>(snakeBoardWidth - 16, 324), min<lv_coord_t>(snakeBoardHeight - 16, 467));
                     lv_obj_center(lvglSnakeOverlay);
                     lv_obj_set_style_bg_color(lvglSnakeOverlay, lv_color_hex(0x12202B), 0);
                     lv_obj_set_style_bg_opa(lvglSnakeOverlay, LV_OPA_90, 0);
@@ -5703,6 +5821,8 @@ void lvglOpenScreen(UiScreen screen, lv_scr_load_anim_t anim)
         lvglRefreshStyleUi();
     } else if (screen == UI_CONFIG_OTA) {
         lvglRefreshOtaUi();
+    } else if (screen == UI_CONFIG_HC12) {
+        lvglRefreshHc12Ui();
     }
     lvglRefreshTopIndicators();
     lvglLoadScreen(target, anim);
@@ -5741,6 +5861,7 @@ void lvglNavigateBackBySwipe()
             lvglOpenScreen(UI_CONFIG, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
             break;
         case UI_CONFIG_OTA:
+        case UI_CONFIG_HC12:
             lvglOpenScreen(UI_CONFIG, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
             break;
         case UI_GAME_SNAKE:
@@ -7666,6 +7787,8 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
                     lvglWifiPwdConnectEvent(nullptr);
                 } else if (code == LV_EVENT_READY && lvglConfigDeviceNameTa && lv_keyboard_get_textarea(lvglKb) == lvglConfigDeviceNameTa) {
                     lvglSaveDeviceNameEvent(nullptr);
+                } else if (code == LV_EVENT_READY && lvglHc12CmdTa && lv_keyboard_get_textarea(lvglKb) == lvglHc12CmdTa) {
+                    lvglHc12SendEvent(nullptr);
                 } else if (code == LV_EVENT_READY && lvglChatInputTa && lv_keyboard_get_textarea(lvglKb) == lvglChatInputTa) {
                     if (lvglChatPromptIfAirplaneBlocked()) return;
                     const char *raw = lv_textarea_get_text(lvglChatInputTa);
@@ -7695,8 +7818,97 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
     lv_keyboard_set_textarea(lvglKb, ta);
     lv_obj_clear_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
     if (ta == lvglChatInputTa) lvglSetChatKeyboardVisible(true);
-    if (ta == lvglConfigDeviceNameTa) lvglSetConfigKeyboardVisible(true);
+    if (ta == lvglConfigDeviceNameTa || ta == lvglHc12CmdTa) lvglSetConfigKeyboardVisible(true);
 }
+
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+static void hc12InitIfNeeded()
+{
+    if (hc12SerialReady) return;
+    pinMode(HC12_SET_PIN, OUTPUT);
+    digitalWrite(HC12_SET_PIN, HIGH);
+    hc12Serial.begin(HC12_BAUD, SERIAL_8N1, HC12_RX_PIN, HC12_TX_PIN);
+    hc12SerialReady = true;
+    hc12SetAsserted = false;
+    hc12AppendTerminal("[HC12] Serial1 ready on ESP RX5 TX4\n[HC12] HC12 RXD->GPIO4 TXD->GPIO5 SET->GPIO3\n");
+}
+
+static void hc12AppendTerminal(const char *text)
+{
+    if (!text || !*text) return;
+    hc12TerminalLog += text;
+    if (hc12TerminalLog.length() > HC12_TERMINAL_MAX_CHARS) {
+        hc12TerminalLog.remove(0, hc12TerminalLog.length() - HC12_TERMINAL_MAX_CHARS);
+        const int firstNewline = hc12TerminalLog.indexOf('\n');
+        if (firstNewline > 0) hc12TerminalLog.remove(0, firstNewline + 1);
+    }
+    if (lvglHc12TerminalTa && uiScreen == UI_CONFIG_HC12) {
+        lv_textarea_set_text(lvglHc12TerminalTa, hc12TerminalLog.c_str());
+        lv_textarea_set_cursor_pos(lvglHc12TerminalTa, LV_TEXTAREA_CURSOR_LAST);
+    }
+}
+
+static void hc12SendLine(const String &line)
+{
+    hc12InitIfNeeded();
+    while (hc12Serial.available() > 0) hc12Serial.read();
+    hc12Serial.print(line);
+    hc12Serial.flush();
+    String echoed = String("> ") + line + "\n";
+    hc12AppendTerminal(echoed.c_str());
+}
+
+void lvglHc12ToggleSetEvent(lv_event_t *e)
+{
+    (void)e;
+    hc12InitIfNeeded();
+    hc12SetAsserted = !hc12SetAsserted;
+    digitalWrite(HC12_SET_PIN, hc12SetAsserted ? LOW : HIGH);
+    delay(hc12SetAsserted ? 80 : 40);
+    hc12AppendTerminal(hc12SetAsserted ? "[HC12] SET asserted, AT mode requested\n"
+                                       : "[HC12] SET released, normal radio mode\n");
+    lvglRefreshHc12Ui();
+}
+
+void lvglHc12SendEvent(lv_event_t *e)
+{
+    (void)e;
+    if (!lvglHc12CmdTa) return;
+    String line = lv_textarea_get_text(lvglHc12CmdTa);
+    line.trim();
+    if (line.isEmpty()) return;
+    hc12SendLine(line);
+    lv_textarea_set_text(lvglHc12CmdTa, "");
+}
+
+static void hc12Service()
+{
+    if (!hc12SerialReady) return;
+    static char rxBuf[128];
+    static size_t rxLen = 0;
+    while (hc12Serial.available() > 0) {
+        const int ch = hc12Serial.read();
+        if (ch < 0) break;
+        if (ch == '\r') continue;
+        if (rxLen < sizeof(rxBuf) - 2) rxBuf[rxLen++] = static_cast<char>(ch);
+        if (ch == '\n' || rxLen >= sizeof(rxBuf) - 2) {
+            if (rxLen == 0 || rxBuf[rxLen - 1] != '\n') rxBuf[rxLen++] = '\n';
+            rxBuf[rxLen] = '\0';
+            hc12AppendTerminal(rxBuf);
+            rxLen = 0;
+        }
+    }
+    if (rxLen > 0 && hc12Serial.available() == 0) {
+        rxBuf[rxLen++] = '\n';
+        rxBuf[rxLen] = '\0';
+        hc12AppendTerminal(rxBuf);
+        rxLen = 0;
+    }
+}
+#else
+void lvglHc12ToggleSetEvent(lv_event_t *e) { (void)e; }
+void lvglHc12SendEvent(lv_event_t *e) { (void)e; }
+#endif
 
 void lvglWifiPwdCancelEvent(lv_event_t *e)
 {
@@ -8378,14 +8590,14 @@ void lvglRefreshSnakeBoard()
         const bool showOverlay = !snakeStarted || snakeGameOver || snakePaused;
         const bool pauseOverlay = snakePaused && snakeStarted && !snakeGameOver;
         lv_coord_t overlayW = pauseOverlay ? min<lv_coord_t>(DISPLAY_WIDTH - 64, 140) : min<lv_coord_t>(DISPLAY_WIDTH - 20, 324);
-        lv_coord_t overlayH = pauseOverlay ? 76 : min<lv_coord_t>(UI_CONTENT_H - 8, 389);
+        lv_coord_t overlayH = pauseOverlay ? 76 : min<lv_coord_t>(UI_CONTENT_H - 8, 467);
         if (lvglSnakeBoardObj) {
             lv_area_t boardCoords;
             lv_obj_get_coords(lvglSnakeBoardObj, &boardCoords);
             const lv_coord_t boardWidth = static_cast<lv_coord_t>(boardCoords.x2 - boardCoords.x1 + 1);
             const lv_coord_t boardHeight = static_cast<lv_coord_t>(boardCoords.y2 - boardCoords.y1 + 1);
             overlayW = min<lv_coord_t>(overlayW, max<lv_coord_t>(120, boardWidth - 16));
-            overlayH = min<lv_coord_t>(overlayH, max<lv_coord_t>(114, boardHeight - 16));
+            overlayH = min<lv_coord_t>(overlayH, max<lv_coord_t>(137, boardHeight - 16));
         }
         lv_obj_set_size(lvglSnakeOverlay, overlayW, overlayH);
         lv_obj_center(lvglSnakeOverlay);
@@ -8399,7 +8611,7 @@ void lvglRefreshSnakeBoard()
         if (lvglSnakeOverlaySubLabel) {
             String msg = pauseOverlay ? String("Tap center button to resume")
                                       : (snakeGameOver ? ("Score " + String(snakeScore) + "\nBest " + String(snakeHighScore))
-                                                       : ("Tap Start when ready\nBest " + String(snakeHighScore)));
+                                                       : ("Tap Start when ready\nBest " + String(snakeHighScore) + "\nLast " + String(snakeLastScore)));
             lv_label_set_text(lvglSnakeOverlaySubLabel, msg.c_str());
         }
         if (lvglSnakeOverlayBtn) {
@@ -8771,10 +8983,10 @@ void lvglRefreshSnake3dBoard()
         if (pauseOverlay) lv_label_set_text(lvglSnake3dOverlayTitle, "PAUSE");
         else lv_label_set_text(lvglSnake3dOverlayTitle, snake3dGameOver ? "Game Over" : "Snake 3D");
     }
-    if (lvglSnake3dOverlaySubLabel) {
-        String msg = pauseOverlay ? String("Resume to keep climbing the 3D grid")
-                                  : (snake3dGameOver ? ("Score " + String(snake3dScore) + "\nBest " + String(snake3dHighScore))
-                                                     : String("Chase camera 3D snake\nArrows move on the floor, Z+/Z- change height"));
+        if (lvglSnake3dOverlaySubLabel) {
+            String msg = pauseOverlay ? String("Resume to keep climbing the 3D grid")
+                                      : (snake3dGameOver ? ("Score " + String(snake3dScore) + "\nBest " + String(snake3dHighScore))
+                                                     : ("Chase camera 3D snake\nBest " + String(snake3dHighScore) + "  Last " + String(snake3dLastScore)));
         lv_label_set_text(lvglSnake3dOverlaySubLabel, msg.c_str());
     }
     if (lvglSnake3dOverlayBtn) {
@@ -8823,7 +9035,7 @@ void lvglRefreshTetrisBoard()
         if (lvglTetrisOverlaySubLabel) {
             String msg = pauseOverlay ? String("Tap center button to resume")
                                       : (tetrisGameOver ? ("Score " + String(tetrisScore) + "\nBest " + String(tetrisHighScore))
-                                                        : ("Tap Start when ready\nBest " + String(tetrisHighScore)));
+                                                       : ("Tap Start when ready\nBest " + String(tetrisHighScore) + "\nLast " + String(tetrisLastScore)));
             lv_label_set_text(lvglTetrisOverlaySubLabel, msg.c_str());
         }
         if (lvglTetrisOverlayBtn) {
@@ -8896,6 +9108,14 @@ void lvglOpenOtaScreenEvent(lv_event_t *e)
     lvglRefreshOtaUi();
     lvglOpenScreen(UI_CONFIG_OTA, LV_SCR_LOAD_ANIM_MOVE_LEFT);
     otaCheckRequested = true;
+}
+
+void lvglOpenHc12ScreenEvent(lv_event_t *e)
+{
+    (void)e;
+    lvglEnsureScreenBuilt(UI_CONFIG_HC12);
+    lvglRefreshHc12Ui();
+    lvglOpenScreen(UI_CONFIG_HC12, LV_SCR_LOAD_ANIM_MOVE_LEFT);
 }
 
 void lvglBackToConfigEvent(lv_event_t *e)
@@ -9400,9 +9620,20 @@ void screensaverService()
 
 void lvglSetConfigKeyboardVisible(bool visible)
 {
-    if (!lvglConfigWrap || !lvglConfigDeviceNameTa) return;
-    lv_obj_set_style_pad_bottom(lvglConfigWrap, visible ? 132 : 10, 0);
-    if (visible) lv_obj_scroll_to_view_recursive(lvglConfigDeviceNameTa, LV_ANIM_ON);
+    const lv_coord_t keyboardPad = visible ? 132 : 10;
+    if (lvglConfigWrap) lv_obj_set_style_pad_bottom(lvglConfigWrap, keyboardPad, 0);
+    if (lvglHc12Wrap) lv_obj_set_style_pad_bottom(lvglHc12Wrap, keyboardPad, 0);
+
+    if (lvglHc12TerminalTa) {
+        lv_obj_set_height(lvglHc12TerminalTa, visible ? (UI_CONTENT_H - 176) : (UI_CONTENT_H - 108));
+    }
+
+    if (visible) {
+        if (uiScreen == UI_CONFIG_HC12 && lvglHc12CmdTa) lv_obj_scroll_to_view_recursive(lvglHc12CmdTa, LV_ANIM_ON);
+        else if (lvglConfigDeviceNameTa) lv_obj_scroll_to_view_recursive(lvglConfigDeviceNameTa, LV_ANIM_ON);
+    } else if (uiScreen == UI_CONFIG_HC12 && lvglHc12CmdRow && lvglHc12Wrap) {
+        lv_obj_scroll_to_y(lvglHc12Wrap, 0, LV_ANIM_ON);
+    }
 }
 
 void lvglBuildUi()
@@ -10080,12 +10311,16 @@ void snakeStep()
     if (nx < 0 || nx >= SNAKE_COLS || ny < 0 || ny >= SNAKE_ROWS) {
         snakeGameOver = true;
         snakeStarted = false;
+        snakeLastScore = snakeScore;
+        saveGameValue("snake_last", snakeLastScore);
         snakeMaybeStoreHighScore(true);
         return;
     }
     if (snakeCellOccupied(nx, ny)) {
         snakeGameOver = true;
         snakeStarted = false;
+        snakeLastScore = snakeScore;
+        saveGameValue("snake_last", snakeLastScore);
         snakeMaybeStoreHighScore(true);
         return;
     }
@@ -10208,6 +10443,8 @@ static void snake3dStep()
     if (nx < 0 || nx >= SNAKE3D_COLS || ny < 0 || ny >= SNAKE3D_ROWS || nz < 0 || nz >= SNAKE3D_LAYERS || snake3dCellOccupied(nx, ny, nz)) {
         snake3dGameOver = true;
         snake3dStarted = false;
+        snake3dLastScore = snake3dScore;
+        saveGameValue("snake3d_last", snake3dLastScore);
         snake3dMaybeStoreHighScore(true);
         return;
     }
@@ -10233,6 +10470,27 @@ static void snake3dStep()
     }
 }
 
+void lvglRefreshHc12Ui()
+{
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+    if (lvglHc12SetBtnLabel) lv_label_set_text(lvglHc12SetBtnLabel, hc12SetAsserted ? "SET: ON" : "SET: OFF");
+    if (lvglHc12SetBtn) {
+        lv_obj_set_style_bg_color(lvglHc12SetBtn,
+                                  hc12SetAsserted ? lv_color_hex(0xC06C2B) : lv_color_hex(0x7A5C2E),
+                                  LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(lvglHc12SetBtn,
+                                  hc12SetAsserted ? lv_color_hex(0xD27E38) : lv_color_hex(0x8C6A34),
+                                  LV_PART_MAIN | LV_STATE_PRESSED);
+    }
+    if (lvglHc12TerminalTa) {
+        lv_textarea_set_text(lvglHc12TerminalTa, hc12TerminalLog.c_str());
+        lv_textarea_set_cursor_pos(lvglHc12TerminalTa, LV_TEXTAREA_CURSOR_LAST);
+    }
+#else
+    (void)lvglHc12SetBtn;
+#endif
+}
+
 void snake3dTick()
 {
     if (uiScreen != UI_GAME_SNAKE3D) return;
@@ -10242,6 +10500,12 @@ void snake3dTick()
     snake3dLastStepMs = now;
     snake3dStep();
     lvglRefreshSnake3dBoard();
+}
+#endif
+
+#if !defined(BOARD_ESP32S3_3248S035_N16R8)
+void lvglRefreshHc12Ui()
+{
 }
 #endif
 
@@ -10299,6 +10563,8 @@ void tetrisSpawnPiece()
     if (!tetrisCanPlace(tetrisX, tetrisY, tetrisType, tetrisRot)) {
         tetrisGameOver = true;
         tetrisStarted = false;
+        tetrisLastScore = tetrisScore;
+        saveGameValue("tetris_last", tetrisLastScore);
         tetrisMaybeStoreHighScore(true);
     }
 }
@@ -10692,14 +10958,15 @@ static void checkersUpdateHintMoves()
 static String checkersModeLabelText()
 {
     const String variant = String(checkersVariantName(checkersVariant));
+    const String stats = " W " + String(checkersLocalWins) + ":" + String(checkersRemoteWins);
     switch (checkersMode) {
         case CHECKERS_MODE_ESP32:
-            return variant + " / ESP32";
+            return variant + " / ESP32" + stats;
         case CHECKERS_MODE_TAG:
-            if (!checkersPeerKey.isEmpty()) return variant + " / Tag MP: " + checkersPeerDisplayName();
-            return variant + " / Tag Multiplayer";
+            if (!checkersPeerKey.isEmpty()) return variant + " / Tag MP: " + checkersPeerDisplayName() + stats;
+            return variant + " / Tag Multiplayer" + stats;
         default:
-            return variant;
+            return variant + stats;
     }
 }
 
@@ -10728,6 +10995,15 @@ static void checkersFinishGame(int8_t winnerSide)
     checkersWinnerSide = winnerSide;
     checkersAiDueMs = 0;
     checkersWaitingForRemote = false;
+    if ((checkersMode == CHECKERS_MODE_ESP32 || checkersMode == CHECKERS_MODE_TAG) && checkersLocalSide != 0) {
+        if (winnerSide == checkersLocalSide) {
+            checkersLocalWins++;
+            saveGameValue("checkers_local_wins", checkersLocalWins);
+        } else if (winnerSide == -checkersLocalSide) {
+            checkersRemoteWins++;
+            saveGameValue("checkers_remote_wins", checkersRemoteWins);
+        }
+    }
     checkersClearSelection();
 }
 
@@ -12195,9 +12471,14 @@ void loadGamePrefs()
 {
     gamePrefs.begin("games", true);
     snakeHighScore = static_cast<uint16_t>(gamePrefs.getUInt("snake_best", 0));
+    snakeLastScore = static_cast<uint16_t>(gamePrefs.getUInt("snake_last", 0));
     tetrisHighScore = static_cast<uint16_t>(gamePrefs.getUInt("tetris_best", 0));
+    tetrisLastScore = static_cast<uint16_t>(gamePrefs.getUInt("tetris_last", 0));
+    checkersLocalWins = static_cast<uint16_t>(gamePrefs.getUInt("checkers_local_wins", 0));
+    checkersRemoteWins = static_cast<uint16_t>(gamePrefs.getUInt("checkers_remote_wins", 0));
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
     snake3dHighScore = static_cast<uint16_t>(gamePrefs.getUInt("snake3d_best", 0));
+    snake3dLastScore = static_cast<uint16_t>(gamePrefs.getUInt("snake3d_last", 0));
 #endif
     gamePrefs.end();
 }
@@ -12207,6 +12488,14 @@ static void saveGameHighScore(const char *key, uint16_t score)
     if (!key) return;
     gamePrefs.begin("games", false);
     gamePrefs.putUInt(key, score);
+    gamePrefs.end();
+}
+
+static void saveGameValue(const char *key, uint16_t value)
+{
+    if (!key) return;
+    gamePrefs.begin("games", false);
+    gamePrefs.putUInt(key, value);
     gamePrefs.end();
 }
 
@@ -16342,6 +16631,9 @@ void loop()
         }
     }
     otaUpdateService();
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+    hc12Service();
+#endif
     const bool allowSdAutoRetry = (uiScreen == UI_MEDIA) || !displayAwake;
     if (!sdMounted && allowSdAutoRetry && !isDown && !fsWriteBusy() &&
         static_cast<unsigned long>(millis() - sdLastAutoRetryMs) >= SD_AUTORETRY_PERIOD_MS) {
