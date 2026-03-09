@@ -226,7 +226,7 @@ static constexpr uint16_t LIGHT_RAW_CAL_MAX = 600;
 static constexpr bool LIGHT_LOG_RAW_TO_SERIAL = false;
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.1.7";
+static constexpr const char *FW_VERSION = "0.1.8";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -348,7 +348,14 @@ void refreshWifiScan();
 void wifiScanService();
 void startWifiConnect(const String &ssid, const String &pass);
 void saveStaCreds(const String &ssid, const String &pass);
+void clearStaCreds();
 void saveApCreds(const String &ssid, const String &pass);
+static String wifiDesiredStaSsid();
+static String wifiDesiredStaPass();
+void clearWifiScanResults();
+static bool normalizeSavedApCreds();
+static void snakeMaybeStoreHighScore(bool persist = false);
+static void tetrisMaybeStoreHighScore(bool persist = false);
 void tryBootStaReconnect();
 void sampleTopIndicators();
 const char *authName(wifi_auth_mode_t auth);
@@ -364,9 +371,12 @@ bool mediaPathIsFlac(const String &path);
 bool audioFlacSupportedNow(uint32_t *freeHeapOut = nullptr, uint32_t *largestOut = nullptr);
 wl_status_t wifiStatusSafe();
 bool wifiConnectedSafe();
+bool wifiLanAvailableSafe();
 int32_t wifiRssiSafe();
 String wifiSsidSafe();
 String wifiIpSafe();
+IPAddress wifiLanIpSafe();
+IPAddress wifiLanBroadcastIpSafe();
 void registerWifiEvents();
 static void wifiEnsureRuntimeEnabled(const char *reason, wifi_mode_t mode, bool startWebServer);
 void ensureApOnline(const char *reason);
@@ -392,7 +402,11 @@ void displayBacklightSet(uint8_t level);
 void displayBacklightFadeIn(uint16_t durationMs = 220);
 uint8_t displayBacklightLevelFromPercent(uint8_t percent);
 void snakeResetGame();
+void snakePrepareGame();
+void snakeStartGame();
 void tetrisResetGame();
+void tetrisPrepareGame();
+void tetrisStartGame();
 void tetrisMove(int dx);
 void setupCarInputSocket();
 void serviceCarInputTelemetry();
@@ -400,6 +414,10 @@ String normalizeSdRoutePath(const String &rawPath, bool allowEmptyRoot = false);
 bool sdShouldHideSystemEntry(const String &name);
 String makeUniquePath(const String &path);
 String recycleMetaPathFor(const String &recyclePath);
+bool hasPrimaryWebUi();
+String apLandingContinueUrl();
+void sendWifiSetupPage(AsyncWebServerRequest *request);
+void sendApWifiLandingPage(AsyncWebServerRequest *request);
 String httpsGetText(const String &url, int *statusOut = nullptr);
 String chooseLatestFirmwareBinUrl(const JsonVariantConst &assets);
 bool otaDownloadAndApplyFromUrl(const String &url, String &errorOut);
@@ -413,6 +431,7 @@ static void otaUpdateTask(void *param);
 void lvglOpenOtaScreenEvent(lv_event_t *e);
 void lvglOtaUpdateEvent(lv_event_t *e);
 void lvglRefreshOtaUi();
+void loadGamePrefs();
 void screensaverSetActive(bool active);
 void screensaverService();
 void tetrisRotate();
@@ -650,9 +669,22 @@ static lv_obj_t *lvglBrightnessValueLabel = nullptr;
 static lv_obj_t *lvglRgbLedSlider = nullptr;
 static lv_obj_t *lvglKb = nullptr;
 static lv_obj_t *lvglSnakeScoreLabel = nullptr;
+static lv_obj_t *lvglSnakeBestLabel = nullptr;
+static lv_obj_t *lvglSnakePauseBtnLabel = nullptr;
 static lv_obj_t *lvglTetrisScoreLabel = nullptr;
+static lv_obj_t *lvglTetrisBestLabel = nullptr;
 static lv_obj_t *lvglSnakeBoardObj = nullptr;
 static lv_obj_t *lvglTetrisBoardObj = nullptr;
+static lv_obj_t *lvglSnakeOverlay = nullptr;
+static lv_obj_t *lvglSnakeOverlayTitle = nullptr;
+static lv_obj_t *lvglSnakeOverlaySubLabel = nullptr;
+static lv_obj_t *lvglSnakeOverlayBtn = nullptr;
+static lv_obj_t *lvglSnakeOverlayBtnLabel = nullptr;
+static lv_obj_t *lvglTetrisOverlay = nullptr;
+static lv_obj_t *lvglTetrisOverlayTitle = nullptr;
+static lv_obj_t *lvglTetrisOverlaySubLabel = nullptr;
+static lv_obj_t *lvglTetrisOverlayBtn = nullptr;
+static lv_obj_t *lvglTetrisOverlayBtnLabel = nullptr;
 static lv_obj_t *lvglTopBarRoot = nullptr;
 static constexpr uint8_t LVGL_MAX_TOP_INDICATORS = 16;
 static lv_obj_t *lvglTopIndicators[LVGL_MAX_TOP_INDICATORS] = {};
@@ -1251,7 +1283,9 @@ static constexpr int SNAKE_CELL = 14;
 static constexpr int SNAKE_MAX_CELLS = SNAKE_COLS * SNAKE_ROWS;
 static constexpr int SNAKE_BOARD_X = 36;
 static constexpr int SNAKE_BOARD_Y = 50;
-static constexpr unsigned long SNAKE_STEP_MS = 200;
+static constexpr unsigned long SNAKE_STEP_MS_START = 420;
+static constexpr unsigned long SNAKE_STEP_MS_MIN = 220;
+static constexpr unsigned long SNAKE_STEP_MS_DELTA_PER_FOOD = 5;
 int8_t snakeDir = 3; // 0 up,1 right,2 down,3 left
 int8_t snakeNextDir = 3;
 int snakeLen = 0;
@@ -1259,8 +1293,11 @@ int8_t snakeX[SNAKE_MAX_CELLS];
 int8_t snakeY[SNAKE_MAX_CELLS];
 int8_t snakeFoodX = 0;
 int8_t snakeFoodY = 0;
+bool snakeStarted = false;
+bool snakePaused = false;
 bool snakeGameOver = false;
 uint16_t snakeScore = 0;
+uint16_t snakeHighScore = 0;
 unsigned long snakeLastStepMs = 0;
 
 static constexpr int TETRIS_COLS = 10;
@@ -1268,15 +1305,29 @@ static constexpr int TETRIS_ROWS = 16;
 static constexpr int TETRIS_CELL = 12;
 static constexpr int TETRIS_BOARD_X = 60;
 static constexpr int TETRIS_BOARD_Y = 50;
-static constexpr unsigned long TETRIS_STEP_MS = 550;
+static constexpr unsigned long TETRIS_STEP_MS_START = 900;
+static constexpr unsigned long TETRIS_STEP_MS_MIN = 420;
+static constexpr unsigned long TETRIS_STEP_MS_DELTA_PER_100_SCORE = 10;
 uint8_t tetrisGrid[TETRIS_ROWS][TETRIS_COLS];
 int8_t tetrisType = 0;
 int8_t tetrisRot = 0;
 int8_t tetrisX = 3;
 int8_t tetrisY = 0;
+bool tetrisStarted = false;
 bool tetrisGameOver = false;
 uint16_t tetrisScore = 0;
+uint16_t tetrisHighScore = 0;
 unsigned long tetrisLastStepMs = 0;
+
+struct GameBoardLayout {
+    lv_coord_t width;
+    lv_coord_t height;
+    lv_coord_t scoreHeight;
+    lv_coord_t controlsHeight;
+    lv_coord_t boardTopOffset;
+    lv_coord_t buttonWidth;
+    lv_coord_t buttonHeight;
+};
 
 struct MediaEntry {
     String name;
@@ -1325,6 +1376,7 @@ Preferences batteryPrefs;
 Preferences mqttPrefs;
 Preferences uiPrefs;
 Preferences p2pPrefs;
+Preferences gamePrefs;
 char *serialLogRing = nullptr;
 size_t serialLogHead = 0;
 size_t serialLogCount = 0;
@@ -1384,6 +1436,7 @@ static constexpr unsigned long BOOT_STA_TIMEOUT_MS = 12000;
 static constexpr unsigned long CAR_INPUT_TELEMETRY_PERIOD_MS = 1000UL;
 unsigned long staLastConnectAttemptMs = 0;
 bool apModeActive = false;
+bool wifiForgetPendingUi = false;
 bool wifiEventsRegistered = false;
 volatile bool wifiStaGotIpPending = false;
 volatile bool wifiStaDisconnectedPending = false;
@@ -1636,6 +1689,401 @@ showBtn.onclick = ()=>{ passEl.type = passEl.type === 'password' ? 'text' : 'pas
 scanWifi();
 refreshTelemetry();
 setInterval(refreshTelemetry, 2000);
+</script>
+</body>
+</html>
+)rawliteral";
+
+static const char AP_WIFI_LANDING_HTML[] PROGMEM = R"rawliteral(
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ESP32 AP Setup</title>
+  <style>
+    :root{
+      --bg:#050b14;
+      --panel:#1d1d1f;
+      --panel-2:#20242b;
+      --line:#5b6573;
+      --text:#f4f7fb;
+      --muted:#9db0c5;
+      --accent:#5ea2ff;
+      --accent-2:#7cb342;
+      --danger:#ff8a8a;
+      --tab:#efefef;
+      --tab-text:#101317;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      min-height:100vh;
+      font-family:Segoe UI,Arial,sans-serif;
+      color:var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(94,162,255,.18), transparent 28%),
+        radial-gradient(circle at bottom right, rgba(255,177,66,.12), transparent 24%),
+        linear-gradient(180deg, #02060d 0%, #061120 100%);
+      display:flex;
+      align-items:flex-start;
+      justify-content:center;
+      padding:18px 12px;
+    }
+    .shell{
+      width:min(980px,100%);
+      background:linear-gradient(180deg, rgba(40,44,50,.96), rgba(24,26,29,.98));
+      border:4px solid rgba(255,255,255,.92);
+      border-radius:22px;
+      box-shadow:0 22px 80px rgba(0,0,0,.48);
+      overflow:hidden;
+    }
+    .frame{
+      margin:14px;
+      padding:18px 18px 24px;
+      border-radius:18px;
+      background:linear-gradient(180deg, rgba(30,31,34,.98), rgba(27,28,31,.95));
+      min-height:calc(100vh - 72px);
+      position:relative;
+    }
+    .topbar{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+      margin-bottom:16px;
+    }
+    .title{
+      font-size:30px;
+      font-weight:800;
+      color:#89bcff;
+      display:flex;
+      align-items:center;
+      gap:10px;
+    }
+    .title small{
+      display:block;
+      font-size:13px;
+      font-weight:600;
+      color:var(--muted);
+      margin-top:4px;
+    }
+    .close{
+      width:42px;
+      height:42px;
+      border:none;
+      border-radius:999px;
+      background:#18212d;
+      color:#fff;
+      font-size:30px;
+      cursor:pointer;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+    }
+    .close:hover{background:#223042}
+    h2{
+      font-size:22px;
+      margin:4px 0 8px;
+    }
+    .divider{
+      height:1px;
+      background:rgba(255,255,255,.72);
+      margin:18px 0 28px;
+    }
+    .lead{
+      color:var(--muted);
+      margin-bottom:16px;
+      line-height:1.45;
+    }
+    .panel-grid{
+      display:grid;
+      grid-template-columns:repeat(2,minmax(0,1fr));
+      gap:18px;
+      align-items:start;
+    }
+    .card{
+      background:rgba(27,30,35,.84);
+      border:1px solid rgba(140,154,173,.25);
+      border-radius:14px;
+      padding:18px;
+    }
+    .card h3{
+      margin:0 0 16px;
+      font-size:16px;
+    }
+    .meta{
+      display:grid;
+      gap:10px;
+      color:var(--muted);
+      margin-bottom:14px;
+    }
+    .meta strong{
+      color:#fff;
+      margin-right:8px;
+    }
+    .field{
+      display:grid;
+      gap:8px;
+      margin-bottom:12px;
+    }
+    label{
+      font-weight:700;
+    }
+    select,input,button{
+      font:inherit;
+    }
+    select,input{
+      width:100%;
+      border-radius:8px;
+      border:1px solid #aeb6c1;
+      padding:10px 12px;
+      background:#f3f5f7;
+      color:#111;
+    }
+    .row{
+      display:flex;
+      gap:10px;
+      align-items:center;
+      flex-wrap:wrap;
+    }
+    .row > *{
+      flex:1 1 auto;
+    }
+    .btn{
+      border:none;
+      border-radius:8px;
+      padding:12px 14px;
+      background:#d9dde2;
+      color:#111;
+      cursor:pointer;
+      font-weight:700;
+    }
+    .btn.primary{background:var(--accent);color:#fff}
+    .btn.secondary{background:#d7d7d7}
+    .btn.success{background:var(--accent-2);color:#fff}
+    .btn:disabled{opacity:.6;cursor:wait}
+    .hint{
+      color:#7fb0ff;
+      font-size:13px;
+      margin-top:6px;
+      line-height:1.45;
+    }
+    .status{
+      margin-top:12px;
+      min-height:22px;
+      color:var(--muted);
+      font-weight:600;
+    }
+    .status.error{color:var(--danger)}
+    .saved{
+      min-height:132px;
+      border-left:1px solid rgba(255,255,255,.26);
+      padding-left:18px;
+    }
+    .saved .item{
+      padding:8px 0;
+      border-bottom:1px solid rgba(255,255,255,.08);
+      color:#dfe7ef;
+    }
+    .footer{
+      display:flex;
+      justify-content:space-between;
+      gap:12px;
+      align-items:center;
+      margin-top:22px;
+      flex-wrap:wrap;
+    }
+    .telemetry{
+      color:var(--muted);
+      font-size:14px;
+    }
+    .actions{
+      display:flex;
+      gap:10px;
+      flex-wrap:wrap;
+    }
+    @media (max-width: 820px){
+      body{padding:10px}
+      .frame{min-height:auto;padding:16px}
+      .title{font-size:24px}
+      .panel-grid{grid-template-columns:1fr}
+      .saved{border-left:0;padding-left:0}
+      .close{width:38px;height:38px;font-size:26px}
+      .footer{align-items:stretch}
+      .actions{width:100%}
+      .actions .btn{flex:1 1 auto}
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="frame">
+      <div class="topbar">
+        <div>
+          <div class="title">Settings</div>
+          <small style="color:#a8b7ca">Firmware %FIRMWARE_VERSION%</small>
+        </div>
+        <button id="closeBtn" class="close" title="Close">&times;</button>
+      </div>
+
+      <h2>Wi-Fi Setup</h2>
+      <div class="lead">AP mode is active. Configure infrastructure Wi-Fi first, then continue to the main web UI or the embedded recovery browser.</div>
+      <div class="divider"></div>
+
+      <div class="panel-grid">
+        <div class="card">
+          <h3>Access Point (AP) Details</h3>
+          <div class="meta">
+            <div><strong>AP Name:</strong> %AP_SSID%</div>
+            <div><strong>AP IP:</strong> %AP_IP%</div>
+            <div><strong>Portal:</strong> http://%AP_IP%/</div>
+          </div>
+          <div class="hint">This page is always shown first while the device is in AP mode. Closing it will continue to %CONTINUE_LABEL%.</div>
+        </div>
+
+        <div class="card saved">
+          <h3>Saved Network</h3>
+          <div id="savedNetwork" class="item">Loading...</div>
+          <button id="continueBtn" class="btn secondary" style="margin-top:14px;">Continue</button>
+        </div>
+      </div>
+
+      <div class="panel-grid" style="margin-top:18px;">
+        <div class="card">
+          <h3>Select Wi-Fi</h3>
+          <div class="field">
+            <label for="ssid">Network</label>
+            <select id="ssid"></select>
+          </div>
+          <div class="field">
+            <label for="pass">Password</label>
+            <div class="row">
+              <input id="pass" type="password" placeholder="Enter network password">
+              <button id="showBtn" class="btn" style="flex:0 0 auto;">Show</button>
+            </div>
+          </div>
+          <div class="actions">
+            <button id="scanBtn" class="btn secondary">Scan Wi-Fi Networks</button>
+            <button id="connBtn" class="btn primary">Connect</button>
+          </div>
+          <div id="status" class="status">Ready</div>
+        </div>
+
+        <div class="card">
+          <h3>Device Telemetry</h3>
+          <div id="telemetry" class="telemetry">Loading telemetry...</div>
+          <div class="hint" style="margin-top:18px;">If no SD frontend is present, Continue opens the embedded recovery file browser so you can upload the missing web files.</div>
+        </div>
+      </div>
+
+      <div class="footer">
+        <div id="continueHint" class="telemetry">%CONTINUE_HINT%</div>
+        <div class="actions">
+          <button id="footerContinueBtn" class="btn success">Close and Continue</button>
+        </div>
+      </div>
+    </div>
+  </div>
+<script>
+const continueUrl = "%CONTINUE_URL%";
+const teleEl = document.getElementById('telemetry');
+const statusEl = document.getElementById('status');
+const ssidEl = document.getElementById('ssid');
+const passEl = document.getElementById('pass');
+const showBtn = document.getElementById('showBtn');
+const savedEl = document.getElementById('savedNetwork');
+const actionButtons = [document.getElementById('scanBtn'), document.getElementById('connBtn')];
+
+function showStatus(message, isError){
+  statusEl.textContent = message;
+  statusEl.classList.toggle('error', !!isError);
+}
+
+function continueToUi(){
+  if (!continueUrl) return;
+  window.location.assign(continueUrl);
+}
+
+async function refreshTelemetry(){
+  try{
+    const r = await fetch('/api/telemetry', {cache:'no-store'});
+    const j = await r.json();
+    const wifiLine = j.wifi_connected ? ('Connected to ' + j.wifi_ssid + ' (' + j.wifi_rssi + ' dBm)') : 'Not connected to infrastructure Wi-Fi';
+    teleEl.textContent =
+      'Battery: ' + j.battery_percent + '% (' + j.battery_voltage + 'V) | ' +
+      'Light: ' + j.light_percent + '% | ' +
+      'Wi-Fi: ' + wifiLine;
+    savedEl.textContent = j.wifi_connected ? ('Connected: ' + j.wifi_ssid) : 'Saved network will appear after successful STA connection.';
+  }catch(e){
+    teleEl.textContent = 'Telemetry unavailable';
+    savedEl.textContent = 'Unable to query current network state.';
+  }
+}
+
+async function scanWifi(){
+  try{
+    showStatus('Scanning...', false);
+    actionButtons.forEach(btn => btn.disabled = true);
+    const r = await fetch('/api/wifi/scan', {cache:'no-store'});
+    const j = await r.json();
+    ssidEl.innerHTML = '';
+    const list = Array.isArray(j.networks) ? j.networks : [];
+    list.forEach(n => {
+      const opt = document.createElement('option');
+      opt.value = n.ssid || '';
+      opt.textContent = (n.ssid || '<hidden>') + ' (' + (n.rssi ?? '?') + ' dBm, ' + (n.auth || 'unknown') + ')';
+      ssidEl.appendChild(opt);
+    });
+    if (!list.length) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'No networks found';
+      ssidEl.appendChild(opt);
+    }
+    showStatus('Found ' + list.length + ' network(s)', false);
+  }catch(e){
+    showStatus('Scan failed', true);
+  }finally{
+    actionButtons.forEach(btn => btn.disabled = false);
+  }
+}
+
+async function connectWifi(){
+  const ssid = ssidEl.value || '';
+  const pass = passEl.value || '';
+  if(!ssid){
+    showStatus('Select SSID first', true);
+    return;
+  }
+  try{
+    actionButtons.forEach(btn => btn.disabled = true);
+    showStatus('Connecting...', false);
+    const body = new URLSearchParams({ssid, pass});
+    const r = await fetch('/api/wifi/connect', {method:'POST', body});
+    if(!r.ok) throw new Error(await r.text());
+    showStatus('Connect request sent. The device will try to join ' + ssid + '.', false);
+    setTimeout(refreshTelemetry, 1500);
+  }catch(e){
+    showStatus('Connect failed: ' + e.message, true);
+  }finally{
+    actionButtons.forEach(btn => btn.disabled = false);
+  }
+}
+
+document.getElementById('scanBtn').onclick = scanWifi;
+document.getElementById('connBtn').onclick = connectWifi;
+document.getElementById('closeBtn').onclick = continueToUi;
+document.getElementById('continueBtn').onclick = continueToUi;
+document.getElementById('footerContinueBtn').onclick = continueToUi;
+showBtn.onclick = () => {
+  passEl.type = passEl.type === 'password' ? 'text' : 'password';
+  showBtn.textContent = passEl.type === 'password' ? 'Show' : 'Hide';
+};
+
+scanWifi();
+refreshTelemetry();
+setInterval(refreshTelemetry, 2500);
 </script>
 </body>
 </html>
@@ -1986,6 +2434,11 @@ static inline bool lvglClickSuppressed()
     return static_cast<long>(lvglClickSuppressUntilMs - millis()) > 0;
 }
 
+static inline bool uiScreenKeepsDisplayAwake()
+{
+    return uiScreen == UI_GAME_SNAKE || uiScreen == UI_GAME_TETRIS;
+}
+
 static inline void lvglSuppressClicksAfterGesture()
 {
     lvglClickSuppressUntilMs = millis() + CLICK_SUPPRESS_AFTER_GESTURE_MS;
@@ -2090,6 +2543,7 @@ void lvglTouchReadCb(lv_indev_drv_t *indev, lv_indev_data_t *data)
         if (!lvglSwipeTracking) {
             const unsigned long now = millis();
             if (displayAwake &&
+                !uiScreenKeepsDisplayAwake() &&
                 !lvglKeyboardVisible() &&
                 lvglLastTapReleaseMs != 0 &&
                 static_cast<unsigned long>(now - lvglLastTapReleaseMs) <= static_cast<unsigned long>(DOUBLE_TAP_MAX_GAP) &&
@@ -2145,6 +2599,12 @@ bool wifiConnectedSafe()
     return wifiStatusSafe() == WL_CONNECTED;
 }
 
+bool wifiLanAvailableSafe()
+{
+    if (networkSuspendedForAudio || airplaneModeEnabled) return false;
+    return wifiConnectedSafe() || apModeActive;
+}
+
 int32_t wifiRssiSafe()
 {
     if (!wifiConnectedSafe()) return -127;
@@ -2161,6 +2621,22 @@ String wifiIpSafe()
 {
     if (!wifiConnectedSafe()) return String("-");
     return WiFi.localIP().toString();
+}
+
+IPAddress wifiLanIpSafe()
+{
+    if (networkSuspendedForAudio || airplaneModeEnabled) return IPAddress((uint32_t)0);
+    if (wifiConnectedSafe()) return WiFi.localIP();
+    if (apModeActive) return WiFi.softAPIP();
+    return IPAddress((uint32_t)0);
+}
+
+IPAddress wifiLanBroadcastIpSafe()
+{
+    IPAddress ip = wifiLanIpSafe();
+    if (ip[0] == 0) return IPAddress((uint32_t)0);
+    ip[3] = 255;
+    return ip;
 }
 
 void lvglDrawRectSolid(lv_draw_ctx_t *drawCtx, int x, int y, int w, int h, lv_color_t color, lv_opa_t opa = LV_OPA_COVER)
@@ -2505,6 +2981,86 @@ lv_obj_t *lvglCreateScreenBase(const char *title, bool backToHome = false)
     (void)title;
     (void)backToHome;
     return scr;
+}
+
+static const char *uiScreenName(UiScreen screen)
+{
+    switch (screen) {
+        case UI_CHAT: return "Chat";
+        case UI_CHAT_PEERS: return "Chat Peers";
+        case UI_MEDIA: return "Media";
+        case UI_INFO: return "Info";
+        case UI_CONFIG: return "Config";
+        case UI_CONFIG_STYLE: return "Style";
+        case UI_CONFIG_OTA: return "OTA Updates";
+        case UI_CONFIG_MQTT_CONFIG: return "MQTT Config";
+        case UI_CONFIG_MQTT_CONTROLS: return "MQTT Controls";
+        default: return "Screen";
+    }
+}
+
+static bool lvglCanBuildScreen(UiScreen screen)
+{
+    uint32_t freeMin = 0;
+    uint32_t largestMin = 0;
+
+    switch (screen) {
+        case UI_CHAT:
+        case UI_CHAT_PEERS:
+        case UI_CONFIG_MQTT_CONFIG:
+        case UI_CONFIG_MQTT_CONTROLS:
+            freeMin = 38000U;
+            largestMin = 16000U;
+            break;
+        case UI_MEDIA:
+        case UI_INFO:
+        case UI_CONFIG:
+        case UI_CONFIG_STYLE:
+        case UI_CONFIG_OTA:
+            freeMin = 32000U;
+            largestMin = 14000U;
+            break;
+        default:
+            return true;
+    }
+
+    if (boardHasUsablePsram()) {
+        freeMin = max<uint32_t>(24000U, freeMin / 2U);
+        largestMin = max<uint32_t>(10000U, largestMin / 2U);
+    }
+
+    const uint32_t freeHeap = static_cast<uint32_t>(ESP.getFreeHeap());
+    const uint32_t largest8 = static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    if (freeHeap >= freeMin && largest8 >= largestMin) return true;
+
+    uiStatusLine = String(uiScreenName(screen)) + " unavailable: low memory";
+    if (lvglReady) lvglSyncStatusLine();
+    Serial.printf("[LVGL] build blocked screen=%s free=%lu largest=%lu need=%lu/%lu\n",
+                  uiScreenName(screen),
+                  static_cast<unsigned long>(freeHeap),
+                  static_cast<unsigned long>(largest8),
+                  static_cast<unsigned long>(freeMin),
+                  static_cast<unsigned long>(largestMin));
+    return false;
+}
+
+static GameBoardLayout gameBoardLayout(int cols, int rows)
+{
+    (void)cols;
+    (void)rows;
+    const lv_coord_t scoreHeight = (DISPLAY_HEIGHT >= 460) ? 52 : 44;
+    const lv_coord_t controlsHeight = (DISPLAY_HEIGHT >= 460) ? 122 : 108;
+    const lv_coord_t buttonHeight = (DISPLAY_HEIGHT >= 460) ? 50 : 42;
+    const lv_coord_t boardTopOffset = scoreHeight + 8;
+    GameBoardLayout layout = {};
+    layout.width = max<lv_coord_t>(96, DISPLAY_WIDTH - 10);
+    layout.height = max<lv_coord_t>(96, UI_CONTENT_H - scoreHeight - controlsHeight - 14);
+    layout.scoreHeight = scoreHeight;
+    layout.controlsHeight = controlsHeight;
+    layout.boardTopOffset = boardTopOffset;
+    layout.buttonWidth = max<lv_coord_t>(92, (DISPLAY_WIDTH - 22) / 2);
+    layout.buttonHeight = buttonHeight;
+    return layout;
 }
 
 lv_obj_t *lvglCreateMenuButton(lv_obj_t *parent, const char *txt, lv_color_t color, lv_event_cb_t cb, void *user)
@@ -3497,6 +4053,7 @@ void lvglMqttConnectEvent(lv_event_t *e);
 void lvglMqttPublishDiscoveryEvent(lv_event_t *e);
 void lvglRefreshMqttConfigUi();
 void lvglRefreshMqttControlsUi();
+static bool lvglCanBuildScreen(UiScreen screen);
 void lvglOtaPopupEvent(lv_event_t *e);
 void lvglOtaAvailablePromptEvent(lv_event_t *e);
 void lvglRefreshSnakeBoard();
@@ -3504,6 +4061,7 @@ void lvglRefreshTetrisBoard();
 void lvglSnakeBoardDrawEvent(lv_event_t *e);
 void lvglSnakeRestartEvent(lv_event_t *e);
 void lvglSnakeDirEvent(lv_event_t *e);
+void lvglSnakePauseEvent(lv_event_t *e);
 void lvglTetrisBoardDrawEvent(lv_event_t *e);
 void lvglTetrisRestartEvent(lv_event_t *e);
 void lvglTetrisMoveLeftEvent(lv_event_t *e);
@@ -3565,6 +4123,7 @@ lv_obj_t *lvglScreenForUi(UiScreen screen)
 void lvglEnsureScreenBuilt(UiScreen screen)
 {
     if (lvglScreenForUi(screen)) return;
+    if (!lvglCanBuildScreen(screen)) return;
 
     auto makeSmallBtn = [](lv_obj_t *parent, const char *txt, int w, int h, lv_color_t col, lv_event_cb_t cb, void *ud = nullptr) -> lv_obj_t * {
         if (!parent) return nullptr;
@@ -4354,63 +4913,167 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             break;
         case UI_GAME_SNAKE: {
             lvglScrSnake = lvglCreateScreenBase("Snake", false);
-            lvglSnakeScoreLabel = lv_label_create(lvglScrSnake);
-            if (lvglSnakeScoreLabel) lv_obj_align(lvglSnakeScoreLabel, LV_ALIGN_TOP_LEFT, 10, UI_CONTENT_TOP_Y + 6);
+            const lv_coord_t snakeControlsHeight = 108;
+            const lv_coord_t snakeBoardTop = UI_CONTENT_TOP_Y + 4;
+            const lv_coord_t snakeBoardWidth = DISPLAY_WIDTH - 10;
+            const lv_coord_t snakeBoardHeight = UI_CONTENT_H - snakeControlsHeight - 10;
+            const lv_coord_t snakePadBtn = (DISPLAY_WIDTH >= 460) ? 58 : 42;
+            const lv_coord_t snakePadGap = 8;
+
             lvglSnakeBoardObj = lv_obj_create(lvglScrSnake);
             if (lvglSnakeBoardObj) {
-                lv_obj_set_size(lvglSnakeBoardObj, 150, 174);
-                lv_obj_align(lvglSnakeBoardObj, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y + 30);
+                lv_obj_set_size(lvglSnakeBoardObj, snakeBoardWidth, snakeBoardHeight);
+                lv_obj_align(lvglSnakeBoardObj, LV_ALIGN_TOP_MID, 0, snakeBoardTop);
                 lv_obj_set_style_bg_color(lvglSnakeBoardObj, lv_color_hex(0x0C1218), 0);
                 lv_obj_set_style_border_width(lvglSnakeBoardObj, 0, 0);
-                lv_obj_set_style_radius(lvglSnakeBoardObj, 4, 0);
+                lv_obj_set_style_radius(lvglSnakeBoardObj, 8, 0);
                 lv_obj_clear_flag(lvglSnakeBoardObj, LV_OBJ_FLAG_SCROLLABLE);
                 lv_obj_add_event_cb(lvglSnakeBoardObj, lvglSnakeBoardDrawEvent, LV_EVENT_DRAW_MAIN, nullptr);
+
+                lvglSnakeScoreLabel = lv_label_create(lvglSnakeBoardObj);
+                if (lvglSnakeScoreLabel) {
+                    lv_obj_align(lvglSnakeScoreLabel, LV_ALIGN_TOP_LEFT, 10, 8);
+                    lv_obj_set_style_text_color(lvglSnakeScoreLabel, lv_color_hex(0xEAF2F9), 0);
+                }
+                lvglSnakeBestLabel = lv_label_create(lvglSnakeBoardObj);
+                if (lvglSnakeBestLabel) {
+                    lv_obj_align(lvglSnakeBestLabel, LV_ALIGN_TOP_RIGHT, -10, 8);
+                    lv_obj_set_style_text_color(lvglSnakeBestLabel, lv_color_hex(0xBBD2E6), 0);
+                }
+
+                lvglSnakeOverlay = lv_obj_create(lvglSnakeBoardObj);
+                if (lvglSnakeOverlay) {
+                    lv_obj_set_size(lvglSnakeOverlay, min<lv_coord_t>(snakeBoardWidth - 28, 180), min<lv_coord_t>(snakeBoardHeight - 28, 120));
+                    lv_obj_center(lvglSnakeOverlay);
+                    lv_obj_set_style_bg_color(lvglSnakeOverlay, lv_color_hex(0x12202B), 0);
+                    lv_obj_set_style_bg_opa(lvglSnakeOverlay, LV_OPA_90, 0);
+                    lv_obj_set_style_border_width(lvglSnakeOverlay, 1, 0);
+                    lv_obj_set_style_border_color(lvglSnakeOverlay, lv_color_hex(0x3C566B), 0);
+                    lv_obj_set_style_radius(lvglSnakeOverlay, 14, 0);
+                    lv_obj_set_style_pad_all(lvglSnakeOverlay, 12, 0);
+                    lv_obj_set_style_pad_row(lvglSnakeOverlay, 10, 0);
+                    lv_obj_set_flex_flow(lvglSnakeOverlay, LV_FLEX_FLOW_COLUMN);
+                    lv_obj_set_flex_align(lvglSnakeOverlay, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+                    lv_obj_clear_flag(lvglSnakeOverlay, LV_OBJ_FLAG_SCROLLABLE);
+
+                    lvglSnakeOverlayTitle = lv_label_create(lvglSnakeOverlay);
+                    if (lvglSnakeOverlayTitle) lv_obj_set_style_text_color(lvglSnakeOverlayTitle, lv_color_hex(0xF2F7FB), 0);
+                    lvglSnakeOverlaySubLabel = lv_label_create(lvglSnakeOverlay);
+                    if (lvglSnakeOverlaySubLabel) {
+                        lv_obj_set_width(lvglSnakeOverlaySubLabel, lv_pct(100));
+                        lv_label_set_long_mode(lvglSnakeOverlaySubLabel, LV_LABEL_LONG_WRAP);
+                        lv_obj_set_style_text_align(lvglSnakeOverlaySubLabel, LV_TEXT_ALIGN_CENTER, 0);
+                        lv_obj_set_style_text_color(lvglSnakeOverlaySubLabel, lv_color_hex(0xB7C8D7), 0);
+                    }
+                    lvglSnakeOverlayBtn = makeSmallBtn(lvglSnakeOverlay, "Start", 120, 42, lv_color_hex(0x3A8F4B), lvglSnakeRestartEvent);
+                    if (lvglSnakeOverlayBtn) lvglSnakeOverlayBtnLabel = lv_obj_get_child(lvglSnakeOverlayBtn, 0);
+                }
             }
+
             lv_obj_t *snakeCtl = lv_obj_create(lvglScrSnake);
-            lv_obj_set_size(snakeCtl, lv_pct(100), 58);
+            lv_obj_set_size(snakeCtl, lv_pct(100), snakeControlsHeight);
             lv_obj_align(snakeCtl, LV_ALIGN_BOTTOM_MID, 0, 0);
-            lv_obj_set_style_bg_opa(snakeCtl, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_bg_color(snakeCtl, lv_color_hex(0x101922), 0);
+            lv_obj_set_style_bg_opa(snakeCtl, LV_OPA_COVER, 0);
             lv_obj_set_style_border_width(snakeCtl, 0, 0);
-            lv_obj_set_style_pad_all(snakeCtl, 6, 0);
-            lv_obj_set_style_pad_column(snakeCtl, 6, 0);
-            lv_obj_set_flex_flow(snakeCtl, LV_FLEX_FLOW_ROW_WRAP);
-            makeSmallBtn(snakeCtl, "Restart", 70, 24, lv_color_hex(0x8A5A25), lvglSnakeRestartEvent);
-            makeSmallBtn(snakeCtl, "U", 30, 24, lv_color_hex(0x2F6D86), lvglSnakeDirEvent, reinterpret_cast<void *>(static_cast<intptr_t>(0)));
-            makeSmallBtn(snakeCtl, "D", 30, 24, lv_color_hex(0x2F6D86), lvglSnakeDirEvent, reinterpret_cast<void *>(static_cast<intptr_t>(2)));
-            makeSmallBtn(snakeCtl, "L", 30, 24, lv_color_hex(0x2F6D86), lvglSnakeDirEvent, reinterpret_cast<void *>(static_cast<intptr_t>(3)));
-            makeSmallBtn(snakeCtl, "R", 30, 24, lv_color_hex(0x2F6D86), lvglSnakeDirEvent, reinterpret_cast<void *>(static_cast<intptr_t>(1)));
-            snakeResetGame();
+            lv_obj_set_style_radius(snakeCtl, 0, 0);
+            lv_obj_set_style_pad_all(snakeCtl, 0, 0);
+            lv_obj_clear_flag(snakeCtl, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *upBtn = makeSmallBtn(snakeCtl, "Up", snakePadBtn, snakePadBtn - 2, lv_color_hex(0x2F6D86), lvglSnakeDirEvent, reinterpret_cast<void *>(static_cast<intptr_t>(0)));
+            if (upBtn) lv_obj_align(upBtn, LV_ALIGN_TOP_MID, 0, 4);
+            lv_obj_t *leftBtn = makeSmallBtn(snakeCtl, "Left", snakePadBtn, snakePadBtn - 2, lv_color_hex(0x2F6D86), lvglSnakeDirEvent, reinterpret_cast<void *>(static_cast<intptr_t>(3)));
+            if (leftBtn) lv_obj_align(leftBtn, LV_ALIGN_CENTER, -(snakePadBtn + snakePadGap), 6);
+            lv_obj_t *pauseBtn = makeSmallBtn(snakeCtl, "Play", snakePadBtn, snakePadBtn - 2, lv_color_hex(0x3A8F4B), lvglSnakePauseEvent, nullptr);
+            if (pauseBtn) {
+                lv_obj_align(pauseBtn, LV_ALIGN_CENTER, 0, 6);
+                lvglSnakePauseBtnLabel = lv_obj_get_child(pauseBtn, 0);
+            }
+            lv_obj_t *rightBtn = makeSmallBtn(snakeCtl, "Right", snakePadBtn, snakePadBtn - 2, lv_color_hex(0x2F6D86), lvglSnakeDirEvent, reinterpret_cast<void *>(static_cast<intptr_t>(1)));
+            if (rightBtn) lv_obj_align(rightBtn, LV_ALIGN_CENTER, snakePadBtn + snakePadGap, 6);
+            lv_obj_t *downBtn = makeSmallBtn(snakeCtl, "Down", snakePadBtn, snakePadBtn - 2, lv_color_hex(0x2F6D86), lvglSnakeDirEvent, reinterpret_cast<void *>(static_cast<intptr_t>(2)));
+            if (downBtn) lv_obj_align(downBtn, LV_ALIGN_BOTTOM_MID, 0, -4);
+            snakePrepareGame();
             lvglRefreshSnakeBoard();
             break;
         }
         case UI_GAME_TETRIS: {
             lvglScrTetris = lvglCreateScreenBase("Tetris", false);
-            lvglTetrisScoreLabel = lv_label_create(lvglScrTetris);
-            if (lvglTetrisScoreLabel) lv_obj_align(lvglTetrisScoreLabel, LV_ALIGN_TOP_LEFT, 10, UI_CONTENT_TOP_Y + 6);
+            const GameBoardLayout layout = gameBoardLayout(TETRIS_COLS, TETRIS_ROWS);
+            lv_obj_t *scoreBar = lv_obj_create(lvglScrTetris);
+            lv_obj_set_size(scoreBar, lv_pct(100), layout.scoreHeight);
+            lv_obj_align(scoreBar, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
+            lv_obj_set_style_bg_color(scoreBar, lv_color_hex(0x13202B), 0);
+            lv_obj_set_style_border_width(scoreBar, 0, 0);
+            lv_obj_set_style_radius(scoreBar, 0, 0);
+            lv_obj_set_style_pad_left(scoreBar, 10, 0);
+            lv_obj_set_style_pad_right(scoreBar, 10, 0);
+            lv_obj_set_style_pad_top(scoreBar, 8, 0);
+            lv_obj_set_style_pad_bottom(scoreBar, 8, 0);
+            lv_obj_set_flex_flow(scoreBar, LV_FLEX_FLOW_ROW);
+            lv_obj_set_flex_align(scoreBar, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+            lv_obj_clear_flag(scoreBar, LV_OBJ_FLAG_SCROLLABLE);
+
+            lvglTetrisScoreLabel = lv_label_create(scoreBar);
+            if (lvglTetrisScoreLabel) lv_obj_set_style_text_color(lvglTetrisScoreLabel, lv_color_hex(0xEAF2F9), 0);
+            lvglTetrisBestLabel = lv_label_create(scoreBar);
+            if (lvglTetrisBestLabel) lv_obj_set_style_text_color(lvglTetrisBestLabel, lv_color_hex(0xBBD2E6), 0);
+
             lvglTetrisBoardObj = lv_obj_create(lvglScrTetris);
             if (lvglTetrisBoardObj) {
-                lv_obj_set_size(lvglTetrisBoardObj, 110, 170);
-                lv_obj_align(lvglTetrisBoardObj, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y + 28);
+                lv_obj_set_size(lvglTetrisBoardObj, layout.width, layout.height);
+                lv_obj_align(lvglTetrisBoardObj, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y + layout.boardTopOffset);
                 lv_obj_set_style_bg_color(lvglTetrisBoardObj, lv_color_hex(0x0C1218), 0);
                 lv_obj_set_style_border_width(lvglTetrisBoardObj, 0, 0);
-                lv_obj_set_style_radius(lvglTetrisBoardObj, 4, 0);
+                lv_obj_set_style_radius(lvglTetrisBoardObj, 8, 0);
                 lv_obj_clear_flag(lvglTetrisBoardObj, LV_OBJ_FLAG_SCROLLABLE);
                 lv_obj_add_event_cb(lvglTetrisBoardObj, lvglTetrisBoardDrawEvent, LV_EVENT_DRAW_MAIN, nullptr);
+
+                lvglTetrisOverlay = lv_obj_create(lvglTetrisBoardObj);
+                if (lvglTetrisOverlay) {
+                    lv_obj_set_size(lvglTetrisOverlay, min<lv_coord_t>(layout.width - 28, 180), min<lv_coord_t>(layout.height - 28, 120));
+                    lv_obj_center(lvglTetrisOverlay);
+                    lv_obj_set_style_bg_color(lvglTetrisOverlay, lv_color_hex(0x12202B), 0);
+                    lv_obj_set_style_bg_opa(lvglTetrisOverlay, LV_OPA_90, 0);
+                    lv_obj_set_style_border_width(lvglTetrisOverlay, 1, 0);
+                    lv_obj_set_style_border_color(lvglTetrisOverlay, lv_color_hex(0x3C566B), 0);
+                    lv_obj_set_style_radius(lvglTetrisOverlay, 14, 0);
+                    lv_obj_set_style_pad_all(lvglTetrisOverlay, 12, 0);
+                    lv_obj_set_style_pad_row(lvglTetrisOverlay, 10, 0);
+                    lv_obj_set_flex_flow(lvglTetrisOverlay, LV_FLEX_FLOW_COLUMN);
+                    lv_obj_set_flex_align(lvglTetrisOverlay, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+                    lv_obj_clear_flag(lvglTetrisOverlay, LV_OBJ_FLAG_SCROLLABLE);
+
+                    lvglTetrisOverlayTitle = lv_label_create(lvglTetrisOverlay);
+                    if (lvglTetrisOverlayTitle) lv_obj_set_style_text_color(lvglTetrisOverlayTitle, lv_color_hex(0xF2F7FB), 0);
+                    lvglTetrisOverlaySubLabel = lv_label_create(lvglTetrisOverlay);
+                    if (lvglTetrisOverlaySubLabel) {
+                        lv_obj_set_width(lvglTetrisOverlaySubLabel, lv_pct(100));
+                        lv_label_set_long_mode(lvglTetrisOverlaySubLabel, LV_LABEL_LONG_WRAP);
+                        lv_obj_set_style_text_align(lvglTetrisOverlaySubLabel, LV_TEXT_ALIGN_CENTER, 0);
+                        lv_obj_set_style_text_color(lvglTetrisOverlaySubLabel, lv_color_hex(0xB7C8D7), 0);
+                    }
+                    lvglTetrisOverlayBtn = makeSmallBtn(lvglTetrisOverlay, "Start", 120, 42, lv_color_hex(0x376B93), lvglTetrisRestartEvent);
+                    if (lvglTetrisOverlayBtn) lvglTetrisOverlayBtnLabel = lv_obj_get_child(lvglTetrisOverlayBtn, 0);
+                }
             }
+
             lv_obj_t *tCtl = lv_obj_create(lvglScrTetris);
-            lv_obj_set_size(tCtl, lv_pct(100), 58);
+            lv_obj_set_size(tCtl, lv_pct(100), layout.controlsHeight);
             lv_obj_align(tCtl, LV_ALIGN_BOTTOM_MID, 0, 0);
-            lv_obj_set_style_bg_opa(tCtl, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_bg_color(tCtl, lv_color_hex(0x101922), 0);
+            lv_obj_set_style_bg_opa(tCtl, LV_OPA_COVER, 0);
             lv_obj_set_style_border_width(tCtl, 0, 0);
-            lv_obj_set_style_pad_all(tCtl, 6, 0);
-            lv_obj_set_style_pad_column(tCtl, 6, 0);
+            lv_obj_set_style_radius(tCtl, 0, 0);
+            lv_obj_set_style_pad_all(tCtl, 8, 0);
+            lv_obj_set_style_pad_row(tCtl, 8, 0);
+            lv_obj_set_style_pad_column(tCtl, 8, 0);
             lv_obj_set_flex_flow(tCtl, LV_FLEX_FLOW_ROW_WRAP);
-            makeSmallBtn(tCtl, "Restart", 70, 24, lv_color_hex(0x8A5A25), lvglTetrisRestartEvent);
-            makeSmallBtn(tCtl, "L", 30, 24, lv_color_hex(0x2F6D86), lvglTetrisMoveLeftEvent);
-            makeSmallBtn(tCtl, "R", 30, 24, lv_color_hex(0x2F6D86), lvglTetrisMoveRightEvent);
-            makeSmallBtn(tCtl, "Rot", 40, 24, lv_color_hex(0x2F6D86), lvglTetrisRotateEvent);
-            makeSmallBtn(tCtl, "Drop", 44, 24, lv_color_hex(0x2F6D86), lvglTetrisDropEvent);
-            tetrisResetGame();
+            makeSmallBtn(tCtl, "Left", layout.buttonWidth, layout.buttonHeight, lv_color_hex(0x2F6D86), lvglTetrisMoveLeftEvent);
+            makeSmallBtn(tCtl, "Right", layout.buttonWidth, layout.buttonHeight, lv_color_hex(0x2F6D86), lvglTetrisMoveRightEvent);
+            makeSmallBtn(tCtl, "Rotate", layout.buttonWidth, layout.buttonHeight, lv_color_hex(0x376B93), lvglTetrisRotateEvent);
+            makeSmallBtn(tCtl, "Drop", layout.buttonWidth, layout.buttonHeight, lv_color_hex(0x8A5A25), lvglTetrisDropEvent);
+            tetrisPrepareGame();
             lvglRefreshTetrisBoard();
             break;
         }
@@ -4603,6 +5266,7 @@ void lvglWifiRescanEvent(lv_event_t *e)
 void lvglWifiDisconnectEvent(lv_event_t *e)
 {
     (void)e;
+    wifiForgetPendingUi = false;
     pendingSaveCreds = false;
     pendingSaveSsid = "";
     pendingSavePass = "";
@@ -4616,10 +5280,11 @@ void lvglWifiDisconnectEvent(lv_event_t *e)
 void lvglWifiForgetEvent(lv_event_t *e)
 {
     (void)e;
+    wifiForgetPendingUi = true;
     pendingSaveCreds = false;
     pendingSaveSsid = "";
     pendingSavePass = "";
-    saveStaCreds("", "");
+    clearStaCreds();
     WiFi.disconnect(false, false);
     ensureApOnline("manual_forget");
     uiStatusLine = "Saved WiFi forgotten";
@@ -5423,7 +6088,7 @@ void lvglRefreshChatPeerUi()
         lv_obj_t *lbl = lv_label_create(lvglChatPeerList);
         lv_obj_set_width(lbl, lv_pct(100));
         lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
-        lv_label_set_text(lbl, "No paired or discovered peers yet.\nOpen this screen on another device on the same WiFi, then tap Scan.");
+        lv_label_set_text(lbl, "No paired or discovered peers yet.\nOpen this screen on another device on the same WiFi or this device AP, then tap Scan.");
         lv_obj_set_style_text_color(lbl, lv_color_hex(0xC8CED6), 0);
     }
 }
@@ -5433,7 +6098,7 @@ void p2pEnsureUdp()
     if (!p2pReady) return;
     if (p2pUdpStarted) return;
     if (WiFi.getMode() == WIFI_OFF) return;
-    if (!wifiConnectedSafe()) return;
+    if (!wifiLanAvailableSafe()) return;
     if (p2pUdp.begin(P2P_UDP_PORT) == 1) {
         p2pUdpStarted = true;
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
@@ -5555,7 +6220,7 @@ bool p2pSendConversationDelete()
 
 void p2pBroadcastDiscover()
 {
-    if (!p2pReady || !wifiConnectedSafe()) return;
+    if (!p2pReady || !wifiLanAvailableSafe()) return;
     p2pEnsureUdp();
     if (!p2pUdpStarted) return;
 
@@ -5568,8 +6233,8 @@ void p2pBroadcastDiscover()
     const size_t len = serializeJson(doc, payload, sizeof(payload));
     if (len == 0) return;
 
-    IPAddress bcast = WiFi.localIP();
-    bcast[3] = 255;
+    IPAddress bcast = wifiLanBroadcastIpSafe();
+    if (bcast[0] == 0) return;
     if (p2pUdp.beginPacket(bcast, P2P_UDP_PORT)) {
         p2pUdp.write(reinterpret_cast<const uint8_t *>("\x50\x32\x01\x02"), 4);
         p2pUdp.write(reinterpret_cast<const uint8_t *>(payload), len);
@@ -5579,7 +6244,7 @@ void p2pBroadcastDiscover()
 
 void p2pSendDiscoveryProbe()
 {
-    if (!p2pReady || !wifiConnectedSafe()) return;
+    if (!p2pReady || !wifiLanAvailableSafe()) return;
     p2pEnsureUdp();
     if (!p2pUdpStarted) return;
 
@@ -5592,8 +6257,8 @@ void p2pSendDiscoveryProbe()
     const size_t len = serializeJson(doc, payload, sizeof(payload));
     if (len == 0) return;
 
-    IPAddress bcast = WiFi.localIP();
-    bcast[3] = 255;
+    IPAddress bcast = wifiLanBroadcastIpSafe();
+    if (bcast[0] == 0) return;
     if (p2pUdp.beginPacket(bcast, P2P_UDP_PORT)) {
         p2pUdp.write(reinterpret_cast<const uint8_t *>("\x50\x32\x01\x02"), 4);
         p2pUdp.write(reinterpret_cast<const uint8_t *>(payload), len);
@@ -5603,7 +6268,7 @@ void p2pSendDiscoveryProbe()
 
 void p2pSendDiscoveryAnnounceTo(const IPAddress &ip, uint16_t port)
 {
-    if (!p2pReady || !wifiConnectedSafe() || !p2pDiscoveryEnabled) return;
+    if (!p2pReady || !wifiLanAvailableSafe() || !p2pDiscoveryEnabled) return;
     p2pEnsureUdp();
     if (!p2pUdpStarted) return;
 
@@ -5625,7 +6290,7 @@ void p2pSendDiscoveryAnnounceTo(const IPAddress &ip, uint16_t port)
 
 bool p2pSendPairRequest(const String &name, const String &pubKeyHex, const IPAddress &ip, uint16_t port)
 {
-    if (!p2pReady || !wifiConnectedSafe() || pubKeyHex.isEmpty()) return false;
+    if (!p2pReady || !wifiLanAvailableSafe() || pubKeyHex.isEmpty()) return false;
     p2pEnsureUdp();
     if (!p2pUdpStarted) return false;
 
@@ -5647,7 +6312,7 @@ bool p2pSendPairRequest(const String &name, const String &pubKeyHex, const IPAdd
 
 void p2pSendPairResponse(const String &name, const String &pubKeyHex, const IPAddress &ip, uint16_t port, bool accepted)
 {
-    if (!p2pReady || !wifiConnectedSafe() || pubKeyHex.isEmpty()) return;
+    if (!p2pReady || !wifiLanAvailableSafe() || pubKeyHex.isEmpty()) return;
     p2pEnsureUdp();
     if (!p2pUdpStarted) return;
 
@@ -5692,7 +6357,7 @@ bool p2pAddOrUpdateTrustedPeer(const String &name, const String &pubKeyHex, cons
 void p2pService()
 {
     if (!p2pReady) return;
-    if (!wifiConnectedSafe()) {
+    if (!wifiLanAvailableSafe()) {
         if (p2pUdpStarted) {
             p2pUdp.stop();
             p2pUdpStarted = false;
@@ -5703,7 +6368,7 @@ void p2pService()
     if (!p2pUdpStarted) return;
 
     const unsigned long now = millis();
-    if (p2pDiscoveryEnabled && wifiConnectedSafe() && (now - p2pLastDiscoverAnnounceMs) >= 5000UL) {
+    if (p2pDiscoveryEnabled && wifiLanAvailableSafe() && (now - p2pLastDiscoverAnnounceMs) >= 5000UL) {
         p2pLastDiscoverAnnounceMs = now;
         p2pBroadcastDiscover();
     }
@@ -5896,6 +6561,7 @@ void lvglRefreshInfoPanel()
     if (lvglInfoWifiValueLabel) lv_label_set_text_fmt(lvglInfoWifiValueLabel, connected ? "%u%%" : "Offline", wifiQuality);
     if (lvglInfoWifiSubLabel) {
         if (connected) lv_label_set_text_fmt(lvglInfoWifiSubLabel, "%s  |  %s  |  %ddBm", ssid.c_str(), ip.c_str(), rssi);
+        else if (apModeActive) lv_label_set_text_fmt(lvglInfoWifiSubLabel, "AP %s  |  %s  |  Touch to Config > WiFi Config to connect", savedApSsid.c_str(), WiFi.softAPIP().toString().c_str());
         else lv_label_set_text_fmt(lvglInfoWifiSubLabel, "AP %s  |  Touch to Config > WiFi Config to connect", savedApSsid.c_str());
     }
 
@@ -6101,8 +6767,11 @@ void lvglRefreshWifiList()
         lv_obj_t *info = lv_label_create(staCard);
         lv_obj_set_width(info, lv_pct(100));
         lv_label_set_long_mode(info, LV_LABEL_LONG_WRAP);
-        String staLine = savedStaSsid.isEmpty() ? String("Saved network: none") : ("Saved network: " + savedStaSsid);
-        if (wifiConnectedSafe()) staLine += "\nConnected: " + wifiSsidSafe() + "  |  " + wifiIpSafe();
+        const String desiredStaSsid = wifiDesiredStaSsid();
+        String staLine = desiredStaSsid.isEmpty() ? String("Saved network: none") : ("Saved network: " + desiredStaSsid);
+        if (wifiForgetPendingUi) staLine += "\nStatus: forgetting saved WiFi...";
+        else if (wifiConnectedSafe()) staLine += "\nConnected: " + wifiSsidSafe() + "  |  " + wifiIpSafe();
+        else if (bootStaConnectInProgress) staLine += "\nStatus: connecting...";
         else staLine += "\nStatus: disconnected";
         lv_label_set_text(info, staLine.c_str());
         lv_obj_set_style_text_color(info, lv_color_hex(0xB7C4D1), 0);
@@ -6115,8 +6784,12 @@ void lvglRefreshWifiList()
         lv_obj_set_style_pad_column(row, 6, 0);
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-        makeBtn(row, "Disconnect", 82, 28, lv_color_hex(0x2F6D86), lvglWifiDisconnectEvent);
-        makeBtn(row, "Forget", 64, 28, lv_color_hex(0x8A3A3A), lvglWifiForgetEvent);
+        if (wifiConnectedSafe() || bootStaConnectInProgress || wifiForgetPendingUi) {
+            makeBtn(row, "Disconnect", 82, 28, lv_color_hex(0x2F6D86), lvglWifiDisconnectEvent);
+        }
+        if (!desiredStaSsid.isEmpty() || pendingSaveCreds || wifiForgetPendingUi) {
+            makeBtn(row, "Forget", 64, 28, lv_color_hex(0x8A3A3A), lvglWifiForgetEvent);
+        }
     }
 
     makeBtn(lvglWifiList, "Scan", 92, 30, lv_color_hex(0x2F6D86), lvglWifiRescanEvent);
@@ -6876,11 +7549,25 @@ void lvglScreenshotEvent(lv_event_t *e)
 
 void lvglSnakeDirEvent(lv_event_t *e)
 {
+    if (!snakeStarted || snakePaused || snakeGameOver) return;
     const int d = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
     if (d == 3 && snakeDir != 1) snakeNextDir = 3;
     else if (d == 1 && snakeDir != 3) snakeNextDir = 1;
     else if (d == 0 && snakeDir != 2) snakeNextDir = 0;
     else if (d == 2 && snakeDir != 0) snakeNextDir = 2;
+}
+
+void lvglSnakePauseEvent(lv_event_t *e)
+{
+    (void)e;
+    if (snakeGameOver) return;
+    if (!snakeStarted) {
+        snakeStartGame();
+    } else {
+        snakePaused = !snakePaused;
+        if (!snakePaused) snakeLastStepMs = millis();
+    }
+    lvglRefreshSnakeBoard();
 }
 
 void lvglSnakeBackEvent(lv_event_t *e)
@@ -6892,7 +7579,7 @@ void lvglSnakeBackEvent(lv_event_t *e)
 void lvglSnakeRestartEvent(lv_event_t *e)
 {
     (void)e;
-    snakeResetGame();
+    snakeStartGame();
     lvglRefreshSnakeBoard();
 }
 
@@ -6905,7 +7592,7 @@ void lvglTetrisBackEvent(lv_event_t *e)
 void lvglTetrisRestartEvent(lv_event_t *e)
 {
     (void)e;
-    tetrisResetGame();
+    tetrisStartGame();
     lvglRefreshTetrisBoard();
 }
 
@@ -7019,15 +7706,46 @@ void lvglRefreshSnakeBoard()
 {
     if (lvglSnakeBoardObj) lv_obj_invalidate(lvglSnakeBoardObj);
     if (lvglSnakeScoreLabel) {
-        lv_label_set_text_fmt(lvglSnakeScoreLabel, "Score: %u%s", snakeScore, snakeGameOver ? "  GAME OVER" : "");
+        lv_label_set_text_fmt(lvglSnakeScoreLabel, "Score %u", snakeScore);
     }
+    if (lvglSnakeBestLabel) {
+        lv_label_set_text_fmt(lvglSnakeBestLabel, "Best %u", snakeHighScore);
+    }
+    if (lvglSnakeOverlay) {
+        const bool showOverlay = !snakeStarted || snakeGameOver;
+        if (showOverlay) lv_obj_clear_flag(lvglSnakeOverlay, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(lvglSnakeOverlay, LV_OBJ_FLAG_HIDDEN);
+        if (lvglSnakeOverlayTitle) lv_label_set_text(lvglSnakeOverlayTitle, snakeGameOver ? "Game Over" : "Snake");
+        if (lvglSnakeOverlaySubLabel) {
+            String msg = snakeGameOver ? ("Score " + String(snakeScore) + "\nBest " + String(snakeHighScore))
+                                       : ("Tap Start when ready\nBest " + String(snakeHighScore));
+            lv_label_set_text(lvglSnakeOverlaySubLabel, msg.c_str());
+        }
+        if (lvglSnakeOverlayBtnLabel) lv_label_set_text(lvglSnakeOverlayBtnLabel, snakeGameOver ? "Replay" : "Start");
+    }
+    if (lvglSnakePauseBtnLabel) lv_label_set_text(lvglSnakePauseBtnLabel, (!snakeStarted || snakePaused) ? "Play" : "Pause");
 }
 
 void lvglRefreshTetrisBoard()
 {
     if (lvglTetrisBoardObj) lv_obj_invalidate(lvglTetrisBoardObj);
     if (lvglTetrisScoreLabel) {
-        lv_label_set_text_fmt(lvglTetrisScoreLabel, "Score: %u%s", tetrisScore, tetrisGameOver ? "  GAME OVER" : "");
+        lv_label_set_text_fmt(lvglTetrisScoreLabel, "Score %u", tetrisScore);
+    }
+    if (lvglTetrisBestLabel) {
+        lv_label_set_text_fmt(lvglTetrisBestLabel, "Best %u", tetrisHighScore);
+    }
+    if (lvglTetrisOverlay) {
+        const bool showOverlay = !tetrisStarted || tetrisGameOver;
+        if (showOverlay) lv_obj_clear_flag(lvglTetrisOverlay, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(lvglTetrisOverlay, LV_OBJ_FLAG_HIDDEN);
+        if (lvglTetrisOverlayTitle) lv_label_set_text(lvglTetrisOverlayTitle, tetrisGameOver ? "Game Over" : "Tetris");
+        if (lvglTetrisOverlaySubLabel) {
+            String msg = tetrisGameOver ? ("Score " + String(tetrisScore) + "\nBest " + String(tetrisHighScore))
+                                        : ("Tap Start when ready\nBest " + String(tetrisHighScore));
+            lv_label_set_text(lvglTetrisOverlaySubLabel, msg.c_str());
+        }
+        if (lvglTetrisOverlayBtnLabel) lv_label_set_text(lvglTetrisOverlayBtnLabel, tetrisGameOver ? "Replay" : "Start");
     }
 }
 
@@ -7035,7 +7753,10 @@ void lvglOpenSnakeEvent(lv_event_t *e)
 {
     (void)e;
     lvglEnsureScreenBuilt(UI_GAME_SNAKE);
-    snakeResetGame();
+    snakePrepareGame();
+    if (screensaverActive) screensaverSetActive(false);
+    if (!displayAwake) displaySetAwake(true);
+    lastUserActivityMs = millis();
     lvglRefreshSnakeBoard();
     lvglOpenScreen(UI_GAME_SNAKE, LV_SCR_LOAD_ANIM_MOVE_LEFT);
 }
@@ -7044,7 +7765,10 @@ void lvglOpenTetrisEvent(lv_event_t *e)
 {
     (void)e;
     lvglEnsureScreenBuilt(UI_GAME_TETRIS);
-    tetrisResetGame();
+    tetrisPrepareGame();
+    if (screensaverActive) screensaverSetActive(false);
+    if (!displayAwake) displaySetAwake(true);
+    lastUserActivityMs = millis();
     lvglRefreshTetrisBoard();
     lvglOpenScreen(UI_GAME_TETRIS, LV_SCR_LOAD_ANIM_MOVE_LEFT);
 }
@@ -7124,7 +7848,10 @@ void lvglOtaUpdateEvent(lv_event_t *e)
         return;
     }
     if (!wifiConnectedSafe()) {
-        uiStatusLine = "Connect WiFi before OTA";
+        otaUiState = OTA_UI_ERROR;
+        otaSetStatus(apModeActive ? "Not connected to update server (AP mode only)" : "Not connected to update server");
+        lvglRefreshOtaUi();
+        uiStatusLine = apModeActive ? "OTA needs internet WiFi, not AP-only mode" : "Connect WiFi before OTA";
         lvglSyncStatusLine();
         return;
     }
@@ -8115,20 +8842,28 @@ const char *authName(wifi_auth_mode_t auth)
 
 void refreshWifiScan()
 {
-    wifiEnsureRuntimeEnabled("scan", WIFI_STA, false);
+    const wifi_mode_t scanMode = apModeActive ? WIFI_AP_STA : WIFI_STA;
+    wifiEnsureRuntimeEnabled("scan", scanMode, apModeActive);
     const int scanState = WiFi.scanComplete();
-    if (scanState == WIFI_SCAN_RUNNING) return;
+    if (scanState == WIFI_SCAN_RUNNING) {
+        uiStatusLine = "Searching for access points";
+        if (lvglReady) lvglSyncStatusLine();
+        return;
+    }
     WiFi.scanDelete();
     wifiCount = 0;
     wifiScanInProgress = true;
     wifiScanAnimLastMs = millis();
     wifiScanAnimPhase = 0;
-    if (!WiFi.scanNetworks(true, true)) {
+    const int scanStart = WiFi.scanNetworks(true, true);
+    if (scanStart == WIFI_SCAN_FAILED) {
         wifiScanInProgress = false;
         uiStatusLine = "WiFi scan start failed";
+        if (lvglReady) lvglSyncStatusLine();
         return;
     }
     uiStatusLine = "Searching for access points";
+    if (lvglReady) lvglSyncStatusLine();
 }
 
 void wifiScanService()
@@ -8159,6 +8894,13 @@ void wifiScanService()
     }
 }
 
+void clearWifiScanResults()
+{
+    wifiScanInProgress = false;
+    wifiCount = 0;
+    WiFi.scanDelete();
+}
+
 bool snakeCellOccupied(int x, int y)
 {
     for (int i = 0; i < snakeLen; i++) {
@@ -8187,6 +8929,7 @@ void snakeResetGame()
     snakeLen = 4;
     snakeDir = 1;
     snakeNextDir = 1;
+    snakeStarted = true;
     snakeGameOver = false;
     snakeScore = 0;
     const int cx = SNAKE_COLS / 2;
@@ -8199,9 +8942,33 @@ void snakeResetGame()
     snakeLastStepMs = millis();
 }
 
+void snakePrepareGame()
+{
+    snakeResetGame();
+    snakeStarted = false;
+    snakePaused = false;
+    snakeGameOver = false;
+}
+
+void snakeStartGame()
+{
+    snakeResetGame();
+    snakeStarted = true;
+    snakePaused = false;
+    snakeLastStepMs = millis();
+}
+
+static unsigned long snakeCurrentStepMs()
+{
+    const unsigned long foods = static_cast<unsigned long>(snakeScore / 10U);
+    const unsigned long reduction = foods * SNAKE_STEP_MS_DELTA_PER_FOOD;
+    if (reduction >= (SNAKE_STEP_MS_START - SNAKE_STEP_MS_MIN)) return SNAKE_STEP_MS_MIN;
+    return SNAKE_STEP_MS_START - reduction;
+}
+
 void snakeStep()
 {
-    if (snakeGameOver) return;
+    if (!snakeStarted || snakePaused || snakeGameOver) return;
     snakeDir = snakeNextDir;
     int nx = snakeX[0];
     int ny = snakeY[0];
@@ -8212,10 +8979,14 @@ void snakeStep()
 
     if (nx < 0 || nx >= SNAKE_COLS || ny < 0 || ny >= SNAKE_ROWS) {
         snakeGameOver = true;
+        snakeStarted = false;
+        snakeMaybeStoreHighScore(true);
         return;
     }
     if (snakeCellOccupied(nx, ny)) {
         snakeGameOver = true;
+        snakeStarted = false;
+        snakeMaybeStoreHighScore(true);
         return;
     }
 
@@ -8231,6 +9002,7 @@ void snakeStep()
 
     if (ate) {
         snakeScore += 10;
+        snakeMaybeStoreHighScore();
         snakeSpawnFood();
     } else if (oldLen < snakeLen) {
         snakeLen = oldLen;
@@ -8240,8 +9012,8 @@ void snakeStep()
 void snakeTick()
 {
     if (uiScreen != UI_GAME_SNAKE) return;
-    if (snakeGameOver) return;
-    if (millis() - snakeLastStepMs < SNAKE_STEP_MS) return;
+    if (!snakeStarted || snakePaused || snakeGameOver) return;
+    if (millis() - snakeLastStepMs < snakeCurrentStepMs()) return;
     snakeLastStepMs = millis();
     snakeStep();
     lvglRefreshSnakeBoard();
@@ -8298,7 +9070,11 @@ void tetrisSpawnPiece()
     tetrisRot = 0;
     tetrisX = 3;
     tetrisY = 0;
-    if (!tetrisCanPlace(tetrisX, tetrisY, tetrisType, tetrisRot)) tetrisGameOver = true;
+    if (!tetrisCanPlace(tetrisX, tetrisY, tetrisType, tetrisRot)) {
+        tetrisGameOver = true;
+        tetrisStarted = false;
+        tetrisMaybeStoreHighScore(true);
+    }
 }
 
 void tetrisClearLines()
@@ -8317,6 +9093,7 @@ void tetrisClearLines()
         }
         for (int x = 0; x < TETRIS_COLS; x++) tetrisGrid[0][x] = 0;
         tetrisScore += 100;
+        tetrisMaybeStoreHighScore();
         y++;
     }
 }
@@ -8339,15 +9116,38 @@ void tetrisResetGame()
     for (int y = 0; y < TETRIS_ROWS; y++) {
         for (int x = 0; x < TETRIS_COLS; x++) tetrisGrid[y][x] = 0;
     }
+    tetrisStarted = true;
     tetrisGameOver = false;
     tetrisScore = 0;
     tetrisSpawnPiece();
     tetrisLastStepMs = millis();
 }
 
+void tetrisPrepareGame()
+{
+    tetrisResetGame();
+    tetrisStarted = false;
+    tetrisGameOver = false;
+}
+
+void tetrisStartGame()
+{
+    tetrisResetGame();
+    tetrisStarted = true;
+    tetrisLastStepMs = millis();
+}
+
+static unsigned long tetrisCurrentStepMs()
+{
+    const unsigned long level = static_cast<unsigned long>(tetrisScore / 100U);
+    const unsigned long reduction = level * TETRIS_STEP_MS_DELTA_PER_100_SCORE;
+    if (reduction >= (TETRIS_STEP_MS_START - TETRIS_STEP_MS_MIN)) return TETRIS_STEP_MS_MIN;
+    return TETRIS_STEP_MS_START - reduction;
+}
+
 void tetrisMove(int dx)
 {
-    if (tetrisGameOver) return;
+    if (!tetrisStarted || tetrisGameOver) return;
     if (tetrisCanPlace(tetrisX + dx, tetrisY, tetrisType, tetrisRot)) {
         tetrisX += static_cast<int8_t>(dx);
         lvglRefreshTetrisBoard();
@@ -8356,7 +9156,7 @@ void tetrisMove(int dx)
 
 void tetrisRotate()
 {
-    if (tetrisGameOver) return;
+    if (!tetrisStarted || tetrisGameOver) return;
     int nr = (tetrisRot + 1) & 3;
     if (tetrisCanPlace(tetrisX, tetrisY, tetrisType, nr)) tetrisRot = static_cast<int8_t>(nr);
     else if (tetrisCanPlace(tetrisX - 1, tetrisY, tetrisType, nr)) {
@@ -8371,7 +9171,7 @@ void tetrisRotate()
 
 void tetrisDrop()
 {
-    if (tetrisGameOver) return;
+    if (!tetrisStarted || tetrisGameOver) return;
     while (tetrisCanPlace(tetrisX, tetrisY + 1, tetrisType, tetrisRot)) tetrisY++;
     tetrisLockPiece();
     lvglRefreshTetrisBoard();
@@ -8379,7 +9179,7 @@ void tetrisDrop()
 
 void tetrisStepDown()
 {
-    if (tetrisGameOver) return;
+    if (!tetrisStarted || tetrisGameOver) return;
     if (tetrisCanPlace(tetrisX, tetrisY + 1, tetrisType, tetrisRot)) tetrisY++;
     else tetrisLockPiece();
 }
@@ -8387,8 +9187,8 @@ void tetrisStepDown()
 void tetrisTick()
 {
     if (uiScreen != UI_GAME_TETRIS) return;
-    if (tetrisGameOver) return;
-    if (millis() - tetrisLastStepMs < TETRIS_STEP_MS) return;
+    if (!tetrisStarted || tetrisGameOver) return;
+    if (millis() - tetrisLastStepMs < tetrisCurrentStepMs()) return;
     tetrisLastStepMs = millis();
     tetrisStepDown();
     lvglRefreshTetrisBoard();
@@ -9124,6 +9924,7 @@ bool canEnterLowPowerSleep(bool touchDownNow)
     return false;
 #else
     if (touchDownNow) return false;
+    if (uiScreenKeepsDisplayAwake()) return false;
     if (wifiConnectedSafe()) return false; // requested: sleep only when not connected
     if (batteryCharging) return false;
     if (batteryPercent < 5) return false;
@@ -9148,6 +9949,22 @@ void enterLowPowerSleep()
     esp_light_sleep_start();
 }
 
+static bool normalizeSavedApCreds()
+{
+    bool changed = false;
+    savedApSsid.trim();
+    savedApPass.trim();
+    if (savedApSsid.isEmpty()) {
+        savedApSsid = AP_SSID;
+        changed = true;
+    }
+    if (savedApPass.isEmpty() || savedApPass.length() < 8) {
+        savedApPass = AP_PASS;
+        changed = true;
+    }
+    return changed;
+}
+
 void loadSavedStaCreds()
 {
     wifiPrefs.begin("wifi", true);
@@ -9156,7 +9973,12 @@ void loadSavedStaCreds()
     savedApSsid = wifiPrefs.getString("ap_ssid", AP_SSID);
     savedApPass = wifiPrefs.getString("ap_pass", AP_PASS);
     wifiPrefs.end();
-    if (savedApSsid.isEmpty()) savedApSsid = AP_SSID;
+    if (normalizeSavedApCreds()) {
+        wifiPrefs.begin("wifi", false);
+        wifiPrefs.putString("ap_ssid", savedApSsid);
+        wifiPrefs.putString("ap_pass", savedApPass);
+        wifiPrefs.end();
+    }
 }
 
 bool loadBatterySnapshot(float &vbatOut)
@@ -9188,14 +10010,55 @@ void saveStaCreds(const String &ssid, const String &pass)
     savedStaPass = pass;
 }
 
-void saveApCreds(const String &ssid, const String &pass)
+void clearStaCreds()
 {
     wifiPrefs.begin("wifi", false);
-    wifiPrefs.putString("ap_ssid", ssid);
-    wifiPrefs.putString("ap_pass", pass);
+    wifiPrefs.remove("sta_ssid");
+    wifiPrefs.remove("sta_pass");
     wifiPrefs.end();
+    savedStaSsid = "";
+    savedStaPass = "";
+}
+
+void loadGamePrefs()
+{
+    gamePrefs.begin("games", true);
+    snakeHighScore = static_cast<uint16_t>(gamePrefs.getUInt("snake_best", 0));
+    tetrisHighScore = static_cast<uint16_t>(gamePrefs.getUInt("tetris_best", 0));
+    gamePrefs.end();
+}
+
+static void saveGameHighScore(const char *key, uint16_t score)
+{
+    if (!key) return;
+    gamePrefs.begin("games", false);
+    gamePrefs.putUInt(key, score);
+    gamePrefs.end();
+}
+
+static void snakeMaybeStoreHighScore(bool persist)
+{
+    if (snakeScore <= snakeHighScore) return;
+    snakeHighScore = snakeScore;
+    if (persist) saveGameHighScore("snake_best", snakeHighScore);
+}
+
+static void tetrisMaybeStoreHighScore(bool persist)
+{
+    if (tetrisScore <= tetrisHighScore) return;
+    tetrisHighScore = tetrisScore;
+    if (persist) saveGameHighScore("tetris_best", tetrisHighScore);
+}
+
+void saveApCreds(const String &ssid, const String &pass)
+{
     savedApSsid = ssid;
     savedApPass = pass;
+    normalizeSavedApCreds();
+    wifiPrefs.begin("wifi", false);
+    wifiPrefs.putString("ap_ssid", savedApSsid);
+    wifiPrefs.putString("ap_pass", savedApPass);
+    wifiPrefs.end();
 }
 
 static bool parseIntMessageValue(const char *value, int &out)
@@ -9796,6 +10659,7 @@ void ensureApOnline(const char *reason)
 {
     if (networkSuspendedForAudio || airplaneModeEnabled) return;
     if (apModeActive) return;
+    normalizeSavedApCreds();
     wifiEnsureRuntimeEnabled(reason ? reason : "ensure_ap", WIFI_AP_STA, true);
     const char *apSsid = savedApSsid.length() ? savedApSsid.c_str() : AP_SSID;
     const char *apPass = savedApPass.length() ? savedApPass.c_str() : AP_PASS;
@@ -10263,6 +11127,7 @@ void startWifiConnect(const String &ssid, const String &pass)
         lvglSyncStatusLine();
         return;
     }
+    clearWifiScanResults();
     pendingSaveSsid = ssid;
     pendingSavePass = pass;
     pendingSaveCreds = true;
@@ -10711,6 +11576,26 @@ void sendWifiSetupPage(AsyncWebServerRequest *request)
     html.replace("%FIRMWARE_VERSION%", FW_VERSION);
     html.replace("%AP_SSID%", AP_SSID);
     html.replace("%AP_IP%", WiFi.softAPIP().toString());
+    request->send(200, "text/html", html);
+}
+
+String apLandingContinueUrl()
+{
+    if (sdEnsureMounted() && hasPrimaryWebUi()) return "/?skip_ap_portal=1";
+    return "/recovery";
+}
+
+void sendApWifiLandingPage(AsyncWebServerRequest *request)
+{
+    const String continueUrl = apLandingContinueUrl();
+    const bool hasFrontend = (continueUrl == "/?skip_ap_portal=1");
+    String html = FPSTR(AP_WIFI_LANDING_HTML);
+    html.replace("%FIRMWARE_VERSION%", FW_VERSION);
+    html.replace("%AP_SSID%", savedApSsid.length() ? savedApSsid : String(AP_SSID));
+    html.replace("%AP_IP%", WiFi.softAPIP().toString());
+    html.replace("%CONTINUE_URL%", continueUrl);
+    html.replace("%CONTINUE_LABEL%", hasFrontend ? "the main web UI" : "the recovery browser");
+    html.replace("%CONTINUE_HINT%", hasFrontend ? "Close to open the SD web frontend." : "Close to open the embedded recovery browser.");
     request->send(200, "text/html", html);
 }
 
@@ -11283,7 +12168,178 @@ void setupWebRoutes()
     server.on("/ncsi.txt", HTTP_GET, [](AsyncWebServerRequest *request) { request->send(200, "text/plain", "Microsoft NCSI"); });
 
     server.on("/wifi", HTTP_GET, [](AsyncWebServerRequest *request) {
+        if (apModeActive) {
+            sendApWifiLandingPage(request);
+            return;
+        }
         sendWifiSetupPage(request);
+    });
+
+    server.on("/listwifi", HTTP_GET, [](AsyncWebServerRequest *request) {
+        (void)request;
+        JsonDocument doc;
+        JsonArray arr = doc.to<JsonArray>();
+        WiFi.scanDelete();
+        int n = WiFi.scanNetworks(false, true);
+        for (int i = 0; i < n; i++) {
+            JsonObject it = arr.add<JsonObject>();
+            it["ssid"] = WiFi.SSID(i);
+            it["rssi"] = WiFi.RSSI(i);
+            it["auth"] = authName(WiFi.encryptionType(i));
+        }
+        String payload;
+        serializeJson(doc, payload);
+        request->send(200, "application/json", payload);
+    });
+
+    server.on("/savewifi", HTTP_POST, [](AsyncWebServerRequest *request) {
+        String ssid;
+        String pass;
+        if (request->hasParam("ssid", true)) ssid = urlDecode(request->getParam("ssid", true)->value());
+        else if (request->hasParam("ssid", false)) ssid = urlDecode(request->getParam("ssid", false)->value());
+        if (request->hasParam("password", true)) pass = urlDecode(request->getParam("password", true)->value());
+        else if (request->hasParam("password", false)) pass = urlDecode(request->getParam("password", false)->value());
+        if (ssid.isEmpty()) {
+            request->send(400, "text/plain", "missing_ssid");
+            return;
+        }
+        startWifiConnect(ssid, pass);
+        request->send(200, "application/json", "{\"ok\":true,\"status\":\"connecting\"}");
+    });
+
+    server.on("/list_saved_wifi", HTTP_GET, [](AsyncWebServerRequest *request) {
+        (void)request;
+        JsonDocument doc;
+        JsonArray arr = doc.to<JsonArray>();
+        const String ssid = wifiDesiredStaSsid();
+        if (ssid.length()) {
+            JsonObject it = arr.add<JsonObject>();
+            it["ssid"] = ssid;
+            it["preferred"] = true;
+            it["retry"] = 3;
+            it["autoReconnect"] = true;
+        }
+        String payload;
+        serializeJson(doc, payload);
+        request->send(200, "application/json", payload);
+    });
+
+    server.on("/delete_saved_wifi", HTTP_POST, [](AsyncWebServerRequest *request) {
+        String ssid;
+        if (request->hasParam("ssid", true)) ssid = urlDecode(request->getParam("ssid", true)->value());
+        else if (request->hasParam("ssid", false)) ssid = urlDecode(request->getParam("ssid", false)->value());
+
+        const String current = wifiDesiredStaSsid();
+        if (current.isEmpty() || (ssid.length() && !ssid.equalsIgnoreCase(current))) {
+            request->send(404, "application/json", "{\"ok\":false,\"error\":\"not_found\"}");
+            return;
+        }
+
+        pendingSaveCreds = false;
+        pendingSaveSsid = "";
+        pendingSavePass = "";
+        clearStaCreds();
+        wifiForgetPendingUi = false;
+        WiFi.disconnect(false, false);
+        ensureApOnline("web_delete_saved_wifi");
+        request->send(200, "application/json", "{\"ok\":true,\"removed\":true}");
+    });
+
+    server.on("/connect_saved_wifi", HTTP_ANY, [](AsyncWebServerRequest *request) {
+        String ssid;
+        if (request->hasParam("ssid", true)) ssid = urlDecode(request->getParam("ssid", true)->value());
+        else if (request->hasParam("ssid", false)) ssid = urlDecode(request->getParam("ssid", false)->value());
+        if (ssid.isEmpty()) ssid = wifiDesiredStaSsid();
+        if (ssid.isEmpty() || !ssid.equalsIgnoreCase(wifiDesiredStaSsid())) {
+            request->send(404, "text/plain", "saved_wifi_not_found");
+            return;
+        }
+        startWifiConnect(wifiDesiredStaSsid(), wifiDesiredStaPass());
+        request->send(200, "text/plain", "connecting");
+    });
+
+    server.on("/wifi_try_connect", HTTP_POST, [](AsyncWebServerRequest *request) {
+        String ssid;
+        if (request->hasParam("ssid", true)) ssid = urlDecode(request->getParam("ssid", true)->value());
+        else if (request->hasParam("ssid", false)) ssid = urlDecode(request->getParam("ssid", false)->value());
+        if (ssid.isEmpty() || !ssid.equalsIgnoreCase(wifiDesiredStaSsid())) {
+            request->send(404, "text/plain", "saved_wifi_not_found");
+            return;
+        }
+        startWifiConnect(wifiDesiredStaSsid(), wifiDesiredStaPass());
+        request->send(200, "text/plain", "connecting");
+    });
+
+    server.on("/update_wifi_password", HTTP_POST, [](AsyncWebServerRequest *request) {
+        String ssid;
+        String pass;
+        if (request->hasParam("ssid", true)) ssid = urlDecode(request->getParam("ssid", true)->value());
+        else if (request->hasParam("ssid", false)) ssid = urlDecode(request->getParam("ssid", false)->value());
+        if (request->hasParam("password", true)) pass = urlDecode(request->getParam("password", true)->value());
+        else if (request->hasParam("password", false)) pass = urlDecode(request->getParam("password", false)->value());
+        const String current = wifiDesiredStaSsid();
+        if (current.isEmpty() || !ssid.equalsIgnoreCase(current)) {
+            request->send(404, "text/plain", "saved_wifi_not_found");
+            return;
+        }
+        saveStaCreds(current, pass);
+        pendingSaveCreds = false;
+        pendingSaveSsid = "";
+        pendingSavePass = "";
+        request->send(200, "text/plain", "ok");
+    });
+
+    server.on("/wifi_set_autoreconnect", HTTP_POST, [](AsyncWebServerRequest *request) {
+        (void)request;
+        request->send(200, "text/plain", "ok");
+    });
+
+    server.on("/update_retry_count", HTTP_GET, [](AsyncWebServerRequest *request) {
+        (void)request;
+        request->send(200, "text/plain", "ok");
+    });
+
+    server.on("/wifi_set_priority", HTTP_POST, [](AsyncWebServerRequest *request) {
+        String ssid;
+        if (request->hasParam("ssid", true)) ssid = urlDecode(request->getParam("ssid", true)->value());
+        else if (request->hasParam("ssid", false)) ssid = urlDecode(request->getParam("ssid", false)->value());
+        JsonDocument doc;
+        doc["ok"] = ssid.length() && ssid.equalsIgnoreCase(wifiDesiredStaSsid());
+        String payload;
+        serializeJson(doc, payload);
+        request->send(doc["ok"] ? 200 : 404, "application/json", payload);
+    });
+
+    server.on("/set_ap_password", HTTP_POST, [](AsyncWebServerRequest *request) {
+        String pass;
+        if (request->hasParam("ap_pass", true)) pass = urlDecode(request->getParam("ap_pass", true)->value());
+        else if (request->hasParam("ap_pass", false)) pass = urlDecode(request->getParam("ap_pass", false)->value());
+        pass.trim();
+
+        JsonDocument doc;
+        if (pass.isEmpty() || pass.length() < 8 || pass.length() > 63) {
+            doc["ok"] = false;
+            doc["err"] = "len";
+            String payload;
+            serializeJson(doc, payload);
+            request->send(400, "application/json", payload);
+            return;
+        }
+
+        saveApCreds(savedApSsid.length() ? savedApSsid : String(AP_SSID), pass);
+        doc["ok"] = true;
+        String payload;
+        serializeJson(doc, payload);
+        request->send(200, "application/json", payload);
+    });
+
+    server.on("/get_ap_password", HTTP_GET, [](AsyncWebServerRequest *request) {
+        JsonDocument doc;
+        doc["ok"] = true;
+        doc["open"] = savedApPass.isEmpty();
+        String payload;
+        serializeJson(doc, payload);
+        request->send(200, "application/json", payload);
     });
 
     server.on("/api/wifi/scan", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -12663,6 +13719,11 @@ void setupWebRoutes()
 
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
         const bool staConnected = (WiFi.status() == WL_CONNECTED);
+        const bool bypassApPortal = request->hasParam("skip_ap_portal");
+        if (apModeActive && !bypassApPortal) {
+            sendApWifiLandingPage(request);
+            return;
+        }
         if (sdEnsureMounted() && hasPrimaryWebUi()) {
             String idx = webIndexPath();
             if (idx.length() && sendMaybeGz(request, idx)) return;
@@ -12671,7 +13732,7 @@ void setupWebRoutes()
             return;
         }
         // Connected: go to recovery file manager when SD UI is missing.
-        if (staConnected) {
+        if (staConnected || (apModeActive && bypassApPortal)) {
             request->redirect("/recovery");
             return;
         }
@@ -12712,6 +13773,8 @@ void wifiConnectionService()
         bootStaConnectInProgress = false;
         const String ssid = wifiSsidSafe();
         const String ip = wifiIpSafe();
+        clearWifiScanResults();
+        wifiForgetPendingUi = false;
         disableApWhenStaConnected("sta_got_ip");
         if (pendingSaveCreds && ssid == pendingSaveSsid) {
             saveStaCreds(pendingSaveSsid, pendingSavePass);
@@ -12736,6 +13799,7 @@ void wifiConnectionService()
         const uint8_t reason = wifiStaDisconnectReasonPending;
         wifiStaDisconnectedPending = false;
         bootStaConnectInProgress = false;
+        wifiForgetPendingUi = false;
         ensureApOnline("sta_disconnected");
         uiStatusLine = "WiFi disconnected";
         if (lvglWifiPwdConnectPending) {
@@ -12964,6 +14028,7 @@ void setup()
     if (p2pReady) loadP2pConfig();
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step loadUiRuntimeConfig");
     loadUiRuntimeConfig();
+    loadGamePrefs();
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step mqttBuildIdentity");
     mqttBuildIdentity();
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step loadMqttConfig");
@@ -13131,7 +14196,11 @@ void loop()
         ESP.restart();
     }
 
-    if (!displayAwake && (millis() - lastUserActivityMs >= displayIdleTimeoutMs)) {
+    if (uiScreenKeepsDisplayAwake()) {
+        lastUserActivityMs = millis();
+        if (screensaverActive) screensaverSetActive(false);
+        if (!displayAwake) displaySetAwake(true);
+    } else if (!displayAwake && (millis() - lastUserActivityMs >= displayIdleTimeoutMs)) {
         // Keep state as-is while sleeping.
     } else if (!screensaverActive && displayAwake && (millis() - lastUserActivityMs >= displayIdleTimeoutMs)) {
         bool allowSleep = true;
