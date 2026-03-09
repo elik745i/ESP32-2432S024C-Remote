@@ -226,7 +226,7 @@ static constexpr uint16_t LIGHT_RAW_CAL_MAX = 600;
 static constexpr bool LIGHT_LOG_RAW_TO_SERIAL = false;
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.1.8";
+static constexpr const char *FW_VERSION = "0.1.9";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -585,6 +585,7 @@ static lv_obj_t *lvglScrMqttCfg = nullptr;
 static lv_obj_t *lvglScrMqttCtrl = nullptr;
 static lv_obj_t *lvglScrSnake = nullptr;
 static lv_obj_t *lvglScrTetris = nullptr;
+static lv_obj_t *lvglScrCheckers = nullptr;
 static lv_obj_t *lvglStatusLabel = nullptr;
 static lv_obj_t *lvglInfoList = nullptr;
 static lv_obj_t *lvglInfoBatteryValueLabel = nullptr;
@@ -686,6 +687,17 @@ static lv_obj_t *lvglTetrisOverlayTitle = nullptr;
 static lv_obj_t *lvglTetrisOverlaySubLabel = nullptr;
 static lv_obj_t *lvglTetrisOverlayBtn = nullptr;
 static lv_obj_t *lvglTetrisOverlayBtnLabel = nullptr;
+static lv_obj_t *lvglCheckersBoardObj = nullptr;
+static lv_obj_t *lvglCheckersModeLabel = nullptr;
+static lv_obj_t *lvglCheckersTurnLabel = nullptr;
+static lv_obj_t *lvglCheckersOverlay = nullptr;
+static lv_obj_t *lvglCheckersOverlayTitle = nullptr;
+static lv_obj_t *lvglCheckersOverlaySubLabel = nullptr;
+static lv_obj_t *lvglCheckersOverlayBtn = nullptr;
+static lv_obj_t *lvglCheckersOverlayBtnLabel = nullptr;
+static lv_obj_t *lvglCheckersPeerPopup = nullptr;
+static lv_obj_t *lvglCheckersPeerPopupTitle = nullptr;
+static lv_obj_t *lvglCheckersPeerPopupList = nullptr;
 static lv_obj_t *lvglTopBarRoot = nullptr;
 static constexpr uint8_t LVGL_MAX_TOP_INDICATORS = 16;
 static lv_obj_t *lvglTopIndicators[LVGL_MAX_TOP_INDICATORS] = {};
@@ -975,7 +987,8 @@ enum UiScreen : uint8_t {
     UI_CONFIG_MQTT_CONFIG,
     UI_CONFIG_MQTT_CONTROLS,
     UI_GAME_SNAKE,
-    UI_GAME_TETRIS
+    UI_GAME_TETRIS,
+    UI_GAME_CHECKERS
 };
 
 UiScreen uiScreen = UI_HOME;
@@ -1032,6 +1045,9 @@ struct PendingChatMessage {
 PendingChatMessage chatPendingMessages[MAX_CHAT_PENDING];
 int chatPendingCount = 0;
 bool chatPendingLoaded = false;
+static constexpr int MAX_GAME_CONTROL_IDS = 4;
+char gameControlMessageIds[MAX_GAME_CONTROL_IDS][17] = {};
+uint8_t gameControlMessageIdCount = 0;
 
 static String sanitizeDeviceShortName(String name)
 {
@@ -1125,6 +1141,7 @@ static String chatLegacyLogPathForPeer(const String &peerKey);
 static String chatLogPathForPeer(const String &peerKey);
 static bool chatHasUnreadMessages();
 static void chatSetPeerUnread(const String &peerKey, bool unread);
+static bool chatSendRawReliableMessage(const String &peerKey, const String &text, bool storeVisible);
 static bool chatSendAndStoreMessage(const String &peerKey, const String &text);
 static void chatStageDeferredAirplaneMessage(const String &peerKey, const String &text);
 static void chatFlushDeferredAirplaneMessage();
@@ -1133,6 +1150,13 @@ static bool chatOpenPeerConversation(const String &peerKey);
 static bool chatOpenFirstUnreadConversation();
 static bool chatDeleteMessageById(const String &peerKey, const String &messageId, const String &status);
 static bool chatDeleteMessageAt(const String &peerKey, int index);
+static bool checkersHandleIncomingChatPayload(const String &peerKey,
+                                              const String &author,
+                                              const String &text,
+                                              ChatTransport transport,
+                                              const String &messageId);
+static void checkersClearSelection();
+static void checkersClearSession();
 void lvglDeleteChatMessageEvent(lv_event_t *e);
 
 static void lvglHideChatMenu()
@@ -1321,6 +1345,51 @@ uint16_t tetrisScore = 0;
 uint16_t tetrisHighScore = 0;
 unsigned long tetrisLastStepMs = 0;
 
+static constexpr int CHECKERS_SIZE = 8;
+static constexpr int CHECKERS_MAX_HINT_MOVES = 8;
+static constexpr int CHECKERS_ACTION_BAR_H = 46;
+static constexpr int CHECKERS_CONTROL_MSG_MARKERS = 4;
+static const char *const CHECKERS_CONTROL_PREFIXES[CHECKERS_CONTROL_MSG_MARKERS] = {
+    "@CHK_INVITE|",
+    "@CHK_ACCEPT|",
+    "@CHK_MOVE|",
+    "@CHK_DECLINE|"
+};
+
+enum CheckersMode : uint8_t {
+    CHECKERS_MODE_IDLE = 0,
+    CHECKERS_MODE_ESP32,
+    CHECKERS_MODE_TAG
+};
+
+struct CheckersMove {
+    int8_t fromX;
+    int8_t fromY;
+    int8_t toX;
+    int8_t toY;
+    int8_t captureX;
+    int8_t captureY;
+    bool capture;
+};
+
+static constexpr int CHECKERS_MAX_MOVES = 32;
+int8_t checkersBoard[CHECKERS_SIZE][CHECKERS_SIZE] = {};
+CheckersMode checkersMode = CHECKERS_MODE_IDLE;
+String checkersSessionId;
+String checkersPeerKey;
+int8_t checkersLocalSide = 0;
+int8_t checkersTurn = 1;
+int8_t checkersSelectedX = -1;
+int8_t checkersSelectedY = -1;
+int8_t checkersForcedX = -1;
+int8_t checkersForcedY = -1;
+bool checkersStarted = false;
+bool checkersWaitingForRemote = false;
+bool checkersPeerPopupOpen = false;
+bool checkersGameOver = false;
+int8_t checkersWinnerSide = 0;
+unsigned long checkersAiDueMs = 0;
+
 struct GameBoardLayout {
     lv_coord_t width;
     lv_coord_t height;
@@ -1338,7 +1407,7 @@ struct MediaEntry {
     size_t size;
 };
 
-static constexpr int MAX_MEDIA_ENTRIES = 80;
+static constexpr int MAX_MEDIA_ENTRIES = 72;
 static constexpr int MEDIA_PLAYER_PANEL_H = 108;
 static constexpr int MEDIA_PAGE_SIZE = 12;
 static constexpr int MEDIA_SCAN_YIELD_EVERY = 12;
@@ -2438,7 +2507,7 @@ static inline bool lvglClickSuppressed()
 
 static inline bool uiScreenKeepsDisplayAwake()
 {
-    return uiScreen == UI_GAME_SNAKE || uiScreen == UI_GAME_TETRIS;
+    return uiScreen == UI_GAME_SNAKE || uiScreen == UI_GAME_TETRIS || uiScreen == UI_GAME_CHECKERS;
 }
 
 static inline void lvglSuppressClicksAfterGesture()
@@ -2997,6 +3066,7 @@ static const char *uiScreenName(UiScreen screen)
         case UI_CONFIG_OTA: return "OTA Updates";
         case UI_CONFIG_MQTT_CONFIG: return "MQTT Config";
         case UI_CONFIG_MQTT_CONTROLS: return "MQTT Controls";
+        case UI_GAME_CHECKERS: return "Checkers";
         default: return "Screen";
     }
 }
@@ -3309,6 +3379,133 @@ static String chatGenerateMessageId()
              static_cast<unsigned long>(millis()),
              static_cast<unsigned long>(esp_random()));
     return String(buf);
+}
+
+static bool gameControlMessageSeen(const String &messageId)
+{
+    if (messageId.isEmpty()) return false;
+    for (uint8_t i = 0; i < gameControlMessageIdCount; ++i) {
+        if (strncmp(gameControlMessageIds[i], messageId.c_str(), sizeof(gameControlMessageIds[i])) == 0) return true;
+    }
+    return false;
+}
+
+static void gameRememberControlMessageId(const String &messageId)
+{
+    if (messageId.isEmpty() || gameControlMessageSeen(messageId)) return;
+    if (gameControlMessageIdCount < MAX_GAME_CONTROL_IDS) {
+        strncpy(gameControlMessageIds[gameControlMessageIdCount], messageId.c_str(), sizeof(gameControlMessageIds[gameControlMessageIdCount]) - 1);
+        gameControlMessageIds[gameControlMessageIdCount][sizeof(gameControlMessageIds[gameControlMessageIdCount]) - 1] = '\0';
+        gameControlMessageIdCount++;
+        return;
+    }
+    for (uint8_t i = 1; i < MAX_GAME_CONTROL_IDS; ++i) {
+        memcpy(gameControlMessageIds[i - 1], gameControlMessageIds[i], sizeof(gameControlMessageIds[i - 1]));
+    }
+    strncpy(gameControlMessageIds[MAX_GAME_CONTROL_IDS - 1], messageId.c_str(), sizeof(gameControlMessageIds[MAX_GAME_CONTROL_IDS - 1]) - 1);
+    gameControlMessageIds[MAX_GAME_CONTROL_IDS - 1][sizeof(gameControlMessageIds[MAX_GAME_CONTROL_IDS - 1]) - 1] = '\0';
+}
+
+static bool checkersRawTextStartsWith(const String &text, const char *prefix)
+{
+    return prefix && text.startsWith(prefix);
+}
+
+static bool checkersRawTextHasControlPrefix(const String &text)
+{
+    for (int i = 0; i < CHECKERS_CONTROL_MSG_MARKERS; ++i) {
+        if (checkersRawTextStartsWith(text, CHECKERS_CONTROL_PREFIXES[i])) return true;
+    }
+    return false;
+}
+
+static String checkersVisibleBodyFromRawText(const String &text)
+{
+    if (!checkersRawTextHasControlPrefix(text)) return text;
+    const int nl = text.indexOf('\n');
+    if (nl < 0 || nl >= (text.length() - 1)) return "";
+    return text.substring(nl + 1);
+}
+
+static bool checkersParseInviteText(const String &text, String &sessionId)
+{
+    if (!checkersRawTextStartsWith(text, "@CHK_INVITE|")) return false;
+    const int lineEnd = text.indexOf('\n');
+    const String marker = (lineEnd >= 0) ? text.substring(0, lineEnd) : text;
+    const int firstSep = marker.indexOf('|');
+    if (firstSep < 0 || firstSep >= (marker.length() - 1)) return false;
+    sessionId = marker.substring(firstSep + 1);
+    sessionId.trim();
+    return !sessionId.isEmpty();
+}
+
+static bool checkersParseAcceptText(const String &text, String &sessionId)
+{
+    if (!checkersRawTextStartsWith(text, "@CHK_ACCEPT|")) return false;
+    sessionId = text.substring(String("@CHK_ACCEPT|").length());
+    sessionId.trim();
+    return !sessionId.isEmpty();
+}
+
+static bool checkersParseDeclineText(const String &text, String &sessionId)
+{
+    if (!checkersRawTextStartsWith(text, "@CHK_DECLINE|")) return false;
+    sessionId = text.substring(String("@CHK_DECLINE|").length());
+    sessionId.trim();
+    return !sessionId.isEmpty();
+}
+
+static bool checkersParseMoveText(const String &text, String &sessionId, CheckersMove &move)
+{
+    if (!checkersRawTextStartsWith(text, "@CHK_MOVE|")) return false;
+    int cursor = String("@CHK_MOVE|").length();
+    int nextSep = text.indexOf('|', cursor);
+    if (nextSep <= cursor) return false;
+    sessionId = text.substring(cursor, nextSep);
+    sessionId.trim();
+    if (sessionId.isEmpty()) return false;
+
+    int values[4] = {0, 0, 0, 0};
+    for (int i = 0; i < 4; ++i) {
+        cursor = nextSep + 1;
+        nextSep = (i == 3) ? -1 : text.indexOf('|', cursor);
+        const String token = (nextSep >= 0) ? text.substring(cursor, nextSep) : text.substring(cursor);
+        if (token.isEmpty()) return false;
+        values[i] = token.toInt();
+    }
+
+    move.fromX = static_cast<int8_t>(values[0]);
+    move.fromY = static_cast<int8_t>(values[1]);
+    move.toX = static_cast<int8_t>(values[2]);
+    move.toY = static_cast<int8_t>(values[3]);
+    move.capture = false;
+    move.captureX = -1;
+    move.captureY = -1;
+    return true;
+}
+
+static String checkersBuildInviteText(const String &sessionId, const String &name)
+{
+    return "@CHK_INVITE|" + sessionId + "\nCheckers invite from " + name + "\nTag multiplayer\nTap Play to join.";
+}
+
+static String checkersBuildAcceptText(const String &sessionId)
+{
+    return "@CHK_ACCEPT|" + sessionId;
+}
+
+static String checkersBuildDeclineText(const String &sessionId)
+{
+    return "@CHK_DECLINE|" + sessionId;
+}
+
+static String checkersBuildMoveText(const String &sessionId, const CheckersMove &move)
+{
+    return "@CHK_MOVE|" + sessionId + "|" +
+           String(move.fromX) + "|" +
+           String(move.fromY) + "|" +
+           String(move.toX) + "|" +
+           String(move.toY);
 }
 
 static bool chatSavePendingOutbox()
@@ -3681,21 +3878,29 @@ static bool chatDeleteMessageById(const String &peerKey, const String &messageId
     return true;
 }
 
-static bool chatSendAndStoreMessage(const String &peerKey, const String &text)
+static bool chatSendRawReliableMessage(const String &peerKey, const String &text, bool storeVisible)
 {
     if (peerKey.isEmpty() || text.isEmpty()) return false;
     const String messageId = chatGenerateMessageId();
     chatQueueOutgoingMessage(peerKey, deviceShortNameValue(), text, messageId);
     const bool sentLan = p2pSendChatMessageWithId(peerKey, text, messageId);
     const bool sentGlobal = mqttPublishChatMessageWithId(peerKey, text, messageId);
-    chatStoreMessage(peerKey, "Me", text, true, sentGlobal ? CHAT_TRANSPORT_MQTT : CHAT_TRANSPORT_WIFI, messageId);
-    uiStatusLine = sentGlobal ? "Chat sent globally" : (sentLan ? "Chat sent to peers" : "Chat saved locally");
-    if (lvglReady) {
-        lvglSyncStatusLine();
-        if (uiScreen == UI_CHAT) lvglRefreshChatUi();
-        lvglRefreshChatContactsUi();
+    if (storeVisible) {
+        chatStoreMessage(peerKey, "Me", text, true, sentGlobal ? CHAT_TRANSPORT_MQTT : CHAT_TRANSPORT_WIFI, messageId);
+        if (lvglReady) {
+            if (uiScreen == UI_CHAT) lvglRefreshChatUi();
+            lvglRefreshChatContactsUi();
+        }
     }
-    return true;
+    return sentLan || sentGlobal || storeVisible;
+}
+
+static bool chatSendAndStoreMessage(const String &peerKey, const String &text)
+{
+    const bool ok = chatSendRawReliableMessage(peerKey, text, true);
+    uiStatusLine = ok ? "Chat queued" : "Chat send failed";
+    if (lvglReady) lvglSyncStatusLine();
+    return ok;
 }
 
 static void chatStageDeferredAirplaneMessage(const String &peerKey, const String &text)
@@ -4019,6 +4224,7 @@ void lvglMediaRefreshEvent(lv_event_t *e);
 static void mediaEnsureStorageReadyForUi();
 void lvglOpenSnakeEvent(lv_event_t *e);
 void lvglOpenTetrisEvent(lv_event_t *e);
+void lvglOpenCheckersEvent(lv_event_t *e);
 void lvglOpenMqttCfgEvent(lv_event_t *e);
 void lvglOpenMqttCtrlEvent(lv_event_t *e);
 void lvglOpenChatPeersEvent(lv_event_t *e);
@@ -4060,6 +4266,7 @@ void lvglOtaPopupEvent(lv_event_t *e);
 void lvglOtaAvailablePromptEvent(lv_event_t *e);
 void lvglRefreshSnakeBoard();
 void lvglRefreshTetrisBoard();
+void lvglRefreshCheckersBoard();
 void lvglSnakeBoardDrawEvent(lv_event_t *e);
 void lvglSnakeRestartEvent(lv_event_t *e);
 void lvglSnakeDirEvent(lv_event_t *e);
@@ -4071,7 +4278,16 @@ void lvglTetrisMoveLeftEvent(lv_event_t *e);
 void lvglTetrisMoveRightEvent(lv_event_t *e);
 void lvglTetrisRotateEvent(lv_event_t *e);
 void lvglTetrisDropEvent(lv_event_t *e);
+void lvglCheckersBoardDrawEvent(lv_event_t *e);
+void lvglCheckersBoardEvent(lv_event_t *e);
+void lvglCheckersEsp32Event(lv_event_t *e);
+void lvglCheckersTagEvent(lv_event_t *e);
+void lvglCheckersBackEvent(lv_event_t *e);
+void lvglCheckersReplayEvent(lv_event_t *e);
+void lvglCheckersInvitePlayEvent(lv_event_t *e);
+void lvglCheckersPeerSelectEvent(lv_event_t *e);
 void lvglChatPeerActionEvent(lv_event_t *e);
+void checkersTick();
 
 inline void lvglLoadScreen(lv_obj_t *target, lv_scr_load_anim_t anim)
 {
@@ -4095,6 +4311,7 @@ static bool uiScreenSupportsSwipeBack(UiScreen screen)
         case UI_CONFIG_MQTT_CONTROLS:
         case UI_GAME_SNAKE:
         case UI_GAME_TETRIS:
+        case UI_GAME_CHECKERS:
             return true;
         default:
             return false;
@@ -4119,6 +4336,7 @@ lv_obj_t *lvglScreenForUi(UiScreen screen)
         case UI_CONFIG_MQTT_CONTROLS: return lvglScrMqttCtrl;
         case UI_GAME_SNAKE: return lvglScrSnake;
         case UI_GAME_TETRIS: return lvglScrTetris;
+        case UI_GAME_CHECKERS: return lvglScrCheckers;
         default: return nullptr;
     }
 }
@@ -4509,6 +4727,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_scrollbar_mode(gamesWrap, LV_SCROLLBAR_MODE_OFF);
             lvglCreateMenuButton(gamesWrap, "Snake", lv_color_hex(0x3A8F4B), lvglOpenSnakeEvent, nullptr);
             lvglCreateMenuButton(gamesWrap, "Tetris", lv_color_hex(0x376B93), lvglOpenTetrisEvent, nullptr);
+            lvglCreateMenuButton(gamesWrap, "Checkers", lv_color_hex(0x8A5A25), lvglOpenCheckersEvent, nullptr);
             break;
         }
         case UI_CONFIG: {
@@ -5105,6 +5324,124 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglRefreshTetrisBoard();
             break;
         }
+        case UI_GAME_CHECKERS: {
+            lvglScrCheckers = lvglCreateScreenBase("Checkers", false);
+            const lv_coord_t checkersBoardTop = UI_CONTENT_TOP_Y + 4;
+            const lv_coord_t checkersBoardWidth = DISPLAY_WIDTH - 10;
+            const lv_coord_t checkersBoardHeight = UI_CONTENT_H - CHECKERS_ACTION_BAR_H - 10;
+
+            lvglCheckersBoardObj = lv_obj_create(lvglScrCheckers);
+            if (lvglCheckersBoardObj) {
+                lv_obj_set_size(lvglCheckersBoardObj, checkersBoardWidth, checkersBoardHeight);
+                lv_obj_align(lvglCheckersBoardObj, LV_ALIGN_TOP_MID, 0, checkersBoardTop);
+                lv_obj_set_style_bg_color(lvglCheckersBoardObj, lv_color_hex(0x0C1218), 0);
+                lv_obj_set_style_border_width(lvglCheckersBoardObj, 0, 0);
+                lv_obj_set_style_radius(lvglCheckersBoardObj, 8, 0);
+                lv_obj_clear_flag(lvglCheckersBoardObj, LV_OBJ_FLAG_SCROLLABLE);
+                lv_obj_add_event_cb(lvglCheckersBoardObj, lvglCheckersBoardDrawEvent, LV_EVENT_DRAW_MAIN, nullptr);
+                lv_obj_add_event_cb(lvglCheckersBoardObj, lvglCheckersBoardEvent, LV_EVENT_CLICKED, nullptr);
+
+                lvglCheckersModeLabel = lv_label_create(lvglCheckersBoardObj);
+                if (lvglCheckersModeLabel) {
+                    lv_obj_align(lvglCheckersModeLabel, LV_ALIGN_TOP_LEFT, 10, 8);
+                    lv_obj_set_style_text_color(lvglCheckersModeLabel, lv_color_hex(0xEAF2F9), 0);
+                }
+                lvglCheckersTurnLabel = lv_label_create(lvglCheckersBoardObj);
+                if (lvglCheckersTurnLabel) {
+                    lv_obj_align(lvglCheckersTurnLabel, LV_ALIGN_TOP_RIGHT, -10, 8);
+                    lv_obj_set_style_text_color(lvglCheckersTurnLabel, lv_color_hex(0xBBD2E6), 0);
+                }
+            }
+
+            lvglCheckersOverlay = lv_obj_create(lvglScrCheckers);
+            if (lvglCheckersOverlay) {
+                lv_obj_set_size(lvglCheckersOverlay, min<lv_coord_t>(DISPLAY_WIDTH - 40, 190), min<lv_coord_t>(UI_CONTENT_H - 28, 150));
+                lv_obj_align(lvglCheckersOverlay, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y + 10);
+                lv_obj_set_style_bg_color(lvglCheckersOverlay, lv_color_hex(0x12202B), 0);
+                lv_obj_set_style_bg_opa(lvglCheckersOverlay, LV_OPA_90, 0);
+                lv_obj_set_style_border_width(lvglCheckersOverlay, 1, 0);
+                lv_obj_set_style_border_color(lvglCheckersOverlay, lv_color_hex(0x3C566B), 0);
+                lv_obj_set_style_radius(lvglCheckersOverlay, 14, 0);
+                lv_obj_set_style_pad_all(lvglCheckersOverlay, 12, 0);
+                lv_obj_set_style_pad_row(lvglCheckersOverlay, 10, 0);
+                lv_obj_set_flex_flow(lvglCheckersOverlay, LV_FLEX_FLOW_COLUMN);
+                lv_obj_set_flex_align(lvglCheckersOverlay, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+                lv_obj_clear_flag(lvglCheckersOverlay, LV_OBJ_FLAG_SCROLLABLE);
+                lv_obj_move_foreground(lvglCheckersOverlay);
+
+                lvglCheckersOverlayTitle = lv_label_create(lvglCheckersOverlay);
+                if (lvglCheckersOverlayTitle) lv_obj_set_style_text_color(lvglCheckersOverlayTitle, lv_color_hex(0xF2F7FB), 0);
+                lvglCheckersOverlaySubLabel = lv_label_create(lvglCheckersOverlay);
+                if (lvglCheckersOverlaySubLabel) {
+                    lv_obj_set_width(lvglCheckersOverlaySubLabel, lv_pct(100));
+                    lv_label_set_long_mode(lvglCheckersOverlaySubLabel, LV_LABEL_LONG_WRAP);
+                    lv_obj_set_style_text_align(lvglCheckersOverlaySubLabel, LV_TEXT_ALIGN_CENTER, 0);
+                    lv_obj_set_style_text_color(lvglCheckersOverlaySubLabel, lv_color_hex(0xB7C8D7), 0);
+                }
+                lvglCheckersOverlayBtn = makeSmallBtn(lvglCheckersOverlay, "Replay", 120, 42, lv_color_hex(0x8A5A25), lvglCheckersReplayEvent);
+                if (lvglCheckersOverlayBtn) lvglCheckersOverlayBtnLabel = lv_obj_get_child(lvglCheckersOverlayBtn, 0);
+            }
+
+            lvglCheckersPeerPopup = lv_obj_create(lvglScrCheckers);
+            if (lvglCheckersPeerPopup) {
+                lv_obj_set_size(lvglCheckersPeerPopup, DISPLAY_WIDTH - 28, min<lv_coord_t>(UI_CONTENT_H - 40, 180));
+                lv_obj_align(lvglCheckersPeerPopup, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y + 8);
+                lv_obj_set_style_bg_color(lvglCheckersPeerPopup, lv_color_hex(0x16212C), 0);
+                lv_obj_set_style_border_color(lvglCheckersPeerPopup, lv_color_hex(0x536274), 0);
+                lv_obj_set_style_border_width(lvglCheckersPeerPopup, 1, 0);
+                lv_obj_set_style_radius(lvglCheckersPeerPopup, 12, 0);
+                lv_obj_set_style_pad_all(lvglCheckersPeerPopup, 8, 0);
+                lv_obj_set_style_pad_row(lvglCheckersPeerPopup, 6, 0);
+                lv_obj_set_flex_flow(lvglCheckersPeerPopup, LV_FLEX_FLOW_COLUMN);
+                lv_obj_clear_flag(lvglCheckersPeerPopup, LV_OBJ_FLAG_SCROLLABLE);
+                lv_obj_add_flag(lvglCheckersPeerPopup, LV_OBJ_FLAG_HIDDEN);
+
+                lvglCheckersPeerPopupTitle = lv_label_create(lvglCheckersPeerPopup);
+                if (lvglCheckersPeerPopupTitle) {
+                    lv_label_set_text(lvglCheckersPeerPopupTitle, "Choose Contact");
+                    lv_obj_set_style_text_color(lvglCheckersPeerPopupTitle, lv_color_hex(0xEAF2F9), 0);
+                }
+
+                lvglCheckersPeerPopupList = lv_obj_create(lvglCheckersPeerPopup);
+                if (lvglCheckersPeerPopupList) {
+                    lv_obj_set_size(lvglCheckersPeerPopupList, lv_pct(100), min<lv_coord_t>(110, UI_CONTENT_H - 90));
+                    lv_obj_set_style_bg_opa(lvglCheckersPeerPopupList, LV_OPA_TRANSP, 0);
+                    lv_obj_set_style_border_width(lvglCheckersPeerPopupList, 0, 0);
+                    lv_obj_set_style_pad_all(lvglCheckersPeerPopupList, 0, 0);
+                    lv_obj_set_style_pad_row(lvglCheckersPeerPopupList, 6, 0);
+                    lv_obj_set_flex_flow(lvglCheckersPeerPopupList, LV_FLEX_FLOW_COLUMN);
+                    lv_obj_set_scroll_dir(lvglCheckersPeerPopupList, LV_DIR_VER);
+                    lv_obj_set_scrollbar_mode(lvglCheckersPeerPopupList, LV_SCROLLBAR_MODE_OFF);
+                }
+            }
+
+            lv_obj_t *checkersBar = lv_obj_create(lvglScrCheckers);
+            lv_obj_set_size(checkersBar, lv_pct(100), CHECKERS_ACTION_BAR_H);
+            lv_obj_align(checkersBar, LV_ALIGN_BOTTOM_MID, 0, 0);
+            lv_obj_set_style_bg_color(checkersBar, lv_color_hex(0x101922), 0);
+            lv_obj_set_style_bg_opa(checkersBar, LV_OPA_COVER, 0);
+            lv_obj_set_style_border_width(checkersBar, 0, 0);
+            lv_obj_set_style_radius(checkersBar, 0, 0);
+            lv_obj_set_style_pad_all(checkersBar, 6, 0);
+            lv_obj_set_style_pad_column(checkersBar, 6, 0);
+            lv_obj_set_flex_flow(checkersBar, LV_FLEX_FLOW_ROW);
+            lv_obj_set_flex_align(checkersBar, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+            lv_obj_clear_flag(checkersBar, LV_OBJ_FLAG_SCROLLABLE);
+            const lv_coord_t ctlW = max<lv_coord_t>(66, (DISPLAY_WIDTH - 28) / 3);
+            makeSmallBtn(checkersBar, "ESP32", ctlW, 32, lv_color_hex(0x8A5A25), lvglCheckersEsp32Event, nullptr);
+            makeSmallBtn(checkersBar, "Tag MP", ctlW, 32, lv_color_hex(0x2F6D86), lvglCheckersTagEvent, nullptr);
+            makeSmallBtn(checkersBar, "Back", ctlW, 32, lv_color_hex(0x4E5D6C), lvglCheckersBackEvent, nullptr);
+
+            checkersMode = CHECKERS_MODE_IDLE;
+            checkersStarted = false;
+            checkersGameOver = false;
+            checkersPeerPopupOpen = false;
+            checkersWinnerSide = 0;
+            checkersClearSelection();
+            checkersClearSession();
+            lvglRefreshCheckersBoard();
+            break;
+        }
         default:
             break;
     }
@@ -5179,6 +5516,7 @@ void lvglNavigateBackBySwipe()
             break;
         case UI_GAME_SNAKE:
         case UI_GAME_TETRIS:
+        case UI_GAME_CHECKERS:
             lvglOpenScreen(UI_GAMES, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
             break;
         case UI_CONFIG_MQTT_CONFIG:
@@ -5603,6 +5941,10 @@ void lvglRefreshChatUi()
 
     for (int i = 0; i < chatMessageCount; ++i) {
         const String authorLabel = chatDisplayAuthorForMessage(chatMessages[i]);
+        String checkersInviteSessionId;
+        const bool checkersInvite = checkersParseInviteText(chatMessages[i].text, checkersInviteSessionId);
+        const String bodyText = checkersVisibleBodyFromRawText(chatMessages[i].text);
+        if (bodyText.isEmpty()) continue;
         const bool pendingDelivery = chatMessages[i].outgoing &&
                                      chatMessagePendingForPeer(currentChatPeerKey, chatMessages[i].messageId);
         const bool deliveredOutgoing = chatMessages[i].outgoing && !pendingDelivery;
@@ -5658,8 +6000,37 @@ void lvglRefreshChatUi()
         lv_obj_t *body = lv_label_create(bubble);
         lv_obj_set_width(body, lv_pct(100));
         lv_label_set_long_mode(body, LV_LABEL_LONG_WRAP);
-        lv_label_set_text(body, chatMessages[i].text.c_str());
+        lv_label_set_text(body, bodyText.c_str());
         lv_obj_set_style_text_color(body, lv_color_hex(0xEDF2F7), 0);
+
+        if (checkersInvite) {
+            if (!chatMessages[i].outgoing) {
+                lv_obj_t *playBtn = lv_btn_create(bubble);
+                lv_obj_set_width(playBtn, lv_pct(100));
+                lv_obj_set_height(playBtn, 28);
+                lv_obj_set_style_radius(playBtn, 10, 0);
+                lv_obj_set_style_border_width(playBtn, 0, 0);
+                lv_obj_set_style_bg_color(playBtn, lv_color_hex(0x3A8F4B), 0);
+                lv_obj_clear_flag(playBtn, LV_OBJ_FLAG_SCROLLABLE);
+                lv_obj_add_event_cb(playBtn, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
+                lv_obj_add_event_cb(playBtn, lvglFilteredClickFlashEvent, LV_EVENT_CLICKED, nullptr);
+                lv_obj_add_event_cb(playBtn, lvglCheckersInvitePlayEvent, LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(i)));
+                lv_obj_t *playLbl = lv_label_create(playBtn);
+                lv_label_set_text(playLbl, "Play");
+                lv_obj_center(playLbl);
+            } else {
+                lv_obj_t *inviteState = lv_label_create(bubble);
+                const bool activeInvite = (checkersMode == CHECKERS_MODE_TAG) &&
+                                          (checkersSessionId == checkersInviteSessionId) &&
+                                          (checkersPeerKey == currentChatPeerKey);
+                if (activeInvite) {
+                    lv_label_set_text(inviteState, checkersWaitingForRemote ? "Pending other player..." : "Game started");
+                } else {
+                    lv_label_set_text(inviteState, deliveredOutgoing ? "Invite sent" : "Sending invite...");
+                }
+                lv_obj_set_style_text_color(inviteState, lv_color_hex(0xB9D5E7), 0);
+            }
+        }
 
         if (chatMessages[i].outgoing) {
             lv_obj_t *delBtn = lv_btn_create(row);
@@ -6501,7 +6872,16 @@ void p2pService()
                                         if (!text.isEmpty()) {
                                             p2pRefreshTrustedPeerIdentity(p2pPeers[peerIdx].pubKeyHex, author, p2pUdp.remoteIP(), p2pUdp.remotePort());
                                             p2pTouchPeerSeen(peerIdx, p2pUdp.remoteIP(), p2pUdp.remotePort());
-                                            if (messageId.isEmpty() || !chatHasLoggedMessageId(p2pPeers[peerIdx].pubKeyHex, messageId)) {
+                                            if (checkersHandleIncomingChatPayload(p2pPeers[peerIdx].pubKeyHex,
+                                                                                  author,
+                                                                                  text,
+                                                                                  CHAT_TRANSPORT_WIFI,
+                                                                                  messageId)) {
+                                                if (lvglReady) {
+                                                    lvglSyncStatusLine();
+                                                    if (uiScreen == UI_CHAT) lvglRefreshChatUi();
+                                                }
+                                            } else if (messageId.isEmpty() || !chatHasLoggedMessageId(p2pPeers[peerIdx].pubKeyHex, messageId)) {
                                                 chatStoreMessage(p2pPeers[peerIdx].pubKeyHex, author, text, false, CHAT_TRANSPORT_WIFI, messageId);
                                                 uiStatusLine = "Chat received from " + author;
                                                 if (lvglReady) {
@@ -7757,15 +8137,20 @@ void lvglRefreshSnakeBoard()
         const bool pauseOverlay = snakePaused && snakeStarted && !snakeGameOver;
         lv_coord_t overlayW = pauseOverlay ? min<lv_coord_t>(DISPLAY_WIDTH - 64, 140) : min<lv_coord_t>(DISPLAY_WIDTH - 40, 180);
         lv_coord_t overlayH = pauseOverlay ? 76 : min<lv_coord_t>(UI_CONTENT_H - 24, 144);
+        lv_coord_t overlayX = (DISPLAY_WIDTH - overlayW) / 2;
         lv_coord_t overlayY = UI_CONTENT_TOP_Y + 8;
         if (lvglSnakeBoardObj) {
             lv_area_t boardCoords;
             lv_obj_get_coords(lvglSnakeBoardObj, &boardCoords);
+            const lv_coord_t boardWidth = static_cast<lv_coord_t>(boardCoords.x2 - boardCoords.x1 + 1);
             const lv_coord_t boardHeight = static_cast<lv_coord_t>(boardCoords.y2 - boardCoords.y1 + 1);
-            overlayY = max<lv_coord_t>(UI_CONTENT_TOP_Y + 8, boardCoords.y1 + ((boardHeight - overlayH) / 2));
+            overlayW = min<lv_coord_t>(overlayW, max<lv_coord_t>(120, boardWidth - 16));
+            overlayH = min<lv_coord_t>(overlayH, max<lv_coord_t>(76, boardHeight - 16));
+            overlayX = boardCoords.x1 + ((boardWidth - overlayW) / 2);
+            overlayY = boardCoords.y1 + ((boardHeight - overlayH) / 2);
         }
         lv_obj_set_size(lvglSnakeOverlay, overlayW, overlayH);
-        lv_obj_set_pos(lvglSnakeOverlay, (DISPLAY_WIDTH - overlayW) / 2, overlayY);
+        lv_obj_set_pos(lvglSnakeOverlay, overlayX, overlayY);
         lv_obj_move_foreground(lvglSnakeOverlay);
         if (showOverlay) lv_obj_clear_flag(lvglSnakeOverlay, LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(lvglSnakeOverlay, LV_OBJ_FLAG_HIDDEN);
@@ -7802,15 +8187,20 @@ void lvglRefreshTetrisBoard()
         const bool pauseOverlay = tetrisPaused && tetrisStarted && !tetrisGameOver;
         lv_coord_t overlayW = pauseOverlay ? min<lv_coord_t>(DISPLAY_WIDTH - 64, 140) : min<lv_coord_t>(DISPLAY_WIDTH - 40, 180);
         lv_coord_t overlayH = pauseOverlay ? 76 : min<lv_coord_t>(UI_CONTENT_H - 24, 144);
+        lv_coord_t overlayX = (DISPLAY_WIDTH - overlayW) / 2;
         lv_coord_t overlayY = UI_CONTENT_TOP_Y + 8;
         if (lvglTetrisBoardObj) {
             lv_area_t boardCoords;
             lv_obj_get_coords(lvglTetrisBoardObj, &boardCoords);
+            const lv_coord_t boardWidth = static_cast<lv_coord_t>(boardCoords.x2 - boardCoords.x1 + 1);
             const lv_coord_t boardHeight = static_cast<lv_coord_t>(boardCoords.y2 - boardCoords.y1 + 1);
-            overlayY = max<lv_coord_t>(UI_CONTENT_TOP_Y + 8, boardCoords.y1 + ((boardHeight - overlayH) / 2));
+            overlayW = min<lv_coord_t>(overlayW, max<lv_coord_t>(120, boardWidth - 16));
+            overlayH = min<lv_coord_t>(overlayH, max<lv_coord_t>(76, boardHeight - 16));
+            overlayX = boardCoords.x1 + ((boardWidth - overlayW) / 2);
+            overlayY = boardCoords.y1 + ((boardHeight - overlayH) / 2);
         }
         lv_obj_set_size(lvglTetrisOverlay, overlayW, overlayH);
-        lv_obj_set_pos(lvglTetrisOverlay, (DISPLAY_WIDTH - overlayW) / 2, overlayY);
+        lv_obj_set_pos(lvglTetrisOverlay, overlayX, overlayY);
         lv_obj_move_foreground(lvglTetrisOverlay);
         if (showOverlay) lv_obj_clear_flag(lvglTetrisOverlay, LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(lvglTetrisOverlay, LV_OBJ_FLAG_HIDDEN);
@@ -9279,6 +9669,778 @@ void tetrisTick()
     tetrisLastStepMs = millis();
     tetrisStepDown();
     lvglRefreshTetrisBoard();
+}
+
+static bool checkersInBounds(int x, int y)
+{
+    return x >= 0 && x < CHECKERS_SIZE && y >= 0 && y < CHECKERS_SIZE;
+}
+
+static int8_t checkersPieceSide(int8_t piece)
+{
+    if (piece > 0) return 1;
+    if (piece < 0) return -1;
+    return 0;
+}
+
+static bool checkersIsKing(int8_t piece)
+{
+    return piece == 2 || piece == -2;
+}
+
+static bool checkersIsDarkSquare(int x, int y)
+{
+    return ((x + y) & 1) == 1;
+}
+
+static void checkersClearSelection()
+{
+    checkersSelectedX = -1;
+    checkersSelectedY = -1;
+    checkersForcedX = -1;
+    checkersForcedY = -1;
+}
+
+static void checkersClearSession()
+{
+    checkersSessionId = "";
+    checkersPeerKey = "";
+    checkersLocalSide = 0;
+    checkersWaitingForRemote = false;
+    checkersAiDueMs = 0;
+}
+
+static String checkersPeerDisplayName()
+{
+    if (checkersPeerKey.isEmpty()) return "peer";
+    const String name = chatDisplayNameForPeerKey(checkersPeerKey);
+    return name.isEmpty() ? String("peer") : name;
+}
+
+static void checkersResetBoard()
+{
+    for (int y = 0; y < CHECKERS_SIZE; ++y) {
+        for (int x = 0; x < CHECKERS_SIZE; ++x) {
+            checkersBoard[y][x] = 0;
+            if (!checkersIsDarkSquare(x, y)) continue;
+            if (y < 3) checkersBoard[y][x] = -1;
+            else if (y > 4) checkersBoard[y][x] = 1;
+        }
+    }
+    checkersTurn = 1;
+    checkersStarted = true;
+    checkersGameOver = false;
+    checkersWinnerSide = 0;
+    checkersAiDueMs = 0;
+    checkersClearSelection();
+}
+
+static int checkersCollectPieceMoves(int x, int y, bool captureOnly, CheckersMove *out, int maxOut)
+{
+    if (!checkersInBounds(x, y)) return 0;
+    const int8_t piece = checkersBoard[y][x];
+    if (piece == 0) return 0;
+    const int8_t side = checkersPieceSide(piece);
+    const bool king = checkersIsKing(piece);
+    const int dirs[4][2] = {{-1, -1}, {1, -1}, {-1, 1}, {1, 1}};
+    int count = 0;
+
+    for (int i = 0; i < 4; ++i) {
+        const int dx = dirs[i][0];
+        const int dy = dirs[i][1];
+        if (!king) {
+            if (side == 1 && dy != -1) continue;
+            if (side == -1 && dy != 1) continue;
+        }
+
+        if (captureOnly) {
+            const int midX = x + dx;
+            const int midY = y + dy;
+            const int toX = x + (dx * 2);
+            const int toY = y + (dy * 2);
+            if (!checkersInBounds(midX, midY) || !checkersInBounds(toX, toY)) continue;
+            const int8_t midPiece = checkersBoard[midY][midX];
+            if (midPiece == 0 || checkersPieceSide(midPiece) == side || checkersBoard[toY][toX] != 0) continue;
+            if (out && count < maxOut) {
+                out[count].fromX = static_cast<int8_t>(x);
+                out[count].fromY = static_cast<int8_t>(y);
+                out[count].toX = static_cast<int8_t>(toX);
+                out[count].toY = static_cast<int8_t>(toY);
+                out[count].captureX = static_cast<int8_t>(midX);
+                out[count].captureY = static_cast<int8_t>(midY);
+                out[count].capture = true;
+            }
+            count++;
+        } else {
+            const int toX = x + dx;
+            const int toY = y + dy;
+            if (!checkersInBounds(toX, toY) || checkersBoard[toY][toX] != 0) continue;
+            if (out && count < maxOut) {
+                out[count].fromX = static_cast<int8_t>(x);
+                out[count].fromY = static_cast<int8_t>(y);
+                out[count].toX = static_cast<int8_t>(toX);
+                out[count].toY = static_cast<int8_t>(toY);
+                out[count].captureX = -1;
+                out[count].captureY = -1;
+                out[count].capture = false;
+            }
+            count++;
+        }
+    }
+
+    return count;
+}
+
+static bool checkersSideHasCapture(int8_t side)
+{
+    if (checkersForcedX >= 0 && checkersForcedY >= 0) {
+        return checkersCollectPieceMoves(checkersForcedX, checkersForcedY, true, nullptr, 0) > 0;
+    }
+
+    for (int y = 0; y < CHECKERS_SIZE; ++y) {
+        for (int x = 0; x < CHECKERS_SIZE; ++x) {
+            if (checkersPieceSide(checkersBoard[y][x]) != side) continue;
+            if (checkersCollectPieceMoves(x, y, true, nullptr, 0) > 0) return true;
+        }
+    }
+    return false;
+}
+
+static int checkersCollectLegalMovesForPiece(int x, int y, CheckersMove *out, int maxOut)
+{
+    if (!checkersInBounds(x, y)) return 0;
+    if (checkersPieceSide(checkersBoard[y][x]) != checkersTurn) return 0;
+    if (checkersForcedX >= 0 && checkersForcedY >= 0 && (x != checkersForcedX || y != checkersForcedY)) return 0;
+    const bool requireCapture = checkersSideHasCapture(checkersTurn);
+    return checkersCollectPieceMoves(x, y, requireCapture, out, maxOut);
+}
+
+static int checkersCollectLegalMovesForTurn(CheckersMove *out, int maxOut)
+{
+    int count = 0;
+    if (checkersForcedX >= 0 && checkersForcedY >= 0) {
+        return checkersCollectLegalMovesForPiece(checkersForcedX, checkersForcedY, out, maxOut);
+    }
+
+    const bool requireCapture = checkersSideHasCapture(checkersTurn);
+    for (int y = 0; y < CHECKERS_SIZE; ++y) {
+        for (int x = 0; x < CHECKERS_SIZE; ++x) {
+            if (checkersPieceSide(checkersBoard[y][x]) != checkersTurn) continue;
+            CheckersMove local[8];
+            const int localCount = checkersCollectPieceMoves(x, y, requireCapture, local, 8);
+            for (int i = 0; i < localCount; ++i) {
+                if (out && count < maxOut) out[count] = local[i];
+                count++;
+            }
+        }
+    }
+    return count;
+}
+
+static void checkersUpdateHintMoves()
+{
+    if (checkersSelectedX < 0 || checkersSelectedY < 0) return;
+    CheckersMove moves[CHECKERS_MAX_HINT_MOVES];
+    const int moveCount = checkersCollectLegalMovesForPiece(checkersSelectedX, checkersSelectedY, moves, CHECKERS_MAX_HINT_MOVES);
+    if (moveCount <= 0 && checkersForcedX < 0) {
+        checkersSelectedX = -1;
+        checkersSelectedY = -1;
+    }
+}
+
+static String checkersModeLabelText()
+{
+    switch (checkersMode) {
+        case CHECKERS_MODE_ESP32:
+            return "ESP32";
+        case CHECKERS_MODE_TAG:
+            if (!checkersPeerKey.isEmpty()) return "Tag MP: " + checkersPeerDisplayName();
+            return "Tag Multiplayer";
+        default:
+            return "Checkers";
+    }
+}
+
+static String checkersTurnLabelText()
+{
+    if (checkersGameOver) {
+        if (checkersMode == CHECKERS_MODE_ESP32) return (checkersWinnerSide == 1) ? "You win" : "ESP32 wins";
+        if (checkersMode == CHECKERS_MODE_TAG) return (checkersWinnerSide == checkersLocalSide) ? "You win" : (checkersPeerDisplayName() + " wins");
+        return (checkersWinnerSide == 1) ? "Red wins" : "Blue wins";
+    }
+    if (!checkersStarted) return "Pick a mode";
+    if (checkersWaitingForRemote) return "Pending";
+    if (checkersMode == CHECKERS_MODE_ESP32) {
+        return (checkersTurn == 1) ? "Your move" : "ESP32";
+    }
+    if (checkersMode == CHECKERS_MODE_TAG) {
+        if (checkersTurn == checkersLocalSide) return "Your move";
+        return checkersPeerDisplayName();
+    }
+    return (checkersTurn == 1) ? "Red" : "Blue";
+}
+
+static void checkersFinishGame(int8_t winnerSide)
+{
+    checkersGameOver = true;
+    checkersWinnerSide = winnerSide;
+    checkersAiDueMs = 0;
+    checkersWaitingForRemote = false;
+    checkersClearSelection();
+}
+
+static void checkersEvaluateGameOver()
+{
+    CheckersMove legal[CHECKERS_MAX_MOVES];
+    if (checkersCollectLegalMovesForTurn(legal, CHECKERS_MAX_MOVES) > 0) return;
+
+    if (checkersMode == CHECKERS_MODE_ESP32) {
+        checkersFinishGame(static_cast<int8_t>(-checkersTurn));
+    } else if (checkersMode == CHECKERS_MODE_TAG) {
+        checkersFinishGame(static_cast<int8_t>(-checkersTurn));
+    } else {
+        checkersFinishGame(static_cast<int8_t>(-checkersTurn));
+    }
+}
+
+static bool checkersApplyMove(const CheckersMove &move, bool broadcastMove)
+{
+    CheckersMove legal[CHECKERS_MAX_MOVES];
+    const int legalCount = checkersCollectLegalMovesForPiece(move.fromX, move.fromY, legal, CHECKERS_MAX_MOVES);
+    int match = -1;
+    for (int i = 0; i < legalCount; ++i) {
+        if (legal[i].toX == move.toX && legal[i].toY == move.toY) {
+            match = i;
+            break;
+        }
+    }
+    if (match < 0) return false;
+
+    const CheckersMove applied = legal[match];
+    int8_t piece = checkersBoard[applied.fromY][applied.fromX];
+    checkersBoard[applied.fromY][applied.fromX] = 0;
+    checkersBoard[applied.toY][applied.toX] = piece;
+    if (applied.capture) checkersBoard[applied.captureY][applied.captureX] = 0;
+    if (piece == 1 && applied.toY == 0) piece = 2;
+    else if (piece == -1 && applied.toY == (CHECKERS_SIZE - 1)) piece = -2;
+    checkersBoard[applied.toY][applied.toX] = piece;
+
+    if (broadcastMove && checkersMode == CHECKERS_MODE_TAG && !checkersPeerKey.isEmpty() && !checkersSessionId.isEmpty()) {
+        chatSendRawReliableMessage(checkersPeerKey, checkersBuildMoveText(checkersSessionId, applied), false);
+    }
+
+    if (applied.capture && checkersCollectPieceMoves(applied.toX, applied.toY, true, nullptr, 0) > 0) {
+        checkersForcedX = applied.toX;
+        checkersForcedY = applied.toY;
+        if (checkersTurn == checkersLocalSide) {
+            checkersSelectedX = applied.toX;
+            checkersSelectedY = applied.toY;
+        } else {
+            checkersSelectedX = -1;
+            checkersSelectedY = -1;
+        }
+    } else {
+        checkersClearSelection();
+        checkersTurn = static_cast<int8_t>(-checkersTurn);
+        checkersEvaluateGameOver();
+    }
+
+    checkersUpdateHintMoves();
+    if (!checkersGameOver && checkersMode == CHECKERS_MODE_ESP32 && checkersTurn == -1) {
+        checkersAiDueMs = millis() + 360UL;
+    } else if (checkersMode != CHECKERS_MODE_ESP32 || checkersTurn != -1) {
+        checkersAiDueMs = 0;
+    }
+    return true;
+}
+
+static void checkersStartEsp32Game()
+{
+    checkersClearSession();
+    checkersMode = CHECKERS_MODE_ESP32;
+    checkersLocalSide = 1;
+    checkersPeerPopupOpen = false;
+    checkersResetBoard();
+    checkersUpdateHintMoves();
+    uiStatusLine = "Checkers vs ESP32";
+    if (lvglReady) lvglSyncStatusLine();
+}
+
+static void checkersStartPendingInvite(const String &peerKey)
+{
+    if (peerKey.isEmpty()) return;
+    checkersMode = CHECKERS_MODE_TAG;
+    checkersPeerKey = peerKey;
+    checkersSessionId = chatGenerateMessageId();
+    checkersLocalSide = 1;
+    checkersWaitingForRemote = true;
+    checkersPeerPopupOpen = false;
+    checkersResetBoard();
+    checkersUpdateHintMoves();
+    chatSendRawReliableMessage(peerKey, checkersBuildInviteText(checkersSessionId, deviceShortNameValue()), true);
+    uiStatusLine = "Checkers invite sent to " + checkersPeerDisplayName();
+    if (lvglReady) lvglSyncStatusLine();
+}
+
+static void checkersStartAcceptedInvite(const String &peerKey, const String &sessionId)
+{
+    if (peerKey.isEmpty() || sessionId.isEmpty()) return;
+    checkersMode = CHECKERS_MODE_TAG;
+    checkersPeerKey = peerKey;
+    checkersSessionId = sessionId;
+    checkersLocalSide = -1;
+    checkersWaitingForRemote = false;
+    checkersPeerPopupOpen = false;
+    checkersResetBoard();
+    checkersUpdateHintMoves();
+    chatSendRawReliableMessage(peerKey, checkersBuildAcceptText(sessionId), false);
+    uiStatusLine = "Checkers started with " + checkersPeerDisplayName();
+    if (lvglReady) lvglSyncStatusLine();
+}
+
+static void checkersOpenPeerPopup()
+{
+    checkersPeerPopupOpen = true;
+    if (lvglReady && uiScreen == UI_GAME_CHECKERS) lvglRefreshCheckersBoard();
+}
+
+static void checkersClosePeerPopup()
+{
+    checkersPeerPopupOpen = false;
+    if (lvglCheckersPeerPopup) lv_obj_add_flag(lvglCheckersPeerPopup, LV_OBJ_FLAG_HIDDEN);
+}
+
+static bool checkersHandleIncomingChatPayload(const String &peerKey,
+                                              const String &author,
+                                              const String &text,
+                                              ChatTransport transport,
+                                              const String &messageId)
+{
+    String sessionId;
+    if (checkersParseInviteText(text, sessionId)) {
+        if (messageId.isEmpty() || !chatHasLoggedMessageId(peerKey, messageId)) {
+            chatStoreMessage(peerKey, author, text, false, transport, messageId);
+        }
+        uiStatusLine = "Checkers invite from " + author;
+        return true;
+    }
+
+    if (checkersParseAcceptText(text, sessionId)) {
+        if (gameControlMessageSeen(messageId)) return true;
+        gameRememberControlMessageId(messageId);
+        if (checkersMode == CHECKERS_MODE_TAG &&
+            checkersWaitingForRemote &&
+            checkersSessionId == sessionId &&
+            checkersPeerKey == peerKey) {
+            checkersWaitingForRemote = false;
+            uiStatusLine = author + " joined Checkers";
+            if (lvglReady && uiScreen == UI_GAME_CHECKERS) lvglRefreshCheckersBoard();
+        }
+        return true;
+    }
+
+    if (checkersParseDeclineText(text, sessionId)) {
+        if (gameControlMessageSeen(messageId)) return true;
+        gameRememberControlMessageId(messageId);
+        if (checkersMode == CHECKERS_MODE_TAG &&
+            checkersWaitingForRemote &&
+            checkersSessionId == sessionId &&
+            checkersPeerKey == peerKey) {
+            checkersWaitingForRemote = false;
+            checkersStarted = false;
+            checkersMode = CHECKERS_MODE_IDLE;
+            checkersClearSession();
+            uiStatusLine = author + " declined Checkers";
+            if (lvglReady && uiScreen == UI_GAME_CHECKERS) lvglRefreshCheckersBoard();
+        }
+        return true;
+    }
+
+    CheckersMove remoteMove = {};
+    if (checkersParseMoveText(text, sessionId, remoteMove)) {
+        if (gameControlMessageSeen(messageId)) return true;
+        gameRememberControlMessageId(messageId);
+        if (checkersMode == CHECKERS_MODE_TAG &&
+            !checkersWaitingForRemote &&
+            checkersSessionId == sessionId &&
+            checkersPeerKey == peerKey &&
+            checkersTurn != checkersLocalSide) {
+            if (checkersApplyMove(remoteMove, false)) {
+                uiStatusLine = "Checkers move from " + author;
+                if (lvglReady && uiScreen == UI_GAME_CHECKERS) lvglRefreshCheckersBoard();
+            }
+        }
+        return true;
+    }
+
+    return false;
+}
+
+static bool checkersLocalTurnActive()
+{
+    if (!checkersStarted || checkersGameOver || checkersWaitingForRemote) return false;
+    if (checkersMode == CHECKERS_MODE_ESP32) return checkersTurn == 1;
+    if (checkersMode == CHECKERS_MODE_TAG) return checkersTurn == checkersLocalSide;
+    return false;
+}
+
+static void checkersHandleBoardTap(int cellX, int cellY)
+{
+    if (!checkersLocalTurnActive()) return;
+    if (!checkersInBounds(cellX, cellY) || !checkersIsDarkSquare(cellX, cellY)) return;
+
+    if (checkersSelectedX >= 0 && checkersSelectedY >= 0) {
+        CheckersMove hintMoves[CHECKERS_MAX_HINT_MOVES];
+        const int hintMoveCount = checkersCollectLegalMovesForPiece(checkersSelectedX, checkersSelectedY, hintMoves, CHECKERS_MAX_HINT_MOVES);
+        CheckersMove chosen = {};
+        bool found = false;
+        for (int i = 0; i < hintMoveCount; ++i) {
+            if (hintMoves[i].toX == cellX && hintMoves[i].toY == cellY) {
+                chosen = hintMoves[i];
+                found = true;
+                break;
+            }
+        }
+        if (found) {
+            if (checkersApplyMove(chosen, checkersMode == CHECKERS_MODE_TAG)) {
+                lvglRefreshCheckersBoard();
+            }
+            return;
+        }
+    }
+
+    if (checkersPieceSide(checkersBoard[cellY][cellX]) == checkersTurn) {
+        checkersSelectedX = static_cast<int8_t>(cellX);
+        checkersSelectedY = static_cast<int8_t>(cellY);
+        checkersUpdateHintMoves();
+        CheckersMove hintMoves[CHECKERS_MAX_HINT_MOVES];
+        const int hintMoveCount = checkersCollectLegalMovesForPiece(checkersSelectedX, checkersSelectedY, hintMoves, CHECKERS_MAX_HINT_MOVES);
+        if (hintMoveCount <= 0) {
+            if (checkersForcedX < 0) checkersSelectedX = -1;
+            if (checkersForcedY < 0) checkersSelectedY = -1;
+        }
+        lvglRefreshCheckersBoard();
+        return;
+    }
+
+    if (checkersForcedX < 0) {
+        checkersSelectedX = -1;
+        checkersSelectedY = -1;
+        lvglRefreshCheckersBoard();
+    }
+}
+
+void lvglCheckersBoardEvent(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    if (lvglClickSuppressed()) return;
+    lv_obj_t *obj = lv_event_get_target(e);
+    if (!obj) return;
+    lv_indev_t *indev = lv_indev_get_act();
+    if (!indev) return;
+    lv_point_t pt = {0, 0};
+    lv_indev_get_point(indev, &pt);
+    lv_area_t coords;
+    lv_obj_get_coords(obj, &coords);
+    const int width = static_cast<int>(coords.x2 - coords.x1 + 1);
+    const int height = static_cast<int>(coords.y2 - coords.y1 + 1);
+    const int cellW = width / CHECKERS_SIZE;
+    const int cellH = height / CHECKERS_SIZE;
+    if (cellW <= 0 || cellH <= 0) return;
+    const int localX = pt.x - coords.x1;
+    const int localY = pt.y - coords.y1;
+    const int cellX = localX / cellW;
+    const int cellY = localY / cellH;
+    checkersHandleBoardTap(cellX, cellY);
+}
+
+static void checkersDrawPiece(lv_draw_ctx_t *drawCtx, int x, int y, int w, int h, lv_color_t fill, bool king, bool selected)
+{
+    lv_draw_rect_dsc_t dsc;
+    lv_draw_rect_dsc_init(&dsc);
+    dsc.bg_opa = LV_OPA_COVER;
+    dsc.bg_color = fill;
+    dsc.radius = LV_RADIUS_CIRCLE;
+    dsc.border_width = selected ? 3 : 2;
+    dsc.border_color = selected ? lv_color_hex(0xFFF1A8) : lv_color_hex(0xD6DEE8);
+    const int inset = max(2, min(w, h) / 8);
+    lv_area_t area = {
+        static_cast<lv_coord_t>(x + inset),
+        static_cast<lv_coord_t>(y + inset),
+        static_cast<lv_coord_t>(x + w - inset),
+        static_cast<lv_coord_t>(y + h - inset)
+    };
+    lv_draw_rect(drawCtx, &dsc, &area);
+
+    if (!king) return;
+    lv_draw_rect_dsc_t crownDsc;
+    lv_draw_rect_dsc_init(&crownDsc);
+    crownDsc.bg_opa = LV_OPA_TRANSP;
+    crownDsc.radius = LV_RADIUS_CIRCLE;
+    crownDsc.border_width = 2;
+    crownDsc.border_color = lv_color_hex(0xFFE08A);
+    const int crownInset = inset + max(2, min(w, h) / 7);
+    lv_area_t crownArea = {
+        static_cast<lv_coord_t>(x + crownInset),
+        static_cast<lv_coord_t>(y + crownInset),
+        static_cast<lv_coord_t>(x + w - crownInset),
+        static_cast<lv_coord_t>(y + h - crownInset)
+    };
+    lv_draw_rect(drawCtx, &crownDsc, &crownArea);
+}
+
+void lvglCheckersBoardDrawEvent(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_DRAW_MAIN) return;
+    lv_obj_t *obj = lv_event_get_target(e);
+    lv_draw_ctx_t *drawCtx = lv_event_get_draw_ctx(e);
+    if (!obj || !drawCtx) return;
+
+    lv_area_t coords;
+    lv_obj_get_coords(obj, &coords);
+    const int width = static_cast<int>(coords.x2 - coords.x1 + 1);
+    const int height = static_cast<int>(coords.y2 - coords.y1 + 1);
+    const int cellW = width / CHECKERS_SIZE;
+    const int cellH = height / CHECKERS_SIZE;
+    if (cellW < 8 || cellH < 8) return;
+    CheckersMove hintMoves[CHECKERS_MAX_HINT_MOVES];
+    const int hintMoveCount = (checkersSelectedX >= 0 && checkersSelectedY >= 0)
+                                  ? checkersCollectLegalMovesForPiece(checkersSelectedX, checkersSelectedY, hintMoves, CHECKERS_MAX_HINT_MOVES)
+                                  : 0;
+
+    for (int y = 0; y < CHECKERS_SIZE; ++y) {
+        for (int x = 0; x < CHECKERS_SIZE; ++x) {
+            const int px = static_cast<int>(coords.x1) + (x * cellW);
+            const int py = static_cast<int>(coords.y1) + (y * cellH);
+            lv_color_t square = checkersIsDarkSquare(x, y) ? lv_color_hex(0x314355) : lv_color_hex(0xD5C7AF);
+            if (x == checkersSelectedX && y == checkersSelectedY) square = lv_color_hex(0x5B7244);
+            for (int i = 0; i < hintMoveCount; ++i) {
+                if (hintMoves[i].toX == x && hintMoves[i].toY == y) {
+                    square = hintMoves[i].capture ? lv_color_hex(0x7D4A3B) : lv_color_hex(0x4B657A);
+                    break;
+                }
+            }
+            lvglDrawGridCell(drawCtx, px, py, cellW - 1, cellH - 1, square);
+
+            const int8_t piece = checkersBoard[y][x];
+            if (piece == 0) continue;
+            checkersDrawPiece(drawCtx,
+                              px + 1,
+                              py + 1,
+                              cellW - 2,
+                              cellH - 2,
+                              piece > 0 ? lv_color_hex(0xD94A4A) : lv_color_hex(0x2D3F8E),
+                              checkersIsKing(piece),
+                              x == checkersSelectedX && y == checkersSelectedY);
+        }
+    }
+}
+
+static void checkersRefreshPeerPopup()
+{
+    if (!lvglCheckersPeerPopup || !lvglCheckersPeerPopupList) return;
+    if (!checkersPeerPopupOpen) {
+        lv_obj_add_flag(lvglCheckersPeerPopup, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+
+    lv_obj_clear_flag(lvglCheckersPeerPopup, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(lvglCheckersPeerPopup);
+    lv_obj_clean(lvglCheckersPeerPopupList);
+
+    if (lvglCheckersPeerPopupTitle) lv_label_set_text(lvglCheckersPeerPopupTitle, "Choose Contact");
+
+    bool havePeers = false;
+    for (int i = 0; i < p2pPeerCount; ++i) {
+        if (!p2pPeers[i].enabled) continue;
+        havePeers = true;
+        lv_obj_t *btn = lv_btn_create(lvglCheckersPeerPopupList);
+        lv_obj_set_width(btn, lv_pct(100));
+        lv_obj_set_height(btn, 34);
+        lv_obj_set_style_radius(btn, 10, 0);
+        lv_obj_set_style_border_width(btn, 0, 0);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x2F6D86), 0);
+        lv_obj_add_event_cb(btn, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
+        lv_obj_add_event_cb(btn, lvglFilteredClickFlashEvent, LV_EVENT_CLICKED, nullptr);
+        lv_obj_add_event_cb(btn, lvglCheckersPeerSelectEvent, LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(i)));
+        lv_obj_t *lbl = lv_label_create(btn);
+        lv_label_set_text(lbl, p2pPeers[i].name.isEmpty() ? "Peer" : p2pPeers[i].name.c_str());
+        lv_obj_center(lbl);
+    }
+
+    if (!havePeers) {
+        lv_obj_t *lbl = lv_label_create(lvglCheckersPeerPopupList);
+        lv_obj_set_width(lbl, lv_pct(100));
+        lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(lbl, "No paired contacts.\nOpen Chat Peers first and pair another device.");
+    }
+}
+
+void lvglRefreshCheckersBoard()
+{
+    checkersUpdateHintMoves();
+    if (lvglCheckersBoardObj) lv_obj_invalidate(lvglCheckersBoardObj);
+    if (lvglCheckersModeLabel) lv_label_set_text(lvglCheckersModeLabel, checkersModeLabelText().c_str());
+    if (lvglCheckersTurnLabel) lv_label_set_text(lvglCheckersTurnLabel, checkersTurnLabelText().c_str());
+
+    if (lvglCheckersOverlay) {
+        bool showOverlay = false;
+        String title = "Checkers";
+        String msg = "";
+        bool showBtn = false;
+        String btnText = "Replay";
+
+        if (checkersGameOver) {
+            showOverlay = true;
+            title = checkersTurnLabelText();
+            msg = (checkersMode == CHECKERS_MODE_TAG && !checkersPeerKey.isEmpty())
+                      ? ("Match finished with " + checkersPeerDisplayName())
+                      : "Tap Replay to start again.";
+            showBtn = true;
+        } else if (checkersWaitingForRemote) {
+            showOverlay = true;
+            title = "Tag Multiplayer";
+            msg = "Invitation sent to " + checkersPeerDisplayName() + "\nWaiting for Play...";
+        } else if (!checkersStarted) {
+            showOverlay = true;
+            title = "Checkers";
+            msg = "Tap ESP32 for solo or Tag MP to invite a contact.";
+        }
+
+        if (showOverlay) lv_obj_clear_flag(lvglCheckersOverlay, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(lvglCheckersOverlay, LV_OBJ_FLAG_HIDDEN);
+        if (lvglCheckersOverlayTitle) lv_label_set_text(lvglCheckersOverlayTitle, title.c_str());
+        if (lvglCheckersOverlaySubLabel) lv_label_set_text(lvglCheckersOverlaySubLabel, msg.c_str());
+        if (lvglCheckersOverlayBtn) {
+            if (showBtn) lv_obj_clear_flag(lvglCheckersOverlayBtn, LV_OBJ_FLAG_HIDDEN);
+            else lv_obj_add_flag(lvglCheckersOverlayBtn, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (lvglCheckersOverlayBtnLabel) lv_label_set_text(lvglCheckersOverlayBtnLabel, btnText.c_str());
+    }
+
+    checkersRefreshPeerPopup();
+}
+
+void lvglCheckersEsp32Event(lv_event_t *e)
+{
+    (void)e;
+    checkersStartEsp32Game();
+    lvglRefreshCheckersBoard();
+}
+
+void lvglCheckersTagEvent(lv_event_t *e)
+{
+    (void)e;
+    if (checkersPeerPopupOpen) checkersClosePeerPopup();
+    else checkersOpenPeerPopup();
+    lvglRefreshCheckersBoard();
+}
+
+void lvglCheckersBackEvent(lv_event_t *e)
+{
+    (void)e;
+    checkersClosePeerPopup();
+    lvglOpenScreen(UI_GAMES, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
+}
+
+void lvglCheckersReplayEvent(lv_event_t *e)
+{
+    (void)e;
+    if (checkersMode == CHECKERS_MODE_ESP32) {
+        checkersStartEsp32Game();
+    } else if (checkersMode == CHECKERS_MODE_TAG && !checkersPeerKey.isEmpty()) {
+        checkersStartPendingInvite(checkersPeerKey);
+    } else {
+        checkersStarted = false;
+        checkersGameOver = false;
+    }
+    lvglRefreshCheckersBoard();
+}
+
+void lvglCheckersPeerSelectEvent(lv_event_t *e)
+{
+    const int idx = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
+    if (idx < 0 || idx >= p2pPeerCount || !p2pPeers[idx].enabled) return;
+    checkersStartPendingInvite(p2pPeers[idx].pubKeyHex);
+    lvglRefreshCheckersBoard();
+}
+
+void lvglCheckersInvitePlayEvent(lv_event_t *e)
+{
+    const int idx = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
+    if (idx < 0 || idx >= chatMessageCount) return;
+    String sessionId;
+    if (!checkersParseInviteText(chatMessages[idx].text, sessionId)) return;
+    const String peerKey = currentChatPeerKey;
+    if (peerKey.isEmpty()) return;
+    lvglEnsureScreenBuilt(UI_GAME_CHECKERS);
+    checkersStartAcceptedInvite(peerKey, sessionId);
+    if (screensaverActive) screensaverSetActive(false);
+    if (!displayAwake) displaySetAwake(true);
+    lastUserActivityMs = millis();
+    lvglRefreshCheckersBoard();
+    lvglOpenScreen(UI_GAME_CHECKERS, LV_SCR_LOAD_ANIM_MOVE_LEFT);
+}
+
+void lvglOpenCheckersEvent(lv_event_t *e)
+{
+    (void)e;
+    lvglEnsureScreenBuilt(UI_GAME_CHECKERS);
+    checkersMode = CHECKERS_MODE_IDLE;
+    checkersPeerPopupOpen = false;
+    checkersStarted = false;
+    checkersGameOver = false;
+    checkersWinnerSide = 0;
+    checkersClearSession();
+    checkersClearSelection();
+    if (screensaverActive) screensaverSetActive(false);
+    if (!displayAwake) displaySetAwake(true);
+    lastUserActivityMs = millis();
+    lvglRefreshCheckersBoard();
+    lvglOpenScreen(UI_GAME_CHECKERS, LV_SCR_LOAD_ANIM_MOVE_LEFT);
+}
+
+static bool checkersChooseAiMove(CheckersMove &bestMove)
+{
+    CheckersMove legal[CHECKERS_MAX_MOVES];
+    const int legalCount = checkersCollectLegalMovesForTurn(legal, CHECKERS_MAX_MOVES);
+    if (legalCount <= 0) return false;
+
+    int bestScore = -100000;
+    int bestIdx = 0;
+    for (int i = 0; i < legalCount; ++i) {
+        int score = legal[i].capture ? 100 : 10;
+        const int8_t piece = checkersBoard[legal[i].fromY][legal[i].fromX];
+        if (piece == -1 && legal[i].toY == (CHECKERS_SIZE - 1)) score += 25;
+        if (checkersIsKing(piece)) score += 12;
+        score += static_cast<int>(esp_random() & 0x0F);
+        if (score > bestScore) {
+            bestScore = score;
+            bestIdx = i;
+        }
+    }
+    bestMove = legal[bestIdx];
+    return true;
+}
+
+void checkersTick()
+{
+    if (uiScreen != UI_GAME_CHECKERS) return;
+    if (checkersMode != CHECKERS_MODE_ESP32 || !checkersStarted || checkersGameOver || checkersWaitingForRemote) return;
+    if (checkersTurn != -1) return;
+    if (millis() < checkersAiDueMs) return;
+
+    CheckersMove aiMove = {};
+    if (!checkersChooseAiMove(aiMove)) {
+        checkersFinishGame(1);
+        lvglRefreshCheckersBoard();
+        return;
+    }
+
+    checkersApplyMove(aiMove, false);
+    if (!checkersGameOver && checkersTurn == -1) checkersAiDueMs = millis() + 260UL;
+    lvglRefreshCheckersBoard();
 }
 
 bool mediaAllowedExt(const String &name)
@@ -10953,7 +12115,12 @@ bool mqttConnectNow()
         const String messageId = String(static_cast<const char *>(plainDoc["id"] | ""));
         const String text = String(static_cast<const char *>(plainDoc["text"] | ""));
         if (text.isEmpty()) return;
-        if (messageId.isEmpty() || !chatHasLoggedMessageId(senderPubHex, messageId)) {
+        if (checkersHandleIncomingChatPayload(senderPubHex, author, text, CHAT_TRANSPORT_MQTT, messageId)) {
+            if (lvglReady) {
+                lvglSyncStatusLine();
+                if (uiScreen == UI_CHAT) lvglRefreshChatUi();
+            }
+        } else if (messageId.isEmpty() || !chatHasLoggedMessageId(senderPubHex, messageId)) {
             chatStoreMessage(senderPubHex, author, text, false, CHAT_TRANSPORT_MQTT, messageId);
             uiStatusLine = "Global chat from " + author;
             if (lvglReady) {
@@ -14306,6 +15473,7 @@ void loop()
 
     snakeTick();
     tetrisTick();
+    checkersTick();
 
     static wl_status_t lastWiFi = WL_DISCONNECTED;
     wl_status_t cur = wifiStatusSafe();

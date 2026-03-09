@@ -2,7 +2,7 @@
 
 Firmware for Sunton-style ESP32 touch display boards with an LVGL touch UI, Wi-Fi/AP management, SD-backed recovery tools, MQTT controls, and encrypted device-to-device chat.
 
-Current firmware version: **`0.1.8`**
+Current firmware version: **`0.1.9`**
 
 Supported boards:
 - `ESP32-2432S024C` (`240x320`, `ILI9341`, `CST820`)
@@ -27,6 +27,8 @@ Supported boards:
 - Encrypted peer-to-peer LAN chat over UDP
 - Encrypted global chat relay over MQTT
 - On-device peer discovery, pairing, unpair, enable/disable, unread markers, and conversation actions
+- Built-in `Snake`, `Tetris`, and `Checkers` games with a shared touch control layout
+- `Checkers` supports both local play against the ESP32 and contact-invite multiplayer started from chat
 - `Info` screen with battery, Wi-Fi, light, CPU, SRAM, PSRAM, and SD usage indicators
 - S3 build uses PSRAM-first allocation for major UI/work buffers to reduce internal SRAM pressure
 - Swipe-back and scroll gestures are filtered to avoid triggering button clicks while navigating lists and menus
@@ -351,6 +353,7 @@ Conversation view includes:
 - unread indicator mail icon in the top bar
 - unread green dot on contacts
 - per-message send state
+- inline `Play` action for incoming `Checkers` invitations
 - 3-dot menu with `Clear` and `Clear for All`
 
 Message state:
@@ -410,6 +413,13 @@ MQTT chat notes:
 - payloads are end-to-end encrypted per trusted peer
 - broker can relay messages but cannot read them
 - paired peers can communicate globally as long as MQTT is connected
+
+## Games
+
+- `Snake` and `Tetris` use the same bottom control layout with directional arrows and a centered play/pause button.
+- Start, pause, and game-over popups are centered on the game canvas instead of the full screen area.
+- `Checkers` offers `ESP32` and `Tag MP` modes.
+- `Tag MP` opens a contact picker above the board, sends an invite in chat, and starts the match when the other player taps `Play`.
 
 ## SD Layout
 
@@ -512,6 +522,7 @@ Supported audio extensions:
 
 - `esp32-2432s024c`
 - `esp32-3248s035`
+- `esp32-s3-3248s035-n16r8`
 
 ### Switch boards
 
