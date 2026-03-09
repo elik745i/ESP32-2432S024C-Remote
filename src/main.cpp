@@ -18,6 +18,7 @@
 #include <HTTPClient.h>
 #include <Update.h>
 #include <WiFiClientSecure.h>
+#include <esp_ota_ops.h>
 #include <esp_bt.h>
 #include <esp_bt_main.h>
 #include <esp_sleep.h>
@@ -225,7 +226,7 @@ static constexpr uint16_t LIGHT_RAW_CAL_MAX = 600;
 static constexpr bool LIGHT_LOG_RAW_TO_SERIAL = false;
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.1.6";
+static constexpr const char *FW_VERSION = "0.1.7";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -10558,6 +10559,28 @@ static void otaSetStatus(const String &text)
     otaStatusText = text;
 }
 
+static void otaFinalizePendingBootImage()
+{
+#if defined(ESP_ARDUINO_VERSION_MAJOR)
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (!running) return;
+
+    esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
+    if (esp_ota_get_state_partition(running, &state) != ESP_OK) return;
+
+    if (state == ESP_OTA_IMG_PENDING_VERIFY) {
+        const esp_err_t markErr = esp_ota_mark_app_valid_cancel_rollback();
+        if (markErr == ESP_OK) {
+            Serial.printf("[OTA] marked running image valid: %s @ 0x%08lx\n",
+                          running->label,
+                          static_cast<unsigned long>(running->address));
+        } else {
+            Serial.printf("[OTA] mark app valid failed: %s\n", esp_err_to_name(markErr));
+        }
+    }
+#endif
+}
+
 bool otaDownloadAndApplyFromUrl(const String &url, String &errorOut)
 {
     errorOut = "";
@@ -12906,6 +12929,7 @@ void setup()
 {
     sdMutex = xSemaphoreCreateMutex();
     Serial.begin(115200);
+    otaFinalizePendingBootImage();
     if (VERBOSE_SERIAL_DEBUG) {
         Serial.println();
         Serial.printf("[BOOT] setup start board=%s\n", deviceShortNameValue().c_str());
