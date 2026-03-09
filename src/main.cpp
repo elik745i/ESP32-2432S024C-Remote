@@ -226,7 +226,7 @@ static constexpr uint16_t LIGHT_RAW_CAL_MAX = 600;
 static constexpr bool LIGHT_LOG_RAW_TO_SERIAL = false;
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.2.1";
+static constexpr const char *FW_VERSION = "0.2.2";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -252,6 +252,10 @@ static constexpr int HC12_SET_PIN = 22;
 #endif
 static constexpr unsigned long HC12_BAUD = 9600UL;
 static constexpr size_t HC12_TERMINAL_MAX_CHARS = 2800;
+static constexpr uint8_t UI_DEFERRED_SCREENSHOT_PENDING = 0x01;
+static constexpr uint8_t UI_DEFERRED_SCREENSHOT_BUSY = 0x02;
+static constexpr uint8_t UI_DEFERRED_HC12_SETTLE_PENDING = 0x04;
+static constexpr uint8_t UI_DEFERRED_HC12_TARGET_ASSERTED = 0x08;
 
 void serialLogPushLine(const char *line, bool sendWs = true);
 void executeSerialCommand(String input);
@@ -1545,10 +1549,12 @@ uint32_t serialLastWsPushMs = 0;
 uint32_t serialLogWsMinIntervalMs = SERIAL_LOG_RATE_MS_DEFAULT;
 size_t serialLogKeepLines = SERIAL_LOG_RING_SIZE;
 unsigned long serialTerminalStreamUntilMs = 0;
+uint16_t hc12SettleUntilTick = 0;
 bool recordTelemetryEnabled = false;
 bool systemSoundsEnabled = true;
 bool wsRebootOnDisconnectEnabled = false;
 bool airplaneModeEnabled = false;
+uint8_t uiDeferredFlags = 0;
 enum OtaUiState : uint8_t {
     OTA_UI_IDLE = 0,
     OTA_UI_CHECKING,
@@ -4360,6 +4366,7 @@ static lv_obj_t *hc12SetBtnObj();
 static lv_obj_t *hc12TerminalObj();
 static lv_obj_t *hc12CmdTaObj();
 static bool hc12SetIsAsserted();
+static void screenshotService(bool touchDown);
 void lvglWifiApShowToggleEvent(lv_event_t *e);
 void lvglWifiPwdCancelEvent(lv_event_t *e);
 void lvglWifiPwdConnectEvent(lv_event_t *e);
@@ -7887,9 +7894,10 @@ void lvglHc12ToggleSetEvent(lv_event_t *e)
     hc12InitIfNeeded();
     const bool setAsserted = !hc12SetIsAsserted();
     digitalWrite(HC12_SET_PIN, setAsserted ? LOW : HIGH);
-    delay(setAsserted ? 80 : 40);
-    hc12AppendTerminal(setAsserted ? "[HC12] SET asserted, AT mode requested\n"
-                                   : "[HC12] SET released, normal radio mode\n");
+    uiDeferredFlags |= UI_DEFERRED_HC12_SETTLE_PENDING;
+    if (setAsserted) uiDeferredFlags |= UI_DEFERRED_HC12_TARGET_ASSERTED;
+    else uiDeferredFlags &= static_cast<uint8_t>(~UI_DEFERRED_HC12_TARGET_ASSERTED);
+    hc12SettleUntilTick = static_cast<uint16_t>(millis()) + static_cast<uint16_t>(setAsserted ? 80U : 40U);
     lvglRefreshHc12Ui();
 }
 
@@ -7898,6 +7906,11 @@ void lvglHc12SendEvent(lv_event_t *e)
     (void)e;
     lv_obj_t *cmdTa = hc12CmdTaObj();
     if (!cmdTa) return;
+    if ((uiDeferredFlags & UI_DEFERRED_HC12_SETTLE_PENDING) &&
+        static_cast<int16_t>(static_cast<uint16_t>(millis()) - hc12SettleUntilTick) < 0) {
+        lvglStatusPush("HC12 settling...");
+        return;
+    }
     String line = lv_textarea_get_text(cmdTa);
     line.trim();
     if (line.isEmpty()) return;
@@ -7908,6 +7921,13 @@ void lvglHc12SendEvent(lv_event_t *e)
 static void hc12Service()
 {
     if (!hc12TerminalLog) return;
+    if ((uiDeferredFlags & UI_DEFERRED_HC12_SETTLE_PENDING) &&
+        static_cast<int16_t>(static_cast<uint16_t>(millis()) - hc12SettleUntilTick) >= 0) {
+        const bool setAsserted = (uiDeferredFlags & UI_DEFERRED_HC12_TARGET_ASSERTED) != 0;
+        uiDeferredFlags &= static_cast<uint8_t>(~UI_DEFERRED_HC12_SETTLE_PENDING);
+        hc12AppendTerminal(setAsserted ? "[HC12] SET asserted, AT mode requested\n"
+                                       : "[HC12] SET released, normal radio mode\n");
+    }
     char rxBuf[33];
     while (Serial1.available() > 0) {
         size_t rxLen = 0;
@@ -7922,6 +7942,31 @@ static void hc12Service()
         rxBuf[rxLen] = '\0';
         hc12AppendTerminal(rxBuf);
     }
+}
+
+static void screenshotService(bool touchDown)
+{
+    if ((uiDeferredFlags & UI_DEFERRED_SCREENSHOT_PENDING) == 0 || (uiDeferredFlags & UI_DEFERRED_SCREENSHOT_BUSY) != 0) return;
+    if (touchDown || fsWriteBusy()) return;
+
+    uiDeferredFlags &= static_cast<uint8_t>(~UI_DEFERRED_SCREENSHOT_PENDING);
+    uiDeferredFlags |= UI_DEFERRED_SCREENSHOT_BUSY;
+
+    if (!sdEnsureMounted(true)) {
+        uiDeferredFlags &= static_cast<uint8_t>(~UI_DEFERRED_SCREENSHOT_BUSY);
+        lvglStatusPush("Screenshot failed: no SD");
+        return;
+    }
+
+    fsWriteBegin();
+    String path;
+    String err;
+    const bool ok = captureScreenToJpeg(path, err);
+    fsWriteEnd();
+    uiDeferredFlags &= static_cast<uint8_t>(~UI_DEFERRED_SCREENSHOT_BUSY);
+
+    if (!ok) lvglStatusPush("Screenshot error: " + (err.length() ? err : String("unknown")));
+    else lvglStatusPush("Saved: " + path);
 }
 
 void lvglWifiPwdCancelEvent(lv_event_t *e)
@@ -8410,17 +8455,12 @@ void lvglRefreshMqttControlsUi()
 void lvglScreenshotEvent(lv_event_t *e)
 {
     (void)e;
-    if (!sdEnsureMounted(true)) {
-        lvglStatusPush("Screenshot failed: no SD");
+    if (uiDeferredFlags & (UI_DEFERRED_SCREENSHOT_PENDING | UI_DEFERRED_SCREENSHOT_BUSY)) {
+        lvglStatusPush("Screenshot already queued");
         return;
     }
-    fsWriteBegin();
-    String path;
-    String err;
-    bool ok = captureScreenToJpeg(path, err);
-    fsWriteEnd();
-    if (!ok) lvglStatusPush("Screenshot error: " + (err.length() ? err : String("unknown")));
-    else lvglStatusPush("Saved: " + path);
+    uiDeferredFlags |= UI_DEFERRED_SCREENSHOT_PENDING;
+    lvglStatusPush("Screenshot queued");
 }
 
 void lvglSnakeDirEvent(lv_event_t *e)
@@ -16646,6 +16686,7 @@ void loop()
     }
     otaUpdateService();
     hc12Service();
+    screenshotService(isDown);
     const bool allowSdAutoRetry = (uiScreen == UI_MEDIA) || !displayAwake;
     if (!sdMounted && allowSdAutoRetry && !isDown && !fsWriteBusy() &&
         static_cast<unsigned long>(millis() - sdLastAutoRetryMs) >= SD_AUTORETRY_PERIOD_MS) {
@@ -16769,5 +16810,5 @@ void loop()
 
     if (canEnterLowPowerSleep(isDown)) enterLowPowerSleep();
     cpuLoadPrevActiveUs = micros() - loopStartUs;
-    delay(1);
+    delay(0);
 }

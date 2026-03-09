@@ -2,7 +2,7 @@
 
 Firmware for Sunton-style ESP32 touch display boards with an LVGL touch UI, Wi-Fi/AP management, SD-backed recovery tools, MQTT controls, and encrypted device-to-device chat.
 
-Current firmware version: **`0.2.1`**
+Current firmware version: **`0.2.2`**
 
 Supported boards:
 - `ESP32-2432S024C` (`240x320`, `ILI9341`, `CST820`)
@@ -20,7 +20,7 @@ Supported boards:
 - Saved backlight brightness and RGB LED intensity controls in `Config`
 - Brightness and RGB slider values are persisted in `Preferences`
 - `WiFi Config` screen with current network info, manual scan, saved-network actions, and editable AP SSID/password
-- PSRAM `HC12 Config` screen on the `ESP32-S3-3248S035-N16R8` build with `SET` control and a live UART terminal for the HC-12 radio module
+- `HC12 Config` screen with `SET` control and a live UART terminal for the HC-12 radio module
 - `OTA Updates` screen with boot-time and periodic update checks, update-available indicator/popup, progress bar, and post-update confirmation
 - `MQTT Config` screen for broker settings, status, and connection control
 - SD recovery browser that can browse all rooted SD folders
@@ -228,6 +228,14 @@ Optional HC-12 UART on the `ESP32-S3` build:
 | HC-12 `RXD` | 4 |
 | HC-12 `TXD` | 5 |
 | HC-12 `SET` | 3 |
+
+Optional HC-12 UART on `ESP32-3248S035` and `ESP32-2432S024C`:
+
+| Signal | ESP32 |
+|---|---:|
+| HC-12 `RXD` | 1 |
+| HC-12 `TXD` | 39 |
+| HC-12 `SET` | 22 |
 
 HC-12 circuit reference:
 
