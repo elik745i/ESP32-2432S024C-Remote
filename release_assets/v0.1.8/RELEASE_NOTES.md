@@ -7,7 +7,8 @@
 - Fixed the LVGL Wi-Fi config screen so forgetting a saved network clears the remembered entry immediately.
 - Fixed LCD Wi-Fi scanning in AP mode and cleared stale discovered-network results once a connection starts.
 - Reworked Snake and Tetris with slower starting speeds, gradual speed-up, start/replay overlays, persistent high scores, and larger touch controls.
-- Updated Snake specifically with an on-canvas score/best overlay, fixed D-pad layout, center play/pause button, and display-awake protection during gameplay.
+- Updated Snake with wider arrow-button controls, a centered play/pause button, taller start/game-over overlays, an in-canvas pause overlay, and a 2x slower movement pace.
+- Updated Tetris to match the same on-canvas score/best layout, keyboard-style control pad, centered play/pause button, taller start/game-over overlays, and in-canvas pause overlay behavior used by Snake.
 
 ### Firmware Assets
 
