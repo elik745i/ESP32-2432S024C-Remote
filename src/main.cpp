@@ -240,14 +240,18 @@ static constexpr size_t SERIAL_LOG_LINE_MAX = 192;
 static constexpr uint32_t SERIAL_LOG_RATE_MS_DEFAULT = 40;
 static constexpr uint32_t WS_TELEMETRY_MIN_FREE_HEAP = 50000U;
 
-#if defined(BOARD_ESP32S3_3248S035_N16R8)
 static constexpr int HC12_UART_NUM = 1;
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
 static constexpr int HC12_RX_PIN = 5;
 static constexpr int HC12_TX_PIN = 4;
 static constexpr int HC12_SET_PIN = 3;
+#else
+static constexpr int HC12_RX_PIN = 39;
+static constexpr int HC12_TX_PIN = 1;
+static constexpr int HC12_SET_PIN = 22;
+#endif
 static constexpr unsigned long HC12_BAUD = 9600UL;
 static constexpr size_t HC12_TERMINAL_MAX_CHARS = 2800;
-#endif
 
 void serialLogPushLine(const char *line, bool sendWs = true);
 void executeSerialCommand(String input);
@@ -648,10 +652,6 @@ static lv_obj_t *lvglMediaVolSlider = nullptr;
 static lv_obj_t *lvglMediaVolValueLabel = nullptr;
 static lv_obj_t *lvglMediaProgressBar = nullptr;
 static lv_obj_t *lvglMediaProgressLabel = nullptr;
-static lv_obj_t *lvglHc12SetBtn = nullptr;
-static lv_obj_t *lvglHc12SetBtnLabel = nullptr;
-static lv_obj_t *lvglHc12TerminalTa = nullptr;
-static lv_obj_t *lvglHc12CmdTa = nullptr;
 static lv_obj_t *lvglMqttStatusLabel = nullptr;
 static lv_obj_t *lvglMqttStatusPanel = nullptr;
 static lv_obj_t *lvglMqttCountLabel = nullptr;
@@ -684,8 +684,6 @@ static lv_obj_t *lvglChatPeerScanBtn = nullptr;
 static lv_obj_t *lvglAirplaneBtn = nullptr;
 static lv_obj_t *lvglAirplaneBtnLabel = nullptr;
 static lv_obj_t *lvglConfigWrap = nullptr;
-static lv_obj_t *lvglHc12Wrap = nullptr;
-static lv_obj_t *lvglHc12CmdRow = nullptr;
 static lv_obj_t *lvglStyleScreensaverSw = nullptr;
 static lv_obj_t *lvglStyleTimeoutSlider = nullptr;
 static lv_obj_t *lvglStyleTimeoutValueLabel = nullptr;
@@ -1539,12 +1537,7 @@ Preferences mqttPrefs;
 Preferences uiPrefs;
 Preferences p2pPrefs;
 Preferences gamePrefs;
-#if defined(BOARD_ESP32S3_3248S035_N16R8)
-HardwareSerial hc12Serial(HC12_UART_NUM);
-bool hc12SerialReady = false;
-bool hc12SetAsserted = false;
-String hc12TerminalLog;
-#endif
+String *hc12TerminalLog = nullptr;
 char *serialLogRing = nullptr;
 size_t serialLogHead = 0;
 size_t serialLogCount = 0;
@@ -3180,8 +3173,8 @@ static bool lvglCanBuildScreen(UiScreen screen)
         case UI_CHAT_PEERS:
         case UI_CONFIG_MQTT_CONFIG:
         case UI_CONFIG_MQTT_CONTROLS:
-            freeMin = 38000U;
-            largestMin = 16000U;
+            freeMin = 22000U;
+            largestMin = 9000U;
             break;
         case UI_MEDIA:
         case UI_INFO:
@@ -3189,8 +3182,8 @@ static bool lvglCanBuildScreen(UiScreen screen)
         case UI_CONFIG_STYLE:
         case UI_CONFIG_OTA:
         case UI_CONFIG_HC12:
-            freeMin = 32000U;
-            largestMin = 14000U;
+            freeMin = 18000U;
+            largestMin = 8000U;
             break;
         default:
             return true;
@@ -4357,12 +4350,16 @@ void lvglScreenshotEvent(lv_event_t *e);
 void lvglBrightnessEvent(lv_event_t *e);
 void lvglRgbLedEvent(lv_event_t *e);
 void lvglTextAreaFocusEvent(lv_event_t *e);
-#if defined(BOARD_ESP32S3_3248S035_N16R8)
 static void hc12InitIfNeeded();
 static void hc12AppendTerminal(const char *text);
 static void hc12SendLine(const String &line);
 static void hc12Service();
-#endif
+static String &hc12LogBuffer();
+static lv_obj_t *hc12WrapObj();
+static lv_obj_t *hc12SetBtnObj();
+static lv_obj_t *hc12TerminalObj();
+static lv_obj_t *hc12CmdTaObj();
+static bool hc12SetIsAsserted();
 void lvglWifiApShowToggleEvent(lv_event_t *e);
 void lvglWifiPwdCancelEvent(lv_event_t *e);
 void lvglWifiPwdConnectEvent(lv_event_t *e);
@@ -4888,9 +4885,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_flex_flow(lvglConfigWrap, LV_FLEX_FLOW_COLUMN);
             lv_obj_set_scrollbar_mode(lvglConfigWrap, LV_SCROLLBAR_MODE_OFF);
             lvglCreateMenuButton(lvglConfigWrap, "WiFi Config", lv_color_hex(0x3A8F4B), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_WIFI_LIST)));
-#if defined(BOARD_ESP32S3_3248S035_N16R8)
             lvglCreateMenuButton(lvglConfigWrap, "HC12 Config", lv_color_hex(0x7A5C2E), lvglOpenHc12ScreenEvent, nullptr);
-#endif
             lvglAirplaneBtn = lvglCreateMenuButton(lvglConfigWrap, "Airplane: OFF", lv_color_hex(0x8A5A25), lvglAirplaneToggleEvent, nullptr);
             if (lvglAirplaneBtn) lvglAirplaneBtnLabel = lv_obj_get_child(lvglAirplaneBtn, 0);
             lvglCreateMenuButton(lvglConfigWrap, "Style", lv_color_hex(0x2D6D8E), lvglOpenStyleScreenEvent, nullptr);
@@ -5140,19 +5135,18 @@ void lvglEnsureScreenBuilt(UiScreen screen)
         }
         case UI_CONFIG_HC12: {
             lvglScrHc12 = lvglCreateScreenBase("HC12 Config", false);
-            lvglHc12Wrap = lv_obj_create(lvglScrHc12);
-            lv_obj_set_size(lvglHc12Wrap, lv_pct(100), UI_CONTENT_H);
-            lv_obj_align(lvglHc12Wrap, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
-            lv_obj_set_style_bg_color(lvglHc12Wrap, lv_color_hex(0x111922), 0);
-            lv_obj_set_style_border_width(lvglHc12Wrap, 0, 0);
-            lv_obj_set_style_pad_all(lvglHc12Wrap, 8, 0);
-            lv_obj_set_style_pad_row(lvglHc12Wrap, 8, 0);
-            lv_obj_set_flex_flow(lvglHc12Wrap, LV_FLEX_FLOW_COLUMN);
-            lv_obj_set_scroll_dir(lvglHc12Wrap, LV_DIR_VER);
-            lv_obj_set_scrollbar_mode(lvglHc12Wrap, LV_SCROLLBAR_MODE_OFF);
+            lv_obj_t *wrap = lv_obj_create(lvglScrHc12);
+            lv_obj_set_size(wrap, lv_pct(100), UI_CONTENT_H);
+            lv_obj_align(wrap, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
+            lv_obj_set_style_bg_color(wrap, lv_color_hex(0x111922), 0);
+            lv_obj_set_style_border_width(wrap, 0, 0);
+            lv_obj_set_style_pad_all(wrap, 8, 0);
+            lv_obj_set_style_pad_row(wrap, 8, 0);
+            lv_obj_set_flex_flow(wrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_scroll_dir(wrap, LV_DIR_VER);
+            lv_obj_set_scrollbar_mode(wrap, LV_SCROLLBAR_MODE_OFF);
 
-#if defined(BOARD_ESP32S3_3248S035_N16R8)
-            lv_obj_t *topRow = lv_obj_create(lvglHc12Wrap);
+            lv_obj_t *topRow = lv_obj_create(wrap);
             lv_obj_set_size(topRow, lv_pct(100), LV_SIZE_CONTENT);
             lv_obj_set_style_bg_opa(topRow, LV_OPA_TRANSP, 0);
             lv_obj_set_style_border_width(topRow, 0, 0);
@@ -5161,52 +5155,44 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_flex_flow(topRow, LV_FLEX_FLOW_ROW);
             lv_obj_clear_flag(topRow, LV_OBJ_FLAG_SCROLLABLE);
 
-            lvglHc12SetBtn = makeSmallBtn(topRow, "SET: OFF", 96, 34, lv_color_hex(0x7A5C2E), lvglHc12ToggleSetEvent, nullptr);
-            if (lvglHc12SetBtn) lvglHc12SetBtnLabel = lv_obj_get_child(lvglHc12SetBtn, 0);
+            makeSmallBtn(topRow, "SET: OFF", 96, 34, lv_color_hex(0x7A5C2E), lvglHc12ToggleSetEvent, nullptr);
 
             lv_obj_t *pinLbl = lv_label_create(topRow);
             lv_obj_set_flex_grow(pinLbl, 1);
             lv_obj_set_style_text_color(pinLbl, lv_color_hex(0xC9D7E3), 0);
-            lv_label_set_text(pinLbl, "HC12 RXD 4  TXD 5  SET 3  9600 baud");
+            lv_label_set_text_fmt(pinLbl, "HC12 RXD %d  TXD %d  SET %d  9600 baud", HC12_TX_PIN, HC12_RX_PIN, HC12_SET_PIN);
 
-            lvglHc12TerminalTa = lv_textarea_create(lvglHc12Wrap);
-            lv_obj_set_width(lvglHc12TerminalTa, lv_pct(100));
-            lv_obj_set_height(lvglHc12TerminalTa, UI_CONTENT_H - 108);
-            lv_textarea_set_one_line(lvglHc12TerminalTa, false);
-            lv_textarea_set_placeholder_text(lvglHc12TerminalTa, "HC-12 terminal output");
-            lv_obj_set_style_bg_color(lvglHc12TerminalTa, lv_color_hex(0x091118), 0);
-            lv_obj_set_style_text_color(lvglHc12TerminalTa, lv_color_hex(0x82F6A2), 0);
-            lv_obj_set_style_border_color(lvglHc12TerminalTa, lv_color_hex(0x2D495E), 0);
-            lv_obj_set_style_border_width(lvglHc12TerminalTa, 1, 0);
-            lv_obj_clear_flag(lvglHc12TerminalTa, LV_OBJ_FLAG_CLICKABLE);
-            lv_textarea_set_cursor_click_pos(lvglHc12TerminalTa, false);
+            lv_obj_t *terminalTa = lv_textarea_create(wrap);
+            lv_obj_set_width(terminalTa, lv_pct(100));
+            lv_obj_set_height(terminalTa, UI_CONTENT_H - 108);
+            lv_textarea_set_one_line(terminalTa, false);
+            lv_textarea_set_placeholder_text(terminalTa, "HC-12 terminal output");
+            lv_obj_set_style_bg_color(terminalTa, lv_color_hex(0x091118), 0);
+            lv_obj_set_style_text_color(terminalTa, lv_color_hex(0x82F6A2), 0);
+            lv_obj_set_style_border_color(terminalTa, lv_color_hex(0x2D495E), 0);
+            lv_obj_set_style_border_width(terminalTa, 1, 0);
+            lv_obj_clear_flag(terminalTa, LV_OBJ_FLAG_CLICKABLE);
+            lv_textarea_set_cursor_click_pos(terminalTa, false);
 
-            lvglHc12CmdRow = lv_obj_create(lvglHc12Wrap);
-            lv_obj_set_size(lvglHc12CmdRow, lv_pct(100), LV_SIZE_CONTENT);
-            lv_obj_set_style_bg_opa(lvglHc12CmdRow, LV_OPA_TRANSP, 0);
-            lv_obj_set_style_border_width(lvglHc12CmdRow, 0, 0);
-            lv_obj_set_style_pad_all(lvglHc12CmdRow, 0, 0);
-            lv_obj_set_style_pad_column(lvglHc12CmdRow, 8, 0);
-            lv_obj_set_flex_flow(lvglHc12CmdRow, LV_FLEX_FLOW_ROW);
-            lv_obj_clear_flag(lvglHc12CmdRow, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_t *cmdRow = lv_obj_create(wrap);
+            lv_obj_set_size(cmdRow, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(cmdRow, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(cmdRow, 0, 0);
+            lv_obj_set_style_pad_all(cmdRow, 0, 0);
+            lv_obj_set_style_pad_column(cmdRow, 8, 0);
+            lv_obj_set_flex_flow(cmdRow, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(cmdRow, LV_OBJ_FLAG_SCROLLABLE);
 
-            lvglHc12CmdTa = lv_textarea_create(lvglHc12CmdRow);
-            lv_obj_set_height(lvglHc12CmdTa, 36);
-            lv_obj_set_width(lvglHc12CmdTa, lv_pct(100));
-            lv_obj_set_flex_grow(lvglHc12CmdTa, 1);
-            lv_textarea_set_one_line(lvglHc12CmdTa, true);
-            lv_textarea_set_placeholder_text(lvglHc12CmdTa, "AT or text to send");
-            lv_obj_add_event_cb(lvglHc12CmdTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
+            lv_obj_t *cmdTa = lv_textarea_create(cmdRow);
+            lv_obj_set_height(cmdTa, 36);
+            lv_obj_set_width(cmdTa, lv_pct(100));
+            lv_obj_set_flex_grow(cmdTa, 1);
+            lv_textarea_set_one_line(cmdTa, true);
+            lv_textarea_set_placeholder_text(cmdTa, "AT or text to send");
+            lv_obj_add_event_cb(cmdTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
 
-            makeSmallBtn(lvglHc12CmdRow, "Send", 70, 36, lv_color_hex(0x2F6D86), lvglHc12SendEvent, nullptr);
+            makeSmallBtn(cmdRow, "Send", 70, 36, lv_color_hex(0x2F6D86), lvglHc12SendEvent, nullptr);
             hc12InitIfNeeded();
-#else
-            lv_obj_t *note = lv_label_create(lvglHc12Wrap);
-            lv_obj_set_width(note, lv_pct(100));
-            lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
-            lv_obj_set_style_text_color(note, lv_color_hex(0xE5ECF3), 0);
-            lv_label_set_text(note, "HC12 Config is available only on the ESP32-S3 PSRAM board. The requested GPIO4, GPIO5, and GPIO3 pins conflict with older board wiring.");
-#endif
             lvglRefreshHc12Ui();
             break;
         }
@@ -7787,7 +7773,7 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
                     lvglWifiPwdConnectEvent(nullptr);
                 } else if (code == LV_EVENT_READY && lvglConfigDeviceNameTa && lv_keyboard_get_textarea(lvglKb) == lvglConfigDeviceNameTa) {
                     lvglSaveDeviceNameEvent(nullptr);
-                } else if (code == LV_EVENT_READY && lvglHc12CmdTa && lv_keyboard_get_textarea(lvglKb) == lvglHc12CmdTa) {
+                } else if (code == LV_EVENT_READY && hc12CmdTaObj() && lv_keyboard_get_textarea(lvglKb) == hc12CmdTaObj()) {
                     lvglHc12SendEvent(nullptr);
                 } else if (code == LV_EVENT_READY && lvglChatInputTa && lv_keyboard_get_textarea(lvglKb) == lvglChatInputTa) {
                     if (lvglChatPromptIfAirplaneBlocked()) return;
@@ -7818,42 +7804,79 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
     lv_keyboard_set_textarea(lvglKb, ta);
     lv_obj_clear_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
     if (ta == lvglChatInputTa) lvglSetChatKeyboardVisible(true);
-    if (ta == lvglConfigDeviceNameTa || ta == lvglHc12CmdTa) lvglSetConfigKeyboardVisible(true);
+    if (ta == lvglConfigDeviceNameTa || ta == hc12CmdTaObj()) lvglSetConfigKeyboardVisible(true);
 }
 
-#if defined(BOARD_ESP32S3_3248S035_N16R8)
 static void hc12InitIfNeeded()
 {
-    if (hc12SerialReady) return;
+    if (hc12TerminalLog) return;
     pinMode(HC12_SET_PIN, OUTPUT);
     digitalWrite(HC12_SET_PIN, HIGH);
-    hc12Serial.begin(HC12_BAUD, SERIAL_8N1, HC12_RX_PIN, HC12_TX_PIN);
-    hc12SerialReady = true;
-    hc12SetAsserted = false;
-    hc12AppendTerminal("[HC12] Serial1 ready on ESP RX5 TX4\n[HC12] HC12 RXD->GPIO4 TXD->GPIO5 SET->GPIO3\n");
+    Serial1.begin(HC12_BAUD, SERIAL_8N1, HC12_RX_PIN, HC12_TX_PIN);
+    String banner = String("[HC12] Serial1 ready on ESP RX") + HC12_RX_PIN + " TX" + HC12_TX_PIN + "\n";
+    banner += String("[HC12] HC12 RXD->GPIO") + HC12_TX_PIN + " TXD->GPIO" + HC12_RX_PIN + " SET->GPIO" + HC12_SET_PIN + "\n";
+    hc12AppendTerminal(banner.c_str());
+}
+
+static lv_obj_t *hc12WrapObj()
+{
+    return lvglScrHc12 ? lv_obj_get_child(lvglScrHc12, 0) : nullptr;
+}
+
+static lv_obj_t *hc12SetBtnObj()
+{
+    lv_obj_t *wrap = hc12WrapObj();
+    lv_obj_t *topRow = wrap ? lv_obj_get_child(wrap, 0) : nullptr;
+    return topRow ? lv_obj_get_child(topRow, 0) : nullptr;
+}
+
+static lv_obj_t *hc12TerminalObj()
+{
+    lv_obj_t *wrap = hc12WrapObj();
+    return wrap ? lv_obj_get_child(wrap, 1) : nullptr;
+}
+
+static lv_obj_t *hc12CmdTaObj()
+{
+    lv_obj_t *wrap = hc12WrapObj();
+    lv_obj_t *cmdRow = wrap ? lv_obj_get_child(wrap, 2) : nullptr;
+    return cmdRow ? lv_obj_get_child(cmdRow, 0) : nullptr;
+}
+
+static bool hc12SetIsAsserted()
+{
+    return hc12TerminalLog && digitalRead(HC12_SET_PIN) == LOW;
+}
+
+static String &hc12LogBuffer()
+{
+    if (!hc12TerminalLog) hc12TerminalLog = new String();
+    return *hc12TerminalLog;
 }
 
 static void hc12AppendTerminal(const char *text)
 {
     if (!text || !*text) return;
-    hc12TerminalLog += text;
-    if (hc12TerminalLog.length() > HC12_TERMINAL_MAX_CHARS) {
-        hc12TerminalLog.remove(0, hc12TerminalLog.length() - HC12_TERMINAL_MAX_CHARS);
-        const int firstNewline = hc12TerminalLog.indexOf('\n');
-        if (firstNewline > 0) hc12TerminalLog.remove(0, firstNewline + 1);
+    String &log = hc12LogBuffer();
+    log += text;
+    if (log.length() > HC12_TERMINAL_MAX_CHARS) {
+        log.remove(0, log.length() - HC12_TERMINAL_MAX_CHARS);
+        const int firstNewline = log.indexOf('\n');
+        if (firstNewline > 0) log.remove(0, firstNewline + 1);
     }
-    if (lvglHc12TerminalTa && uiScreen == UI_CONFIG_HC12) {
-        lv_textarea_set_text(lvglHc12TerminalTa, hc12TerminalLog.c_str());
-        lv_textarea_set_cursor_pos(lvglHc12TerminalTa, LV_TEXTAREA_CURSOR_LAST);
+    lv_obj_t *terminalTa = hc12TerminalObj();
+    if (terminalTa && uiScreen == UI_CONFIG_HC12) {
+        lv_textarea_set_text(terminalTa, log.c_str());
+        lv_textarea_set_cursor_pos(terminalTa, LV_TEXTAREA_CURSOR_LAST);
     }
 }
 
 static void hc12SendLine(const String &line)
 {
     hc12InitIfNeeded();
-    while (hc12Serial.available() > 0) hc12Serial.read();
-    hc12Serial.print(line);
-    hc12Serial.flush();
+    while (Serial1.available() > 0) Serial1.read();
+    Serial1.print(line);
+    Serial1.flush();
     String echoed = String("> ") + line + "\n";
     hc12AppendTerminal(echoed.c_str());
 }
@@ -7862,53 +7885,44 @@ void lvglHc12ToggleSetEvent(lv_event_t *e)
 {
     (void)e;
     hc12InitIfNeeded();
-    hc12SetAsserted = !hc12SetAsserted;
-    digitalWrite(HC12_SET_PIN, hc12SetAsserted ? LOW : HIGH);
-    delay(hc12SetAsserted ? 80 : 40);
-    hc12AppendTerminal(hc12SetAsserted ? "[HC12] SET asserted, AT mode requested\n"
-                                       : "[HC12] SET released, normal radio mode\n");
+    const bool setAsserted = !hc12SetIsAsserted();
+    digitalWrite(HC12_SET_PIN, setAsserted ? LOW : HIGH);
+    delay(setAsserted ? 80 : 40);
+    hc12AppendTerminal(setAsserted ? "[HC12] SET asserted, AT mode requested\n"
+                                   : "[HC12] SET released, normal radio mode\n");
     lvglRefreshHc12Ui();
 }
 
 void lvglHc12SendEvent(lv_event_t *e)
 {
     (void)e;
-    if (!lvglHc12CmdTa) return;
-    String line = lv_textarea_get_text(lvglHc12CmdTa);
+    lv_obj_t *cmdTa = hc12CmdTaObj();
+    if (!cmdTa) return;
+    String line = lv_textarea_get_text(cmdTa);
     line.trim();
     if (line.isEmpty()) return;
     hc12SendLine(line);
-    lv_textarea_set_text(lvglHc12CmdTa, "");
+    lv_textarea_set_text(cmdTa, "");
 }
 
 static void hc12Service()
 {
-    if (!hc12SerialReady) return;
-    static char rxBuf[128];
-    static size_t rxLen = 0;
-    while (hc12Serial.available() > 0) {
-        const int ch = hc12Serial.read();
-        if (ch < 0) break;
-        if (ch == '\r') continue;
-        if (rxLen < sizeof(rxBuf) - 2) rxBuf[rxLen++] = static_cast<char>(ch);
-        if (ch == '\n' || rxLen >= sizeof(rxBuf) - 2) {
-            if (rxLen == 0 || rxBuf[rxLen - 1] != '\n') rxBuf[rxLen++] = '\n';
-            rxBuf[rxLen] = '\0';
-            hc12AppendTerminal(rxBuf);
-            rxLen = 0;
+    if (!hc12TerminalLog) return;
+    char rxBuf[33];
+    while (Serial1.available() > 0) {
+        size_t rxLen = 0;
+        while (Serial1.available() > 0 && rxLen < sizeof(rxBuf) - 2) {
+            const int ch = Serial1.read();
+            if (ch < 0) break;
+            if (ch == '\r') continue;
+            rxBuf[rxLen++] = static_cast<char>(ch);
         }
-    }
-    if (rxLen > 0 && hc12Serial.available() == 0) {
-        rxBuf[rxLen++] = '\n';
+        if (rxLen == 0) continue;
+        if (rxBuf[rxLen - 1] != '\n') rxBuf[rxLen++] = '\n';
         rxBuf[rxLen] = '\0';
         hc12AppendTerminal(rxBuf);
-        rxLen = 0;
     }
 }
-#else
-void lvglHc12ToggleSetEvent(lv_event_t *e) { (void)e; }
-void lvglHc12SendEvent(lv_event_t *e) { (void)e; }
-#endif
 
 void lvglWifiPwdCancelEvent(lv_event_t *e)
 {
@@ -9622,17 +9636,23 @@ void lvglSetConfigKeyboardVisible(bool visible)
 {
     const lv_coord_t keyboardPad = visible ? 132 : 10;
     if (lvglConfigWrap) lv_obj_set_style_pad_bottom(lvglConfigWrap, keyboardPad, 0);
-    if (lvglHc12Wrap) lv_obj_set_style_pad_bottom(lvglHc12Wrap, keyboardPad, 0);
+    lv_obj_t *hc12TerminalTa = hc12TerminalObj();
+    if (hc12TerminalTa) {
+        lv_obj_t *hc12Wrap = lv_obj_get_parent(hc12TerminalTa);
+        if (hc12Wrap) lv_obj_set_style_pad_bottom(hc12Wrap, keyboardPad, 0);
+    }
 
-    if (lvglHc12TerminalTa) {
-        lv_obj_set_height(lvglHc12TerminalTa, visible ? (UI_CONTENT_H - 176) : (UI_CONTENT_H - 108));
+    if (hc12TerminalTa) {
+        lv_obj_set_height(hc12TerminalTa, visible ? (UI_CONTENT_H - 176) : (UI_CONTENT_H - 108));
     }
 
     if (visible) {
-        if (uiScreen == UI_CONFIG_HC12 && lvglHc12CmdTa) lv_obj_scroll_to_view_recursive(lvglHc12CmdTa, LV_ANIM_ON);
+        lv_obj_t *hc12CmdTa = hc12CmdTaObj();
+        if (uiScreen == UI_CONFIG_HC12 && hc12CmdTa) lv_obj_scroll_to_view_recursive(hc12CmdTa, LV_ANIM_ON);
         else if (lvglConfigDeviceNameTa) lv_obj_scroll_to_view_recursive(lvglConfigDeviceNameTa, LV_ANIM_ON);
-    } else if (uiScreen == UI_CONFIG_HC12 && lvglHc12CmdRow && lvglHc12Wrap) {
-        lv_obj_scroll_to_y(lvglHc12Wrap, 0, LV_ANIM_ON);
+    } else if (uiScreen == UI_CONFIG_HC12 && hc12TerminalTa) {
+        lv_obj_t *hc12Wrap = lv_obj_get_parent(hc12TerminalTa);
+        if (hc12Wrap) lv_obj_scroll_to_y(hc12Wrap, 0, LV_ANIM_ON);
     }
 }
 
@@ -10470,27 +10490,6 @@ static void snake3dStep()
     }
 }
 
-void lvglRefreshHc12Ui()
-{
-#if defined(BOARD_ESP32S3_3248S035_N16R8)
-    if (lvglHc12SetBtnLabel) lv_label_set_text(lvglHc12SetBtnLabel, hc12SetAsserted ? "SET: ON" : "SET: OFF");
-    if (lvglHc12SetBtn) {
-        lv_obj_set_style_bg_color(lvglHc12SetBtn,
-                                  hc12SetAsserted ? lv_color_hex(0xC06C2B) : lv_color_hex(0x7A5C2E),
-                                  LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_color(lvglHc12SetBtn,
-                                  hc12SetAsserted ? lv_color_hex(0xD27E38) : lv_color_hex(0x8C6A34),
-                                  LV_PART_MAIN | LV_STATE_PRESSED);
-    }
-    if (lvglHc12TerminalTa) {
-        lv_textarea_set_text(lvglHc12TerminalTa, hc12TerminalLog.c_str());
-        lv_textarea_set_cursor_pos(lvglHc12TerminalTa, LV_TEXTAREA_CURSOR_LAST);
-    }
-#else
-    (void)lvglHc12SetBtn;
-#endif
-}
-
 void snake3dTick()
 {
     if (uiScreen != UI_GAME_SNAKE3D) return;
@@ -10503,11 +10502,26 @@ void snake3dTick()
 }
 #endif
 
-#if !defined(BOARD_ESP32S3_3248S035_N16R8)
 void lvglRefreshHc12Ui()
 {
+    const bool setAsserted = hc12SetIsAsserted();
+    lv_obj_t *setBtn = hc12SetBtnObj();
+    lv_obj_t *setBtnLabel = setBtn ? lv_obj_get_child(setBtn, 0) : nullptr;
+    if (setBtnLabel) lv_label_set_text(setBtnLabel, setAsserted ? "SET: ON" : "SET: OFF");
+    if (setBtn) {
+        lv_obj_set_style_bg_color(setBtn,
+                                  setAsserted ? lv_color_hex(0xC06C2B) : lv_color_hex(0x7A5C2E),
+                                  LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(setBtn,
+                                  setAsserted ? lv_color_hex(0xD27E38) : lv_color_hex(0x8C6A34),
+                                  LV_PART_MAIN | LV_STATE_PRESSED);
+    }
+    lv_obj_t *terminalTa = hc12TerminalObj();
+    if (terminalTa) {
+        lv_textarea_set_text(terminalTa, hc12TerminalLog ? hc12TerminalLog->c_str() : "");
+        lv_textarea_set_cursor_pos(terminalTa, LV_TEXTAREA_CURSOR_LAST);
+    }
 }
-#endif
 
 static const int8_t TETRIS_BASE[7][4][2] = {
     {{0, 1}, {1, 1}, {2, 1}, {3, 1}}, // I
@@ -16631,9 +16645,7 @@ void loop()
         }
     }
     otaUpdateService();
-#if defined(BOARD_ESP32S3_3248S035_N16R8)
     hc12Service();
-#endif
     const bool allowSdAutoRetry = (uiScreen == UI_MEDIA) || !displayAwake;
     if (!sdMounted && allowSdAutoRetry && !isDown && !fsWriteBusy() &&
         static_cast<unsigned long>(millis() - sdLastAutoRetryMs) >= SD_AUTORETRY_PERIOD_MS) {
