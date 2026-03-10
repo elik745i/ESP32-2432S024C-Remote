@@ -241,6 +241,12 @@ HC-12 circuit reference:
 
 ![HC-12 wiring](documents/SWAP.png)
 
+ESP32-S3 pad wiring example using solid wires:
+
+![HC-12 to ESP32-S3 pads](documents/HC-12_to_ESP32_S3.jpeg)
+
+This photo shows one way to wire the HC-12 module directly to the ESP32-S3 module pads with solid wires for `RXD`, `TXD`, and `SET`.
+
 Notes:
 - `ESP32-S3` audio is currently disabled in firmware because the existing backend uses ESP32 internal DAC mode, which is not available on `ESP32-S3`.
 - After removing the conflicting RGB output, the S3 build now boots through the normal Wi-Fi and SD initialization flow again, including saved STA reconnect, fallback AP behavior, web server startup, and SD-backed file manager access.
@@ -324,6 +330,8 @@ Board-specific defaults:
 - `Default` restores factory settings and then reloads current module values
 - `Serial Terminal` keeps the manual UART terminal and `SET` toggle
 - `Info` queries the module in AT mode and shows version, baud, channel, FU mode, power, and raw summary text
+- Chat discovery now also listens on HC-12 in normal radio mode, so devices on the same HC-12 channel appear in chat lists as radio contacts
+- The repository now includes an `ESP32-S3` pad wiring photo for HC-12 at [documents/HC-12_to_ESP32_S3.jpeg](documents/HC-12_to_ESP32_S3.jpeg)
 
 ## Wi-Fi and AP
 

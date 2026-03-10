@@ -257,6 +257,11 @@ static const char *const HC12_MODE_LABELS[] = {"Raw Mod", "Fast", "Norm", "LoRa"
 static constexpr int8_t HC12_POWER_DBM[] = {-1, 2, 5, 8, 11, 14, 17, 20};
 static constexpr int HC12_MIN_CHANNEL = 1;
 static constexpr int HC12_MAX_CHANNEL = 100;
+static constexpr char HC12_RADIO_FRAME_PREFIX[] = "@RMT|";
+static constexpr size_t HC12_RADIO_MAX_LINE = 320;
+static constexpr int MAX_HC12_DISCOVERED = 8;
+static constexpr unsigned long HC12_DISCOVERY_INTERVAL_MS = 8000UL;
+static constexpr unsigned long HC12_DISCOVERY_STALE_MS = 45000UL;
 static constexpr uint8_t UI_DEFERRED_SCREENSHOT_PENDING = 0x01;
 static constexpr uint8_t UI_DEFERRED_SCREENSHOT_BUSY = 0x02;
 static constexpr uint8_t UI_DEFERRED_HC12_SETTLE_PENDING = 0x04;
@@ -518,6 +523,11 @@ bool p2pSendChatMessageWithId(const String &peerKey, const String &text, const S
 bool p2pSendMessageDelete(const String &peerKey, const String &messageId);
 bool p2pSendConversationDelete();
 bool p2pSendChatAck(const String &peerKey, const String &messageId);
+static bool hc12BroadcastDiscoveryFrame(const char *kind);
+bool hc12SendChatMessageWithId(const String &peerKey, const String &text, const String &messageId);
+bool hc12SendMessageDelete(const String &peerKey, const String &messageId);
+bool hc12SendConversationDelete(const String &peerKey);
+bool hc12SendChatAck(const String &peerKey, const String &messageId);
 String p2pPublicKeyHex();
 static int p2pFindPeerByPubKeyHex(const String &pubKeyHex);
 void p2pBroadcastDiscover();
@@ -535,7 +545,9 @@ void lvglSyncStatusLine();
 void lvglRefreshTopIndicators();
 void chatReloadRecentMessagesFromSd(const String &peerKey);
 void lvglRefreshChatContactsUi();
+static bool chatPeerHasHistory(const String &peerKey);
 static String chatDisplayNameForPeerKey(const String &peerKey);
+static bool chatPeerIsSelectable(const String &peerKey);
 static void chatClearCache();
 static String chatGenerateMessageId();
 static bool chatQueueOutgoingMessage(const String &peerKey, const String &author, const String &text, const String &messageId);
@@ -1102,6 +1114,7 @@ int wifiCount = 0;
 enum ChatTransport : uint8_t {
     CHAT_TRANSPORT_WIFI = 0,
     CHAT_TRANSPORT_MQTT = 1,
+    CHAT_TRANSPORT_HC12 = 2,
 };
 
 struct ChatMessage {
@@ -1120,6 +1133,16 @@ int chatMessageCount = 0;
 String currentChatPeerKey;
 String chatDeferredAirplanePeerKey;
 String chatDeferredAirplaneText;
+
+struct Hc12DiscoveredPeer {
+    String name;
+    String pubKeyHex;
+    bool unread;
+    unsigned long lastSeenMs;
+};
+
+Hc12DiscoveredPeer *hc12DiscoveredPeers = nullptr;
+int hc12DiscoveredCount = 0;
 
 struct PendingChatMessage {
     String peerKey;
@@ -1374,10 +1397,69 @@ struct P2PDiscoveredPeer {
 P2PDiscoveredPeer p2pDiscoveredPeers[MAX_P2P_DISCOVERED];
 int p2pDiscoveredCount = 0;
 
+static bool hc12EnsureDiscoveredStorage()
+{
+    if (hc12DiscoveredPeers) return true;
+    hc12DiscoveredPeers = new Hc12DiscoveredPeer[MAX_HC12_DISCOVERED];
+    return hc12DiscoveredPeers != nullptr;
+}
+
+static int hc12FindDiscoveredByPubKeyHex(const String &pubKeyHex)
+{
+    if (!hc12DiscoveredPeers) return -1;
+    for (int i = 0; i < hc12DiscoveredCount; ++i) {
+        if (hc12DiscoveredPeers[i].pubKeyHex.equalsIgnoreCase(pubKeyHex)) return i;
+    }
+    return -1;
+}
+
+static bool hc12PeerRecentlySeen(const String &peerKey, unsigned long staleMs = HC12_DISCOVERY_STALE_MS)
+{
+    const int idx = hc12FindDiscoveredByPubKeyHex(peerKey);
+    if (idx < 0) return false;
+    return static_cast<unsigned long>(millis() - hc12DiscoveredPeers[idx].lastSeenMs) <= staleMs;
+}
+
+static void hc12TouchDiscoveredPeer(const String &name, const String &pubKeyHex)
+{
+    if (pubKeyHex.isEmpty() || pubKeyHex.equalsIgnoreCase(p2pPublicKeyHex())) return;
+    if (!hc12EnsureDiscoveredStorage()) return;
+    int idx = hc12FindDiscoveredByPubKeyHex(pubKeyHex);
+    if (idx < 0) {
+        if (hc12DiscoveredCount >= MAX_HC12_DISCOVERED) {
+            idx = 0;
+            for (int i = 1; i < hc12DiscoveredCount; ++i) {
+                if (hc12DiscoveredPeers[i].lastSeenMs < hc12DiscoveredPeers[idx].lastSeenMs) idx = i;
+            }
+        } else {
+            idx = hc12DiscoveredCount++;
+        }
+        hc12DiscoveredPeers[idx].unread = false;
+    }
+    if (!name.isEmpty()) hc12DiscoveredPeers[idx].name = sanitizeDeviceShortName(name);
+    hc12DiscoveredPeers[idx].pubKeyHex = pubKeyHex;
+    hc12DiscoveredPeers[idx].lastSeenMs = millis();
+    if (lvglReady) {
+        if (uiScreen == UI_CHAT || uiScreen == UI_CHAT_PEERS) lvglRefreshChatContactsUi();
+        if (uiScreen == UI_CHAT_PEERS) lvglRefreshChatPeerUi();
+    }
+}
+
+static bool chatPeerIsSelectable(const String &peerKey)
+{
+    if (peerKey.isEmpty()) return false;
+    const int idx = p2pFindPeerByPubKeyHex(peerKey);
+    if (idx >= 0 && p2pPeers[idx].enabled) return true;
+    return hc12FindDiscoveredByPubKeyHex(peerKey) >= 0 || chatPeerHasHistory(peerKey);
+}
+
 static bool chatHasUnreadMessages()
 {
     for (int i = 0; i < p2pPeerCount; ++i) {
         if (p2pPeers[i].unread) return true;
+    }
+    for (int i = 0; i < hc12DiscoveredCount; ++i) {
+        if (hc12DiscoveredPeers[i].unread) return true;
     }
     return false;
 }
@@ -1385,10 +1467,23 @@ static bool chatHasUnreadMessages()
 static void chatSetPeerUnread(const String &peerKey, bool unread)
 {
     const int idx = p2pFindPeerByPubKeyHex(peerKey);
-    if (idx < 0) return;
-    if (p2pPeers[idx].unread == unread) return;
-    p2pPeers[idx].unread = unread;
-    if (lvglReady) lvglRefreshTopIndicators();
+    const int radioIdx = hc12FindDiscoveredByPubKeyHex(peerKey);
+    bool changed = false;
+    if (idx >= 0) {
+        if (p2pPeers[idx].unread != unread) {
+            p2pPeers[idx].unread = unread;
+            changed = true;
+        }
+    }
+    if (radioIdx >= 0 && hc12DiscoveredPeers[radioIdx].unread != unread) {
+        hc12DiscoveredPeers[radioIdx].unread = unread;
+        changed = true;
+    }
+    if (changed && lvglReady) {
+        lvglRefreshTopIndicators();
+        if (uiScreen == UI_CHAT || uiScreen == UI_CHAT_PEERS) lvglRefreshChatContactsUi();
+        if (uiScreen == UI_CHAT_PEERS) lvglRefreshChatPeerUi();
+    }
 }
 
 static constexpr int SNAKE_COLS = 12;
@@ -1588,6 +1683,8 @@ int hc12CurrentBaudIndex = 3;
 int hc12CurrentModeIndex = 2;
 int hc12CurrentPowerLevel = 8;
 String hc12ConfigStatusText = "Read current settings from module";
+String *hc12RadioRxLine = nullptr;
+unsigned long hc12LastDiscoveryAnnounceMs = 0;
 char *serialLogRing = nullptr;
 size_t serialLogHead = 0;
 size_t serialLogCount = 0;
@@ -3516,6 +3613,8 @@ static String chatDisplayNameForPeerKey(const String &peerKey)
 {
     const int idx = p2pFindPeerByPubKeyHex(peerKey);
     if (idx >= 0 && !p2pPeers[idx].name.isEmpty()) return p2pPeers[idx].name;
+    const int radioIdx = hc12FindDiscoveredByPubKeyHex(peerKey);
+    if (radioIdx >= 0 && !hc12DiscoveredPeers[radioIdx].name.isEmpty()) return hc12DiscoveredPeers[radioIdx].name;
     String shortKey = peerKey;
     if (shortKey.length() > 12) shortKey = shortKey.substring(0, 12) + "...";
     return shortKey;
@@ -3883,6 +3982,7 @@ static bool chatDeleteMessageAt(const String &peerKey, int index)
     if (!target.messageId.isEmpty()) {
         p2pSendMessageDelete(peerKey, target.messageId);
         mqttPublishMessageDelete(peerKey, target.messageId);
+        hc12SendMessageDelete(peerKey, target.messageId);
         return chatDeleteMessageById(peerKey, target.messageId, "Message deleted");
     }
 
@@ -4044,14 +4144,18 @@ static bool chatSendRawReliableMessage(const String &peerKey, const String &text
     chatQueueOutgoingMessage(peerKey, deviceShortNameValue(), text, messageId);
     const bool sentLan = p2pSendChatMessageWithId(peerKey, text, messageId);
     const bool sentGlobal = mqttPublishChatMessageWithId(peerKey, text, messageId);
+    const bool sentRadio = hc12SendChatMessageWithId(peerKey, text, messageId);
     if (storeVisible) {
-        chatStoreMessage(peerKey, "Me", text, true, sentGlobal ? CHAT_TRANSPORT_MQTT : CHAT_TRANSPORT_WIFI, messageId);
+        const ChatTransport storedTransport = sentGlobal ? CHAT_TRANSPORT_MQTT
+                                                         : (sentLan ? CHAT_TRANSPORT_WIFI
+                                                                    : (sentRadio ? CHAT_TRANSPORT_HC12 : CHAT_TRANSPORT_WIFI));
+        chatStoreMessage(peerKey, "Me", text, true, storedTransport, messageId);
         if (lvglReady) {
             if (uiScreen == UI_CHAT) lvglRefreshChatUi();
             lvglRefreshChatContactsUi();
         }
     }
-    return sentLan || sentGlobal || storeVisible;
+    return sentLan || sentGlobal || sentRadio || storeVisible;
 }
 
 static bool chatSendAndStoreMessage(const String &peerKey, const String &text)
@@ -4117,6 +4221,7 @@ static void chatPendingService()
         bool attempted = false;
         if (p2pSendChatMessageWithId(msg.peerKey, msg.text, msg.messageId)) attempted = true;
         if (mqttPublishChatMessageWithId(msg.peerKey, msg.text, msg.messageId)) attempted = true;
+        if (hc12SendChatMessageWithId(msg.peerKey, msg.text, msg.messageId)) attempted = true;
         if (attempted) {
             msg.lastAttemptMs = now;
             if (msg.attempts < 255) msg.attempts++;
@@ -4139,16 +4244,23 @@ static void chatSelectFirstEnabledPeer()
             break;
         }
     }
+    if (!currentChatPeerKey.isEmpty()) return;
+    for (int i = 0; i < hc12DiscoveredCount; ++i) {
+        if (chatPeerHasHistory(hc12DiscoveredPeers[i].pubKeyHex)) {
+            currentChatPeerKey = hc12DiscoveredPeers[i].pubKeyHex;
+            return;
+        }
+    }
+    if (hc12DiscoveredCount > 0) currentChatPeerKey = hc12DiscoveredPeers[0].pubKeyHex;
 }
 
 static bool chatOpenPeerConversation(const String &peerKey)
 {
     if (peerKey.isEmpty()) return false;
-    const int idx = p2pFindPeerByPubKeyHex(peerKey);
-    if (idx < 0 || !p2pPeers[idx].enabled) return false;
+    if (!chatPeerIsSelectable(peerKey)) return false;
 
     lvglHideChatMenu();
-    currentChatPeerKey = p2pPeers[idx].pubKeyHex;
+    currentChatPeerKey = peerKey;
     chatSetPeerUnread(currentChatPeerKey, false);
     chatReloadRecentMessagesFromSd(currentChatPeerKey);
 
@@ -4172,6 +4284,9 @@ static bool chatOpenFirstUnreadConversation()
         if (p2pPeers[i].enabled && p2pPeers[i].unread) {
             return chatOpenPeerConversation(p2pPeers[i].pubKeyHex);
         }
+    }
+    for (int i = 0; i < hc12DiscoveredCount; ++i) {
+        if (hc12DiscoveredPeers[i].unread) return chatOpenPeerConversation(hc12DiscoveredPeers[i].pubKeyHex);
     }
     return false;
 }
@@ -6668,8 +6783,10 @@ void lvglDeleteChatConversationForAllEvent(lv_event_t *e)
     lvglHideChatMenu();
     const bool sentLan = p2pSendConversationDelete();
     const bool sentGlobal = mqttPublishConversationDelete();
+    const bool sentRadio = hc12SendConversationDelete(peerKey);
     chatApplyConversationDeletion(peerKey, "Conversation deleted");
-    uiStatusLine = sentGlobal ? "Conversation deleted for all" : (sentLan ? "Conversation delete sent" : "Deleted locally only");
+    uiStatusLine = sentGlobal ? "Conversation deleted for all"
+                              : ((sentLan || sentRadio) ? "Conversation delete sent" : "Deleted locally only");
     lvglSyncStatusLine();
 }
 
@@ -6739,6 +6856,13 @@ void lvglRefreshChatContactsUi()
         hasContacts = true;
         break;
     }
+    if (!hasContacts) {
+        for (int i = 0; i < hc12DiscoveredCount; ++i) {
+            if (p2pFindPeerByPubKeyHex(hc12DiscoveredPeers[i].pubKeyHex) >= 0) continue;
+            hasContacts = true;
+            break;
+        }
+    }
 
     if (!hasContacts) {
         lv_obj_t *lbl = lv_label_create(lvglChatContacts);
@@ -6771,9 +6895,15 @@ void lvglRefreshChatContactsUi()
             p2pPeers[i].name.isEmpty() ? "Peer" : p2pPeers[i].name.c_str(),
             col,
             [](lv_event_t *e) {
-                const int idx = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
-                if (idx < 0 || idx >= p2pPeerCount) return;
-                chatOpenPeerConversation(p2pPeers[idx].pubKeyHex);
+                const int rawIdx = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
+                if (rawIdx >= 10000) {
+                    const int radioIdx = rawIdx - 10000;
+                    if (radioIdx < 0 || radioIdx >= hc12DiscoveredCount) return;
+                    chatOpenPeerConversation(hc12DiscoveredPeers[radioIdx].pubKeyHex);
+                    return;
+                }
+                if (rawIdx < 0 || rawIdx >= p2pPeerCount) return;
+                chatOpenPeerConversation(p2pPeers[rawIdx].pubKeyHex);
             },
             reinterpret_cast<void *>(static_cast<intptr_t>(i)));
         if (!btn) continue;
@@ -6785,6 +6915,41 @@ void lvglRefreshChatContactsUi()
         }
 
         if (p2pPeers[i].unread) {
+            lv_obj_t *dot = lv_obj_create(btn);
+            if (dot) {
+                lv_obj_set_size(dot, 10, 10);
+                lv_obj_align(dot, LV_ALIGN_RIGHT_MID, -10, 0);
+                lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+                lv_obj_set_style_bg_color(dot, lv_color_hex(0x66DD77), 0);
+                lv_obj_set_style_border_width(dot, 0, 0);
+                lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+            }
+        }
+    }
+
+    for (int i = 0; i < hc12DiscoveredCount; ++i) {
+        if (p2pFindPeerByPubKeyHex(hc12DiscoveredPeers[i].pubKeyHex) >= 0) continue;
+        lv_color_t col = hc12DiscoveredPeers[i].pubKeyHex == currentChatPeerKey ? lv_color_hex(0x946226) : lv_color_hex(0x7A5C2E);
+        const String title = (hc12DiscoveredPeers[i].name.isEmpty() ? String("Radio Peer") : hc12DiscoveredPeers[i].name) + "  [Radio]";
+        lv_obj_t *btn = makeContactBtn(
+            lvglChatContacts,
+            title.c_str(),
+            col,
+            [](lv_event_t *e) {
+                const int radioIdx = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e))) - 10000;
+                if (radioIdx < 0 || radioIdx >= hc12DiscoveredCount) return;
+                chatOpenPeerConversation(hc12DiscoveredPeers[radioIdx].pubKeyHex);
+            },
+            reinterpret_cast<void *>(static_cast<intptr_t>(10000 + i)));
+        if (!btn) continue;
+
+        lv_obj_t *nameLabel = lv_label_create(btn);
+        if (nameLabel) {
+            lv_label_set_text(nameLabel, title.c_str());
+            lv_obj_align(nameLabel, LV_ALIGN_LEFT_MID, 10, 0);
+        }
+
+        if (hc12DiscoveredPeers[i].unread) {
             lv_obj_t *dot = lv_obj_create(btn);
             if (dot) {
                 lv_obj_set_size(dot, 10, 10);
@@ -6826,7 +6991,9 @@ void lvglChatPeerActionEvent(lv_event_t *e)
         lvglSetChatPeerScanButtonStatus("Scanning...");
         p2pLastDiscoverAnnounceMs = 0;
         p2pSendDiscoveryProbe();
-        uiStatusLine = "Peer scan started";
+        hc12LastDiscoveryAnnounceMs = 0;
+        hc12BroadcastDiscoveryFrame("probe");
+        uiStatusLine = "WiFi and radio scan started";
         lvglSyncStatusLine();
         lvglRefreshChatPeerUi();
         lvglSetChatPeerScanButtonStatus("Done", 1500);
@@ -7061,11 +7228,70 @@ void lvglRefreshChatPeerUi()
                           reinterpret_cast<void *>(static_cast<intptr_t>(((i + 1) * 10) + 1)));
     }
 
+    bool anyRadioDiscovered = false;
+    for (int i = 0; i < hc12DiscoveredCount; ++i) {
+        if (p2pFindPeerByPubKeyHex(hc12DiscoveredPeers[i].pubKeyHex) >= 0) continue;
+        anyRadioDiscovered = true;
+        break;
+    }
+
+    if (anyRadioDiscovered) {
+        lv_obj_t *section = lv_label_create(lvglChatPeerList);
+        lv_obj_set_width(section, lv_pct(100));
+        lv_label_set_text(section, "HC-12 Radio");
+        lv_obj_set_style_text_color(section, lv_color_hex(0xE5ECF3), 0);
+    }
+
+    for (int i = 0; i < hc12DiscoveredCount; ++i) {
+        if (p2pFindPeerByPubKeyHex(hc12DiscoveredPeers[i].pubKeyHex) >= 0) continue;
+        anyEntries = true;
+
+        lv_obj_t *card = lv_obj_create(lvglChatPeerList);
+        lv_obj_set_width(card, lv_pct(100));
+        lv_obj_set_height(card, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_color(card, lv_color_hex(0x16212C), 0);
+        lv_obj_set_style_border_width(card, 0, 0);
+        lv_obj_set_style_radius(card, 12, 0);
+        lv_obj_set_style_pad_all(card, 8, 0);
+        lv_obj_set_style_pad_row(card, 4, 0);
+        lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+        lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *title = lv_label_create(card);
+        lv_label_set_text_fmt(title, "%s  [radio]",
+                              hc12DiscoveredPeers[i].name.isEmpty() ? "Radio Peer" : hc12DiscoveredPeers[i].name.c_str());
+        lv_obj_set_style_text_color(title, lv_color_hex(0xE5ECF3), 0);
+
+        lv_obj_t *info = lv_label_create(card);
+        lv_obj_set_width(info, lv_pct(100));
+        lv_label_set_long_mode(info, LV_LABEL_LONG_WRAP);
+        String key = hc12DiscoveredPeers[i].pubKeyHex;
+        if (key.length() > 16) key = key.substring(0, 16) + "...";
+        const unsigned long ageSec = static_cast<unsigned long>((millis() - hc12DiscoveredPeers[i].lastSeenMs) / 1000UL);
+        lv_label_set_text_fmt(info, "HC-12 direct radio\nSeen %lus ago\n%s", ageSec, key.c_str());
+        lv_obj_set_style_text_color(info, lv_color_hex(0xB7C4D1), 0);
+
+        lv_obj_t *row = lv_obj_create(card);
+        lv_obj_set_size(row, lv_pct(100), 30);
+        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_set_style_pad_column(row, 6, 0);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+        makeSmallBtnLocal(row, "Open", 54, 26, lv_color_hex(0x7A5C2E), [](lv_event_t *e) {
+            const int radioIdx = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e))) - 20000;
+            if (radioIdx < 0 || radioIdx >= hc12DiscoveredCount) return;
+            chatOpenPeerConversation(hc12DiscoveredPeers[radioIdx].pubKeyHex);
+        }, reinterpret_cast<void *>(static_cast<intptr_t>(20000 + i)));
+    }
+
     if (!anyEntries) {
         lv_obj_t *lbl = lv_label_create(lvglChatPeerList);
         lv_obj_set_width(lbl, lv_pct(100));
         lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
-        lv_label_set_text(lbl, "No paired or discovered peers yet.\nOpen this screen on another device on the same WiFi or this device AP, then tap Scan.");
+        lv_label_set_text(lbl, "No paired or discovered peers yet.\nOpen this screen on another device on the same WiFi or same HC-12 channel, then tap Scan.");
         lv_obj_set_style_text_color(lbl, lv_color_hex(0xC8CED6), 0);
     }
 }
@@ -8098,6 +8324,12 @@ static String &hc12LogBuffer()
     return *hc12TerminalLog;
 }
 
+static String &hc12RadioLineBuffer()
+{
+    if (!hc12RadioRxLine) hc12RadioRxLine = new String();
+    return *hc12RadioRxLine;
+}
+
 static void hc12AppendTerminal(const char *text)
 {
     if (!text || !*text) return;
@@ -8371,6 +8603,148 @@ static String hc12FieldValue(const String &raw, const char *prefix)
     return value.isEmpty() ? String("--") : value;
 }
 
+static bool hc12SendRadioDocument(JsonDocument &doc)
+{
+    hc12InitIfNeeded();
+    if (hc12SetIsAsserted()) return false;
+    char payload[HC12_RADIO_MAX_LINE] = {0};
+    const size_t len = serializeJson(doc, payload, sizeof(payload));
+    if (len == 0 || len >= sizeof(payload)) return false;
+    Serial1.print(HC12_RADIO_FRAME_PREFIX);
+    Serial1.write(reinterpret_cast<const uint8_t *>(payload), len);
+    Serial1.write('\n');
+    Serial1.flush();
+    return true;
+}
+
+static bool hc12BroadcastDiscoveryFrame(const char *kind)
+{
+    JsonDocument doc;
+    doc["kind"] = kind ? kind : "hello";
+    doc["device"] = deviceShortNameValue();
+    doc["public_key"] = p2pPublicKeyHex();
+    return hc12SendRadioDocument(doc);
+}
+
+static void hc12DiscoveryService()
+{
+    if (hc12SetIsAsserted()) return;
+    const unsigned long now = millis();
+    if (static_cast<unsigned long>(now - hc12LastDiscoveryAnnounceMs) < HC12_DISCOVERY_INTERVAL_MS) return;
+    hc12LastDiscoveryAnnounceMs = now;
+    hc12BroadcastDiscoveryFrame("hello");
+}
+
+bool hc12SendChatMessageWithId(const String &peerKey, const String &text, const String &messageId)
+{
+    if (peerKey.isEmpty() || text.isEmpty() || messageId.isEmpty()) return false;
+    JsonDocument doc;
+    doc["kind"] = "chat";
+    doc["device"] = deviceShortNameValue();
+    doc["public_key"] = p2pPublicKeyHex();
+    doc["to"] = peerKey;
+    doc["id"] = messageId;
+    doc["text"] = text;
+    return hc12SendRadioDocument(doc);
+}
+
+bool hc12SendChatAck(const String &peerKey, const String &messageId)
+{
+    if (peerKey.isEmpty() || messageId.isEmpty()) return false;
+    JsonDocument doc;
+    doc["kind"] = "ack";
+    doc["device"] = deviceShortNameValue();
+    doc["public_key"] = p2pPublicKeyHex();
+    doc["to"] = peerKey;
+    doc["ack_id"] = messageId;
+    return hc12SendRadioDocument(doc);
+}
+
+bool hc12SendMessageDelete(const String &peerKey, const String &messageId)
+{
+    if (peerKey.isEmpty() || messageId.isEmpty()) return false;
+    JsonDocument doc;
+    doc["kind"] = "delete_message";
+    doc["device"] = deviceShortNameValue();
+    doc["public_key"] = p2pPublicKeyHex();
+    doc["to"] = peerKey;
+    doc["id"] = messageId;
+    return hc12SendRadioDocument(doc);
+}
+
+bool hc12SendConversationDelete(const String &peerKey)
+{
+    if (peerKey.isEmpty()) return false;
+    JsonDocument doc;
+    doc["kind"] = "delete_conversation";
+    doc["device"] = deviceShortNameValue();
+    doc["public_key"] = p2pPublicKeyHex();
+    doc["to"] = peerKey;
+    return hc12SendRadioDocument(doc);
+}
+
+static void hc12HandleIncomingRadioLine(const String &line)
+{
+    if (!line.startsWith(HC12_RADIO_FRAME_PREFIX)) return;
+
+    JsonDocument doc;
+    if (deserializeJson(doc, line.substring(strlen(HC12_RADIO_FRAME_PREFIX))) != DeserializationError::Ok) return;
+
+    const String senderPubHex = String(static_cast<const char *>(doc["public_key"] | ""));
+    if (senderPubHex.isEmpty() || senderPubHex.equalsIgnoreCase(p2pPublicKeyHex())) return;
+
+    const String senderName = sanitizeDeviceShortName(String(static_cast<const char *>(doc["device"] | "Peer")));
+    hc12TouchDiscoveredPeer(senderName, senderPubHex);
+
+    const String kind = String(static_cast<const char *>(doc["kind"] | ""));
+    if (kind == "probe") {
+        hc12BroadcastDiscoveryFrame("hello");
+        return;
+    }
+    if (kind == "hello") return;
+
+    const String targetPubHex = String(static_cast<const char *>(doc["to"] | ""));
+    if (!targetPubHex.equalsIgnoreCase(p2pPublicKeyHex())) return;
+
+    const String author = senderName.isEmpty() ? chatDisplayNameForPeerKey(senderPubHex) : senderName;
+    if (kind == "chat") {
+        const String messageId = String(static_cast<const char *>(doc["id"] | ""));
+        const String text = String(static_cast<const char *>(doc["text"] | ""));
+        if (text.isEmpty()) return;
+        if (checkersHandleIncomingChatPayload(senderPubHex, author, text, CHAT_TRANSPORT_HC12, messageId)) {
+            if (lvglReady) {
+                lvglSyncStatusLine();
+                if (uiScreen == UI_CHAT) lvglRefreshChatUi();
+            }
+        } else if (messageId.isEmpty() || !chatHasLoggedMessageId(senderPubHex, messageId)) {
+            chatStoreMessage(senderPubHex, author, text, false, CHAT_TRANSPORT_HC12, messageId);
+            uiStatusLine = "Radio chat from " + author;
+            if (lvglReady) {
+                lvglSyncStatusLine();
+                if (uiScreen == UI_CHAT) lvglRefreshChatUi();
+            }
+        }
+        if (!messageId.isEmpty()) hc12SendChatAck(senderPubHex, messageId);
+        return;
+    }
+
+    if (kind == "ack") {
+        const String ackId = String(static_cast<const char *>(doc["ack_id"] | ""));
+        if (!ackId.isEmpty()) chatAckOutgoingMessage(senderPubHex, ackId);
+        return;
+    }
+
+    if (kind == "delete_message") {
+        const String messageId = String(static_cast<const char *>(doc["id"] | ""));
+        if (!messageId.isEmpty()) chatDeleteMessageById(senderPubHex, messageId, "Message deleted by " + author);
+        return;
+    }
+
+    if (kind == "delete_conversation") {
+        chatApplyConversationDeletion(senderPubHex, "Conversation deleted by " + author);
+    }
+}
+
 void lvglHc12ToggleSetEvent(lv_event_t *e)
 {
     (void)e;
@@ -8403,7 +8777,7 @@ void lvglHc12SendEvent(lv_event_t *e)
 
 static void hc12Service()
 {
-    if (!hc12TerminalLog) return;
+    hc12InitIfNeeded();
     if ((uiDeferredFlags & UI_DEFERRED_HC12_SETTLE_PENDING) &&
         static_cast<int16_t>(static_cast<uint16_t>(millis()) - hc12SettleUntilTick) >= 0) {
         const bool setAsserted = (uiDeferredFlags & UI_DEFERRED_HC12_TARGET_ASSERTED) != 0;
@@ -8411,19 +8785,35 @@ static void hc12Service()
         hc12AppendTerminal(setAsserted ? "[HC12] SET asserted, AT mode requested\n"
                                        : "[HC12] SET released, normal radio mode\n");
     }
-    char rxBuf[33];
+    hc12DiscoveryService();
     while (Serial1.available() > 0) {
-        size_t rxLen = 0;
-        while (Serial1.available() > 0 && rxLen < sizeof(rxBuf) - 2) {
-            const int ch = Serial1.read();
-            if (ch < 0) break;
-            if (ch == '\r') continue;
-            rxBuf[rxLen++] = static_cast<char>(ch);
+        const int ch = Serial1.read();
+        if (ch < 0) break;
+        if (ch == '\r') continue;
+        if (hc12SetIsAsserted()) {
+            char buf[2] = {static_cast<char>(ch), '\0'};
+            hc12AppendTerminal(buf);
+            continue;
         }
-        if (rxLen == 0) continue;
-        if (rxBuf[rxLen - 1] != '\n') rxBuf[rxLen++] = '\n';
-        rxBuf[rxLen] = '\0';
-        hc12AppendTerminal(rxBuf);
+        if (ch == '\n') {
+            String &rxLine = hc12RadioLineBuffer();
+            String line = rxLine;
+            rxLine = "";
+            line.trim();
+            if (line.isEmpty()) continue;
+            if (line.startsWith(HC12_RADIO_FRAME_PREFIX)) {
+                hc12HandleIncomingRadioLine(line);
+            } else if (uiScreen == UI_CONFIG_HC12_TERMINAL) {
+                hc12AppendTerminal((line + "\n").c_str());
+            }
+            continue;
+        }
+        String &rxLine = hc12RadioLineBuffer();
+        if (rxLine.length() < (HC12_RADIO_MAX_LINE - 1)) {
+            rxLine += static_cast<char>(ch);
+        } else {
+            rxLine = "";
+        }
     }
 }
 
@@ -15630,6 +16020,13 @@ void setupWebRoutes()
             peer["trusted"] = p2pDiscoveredPeers[i].trusted;
             peer["last_seen_ms"] = static_cast<uint64_t>(p2pDiscoveredPeers[i].lastSeenMs);
         }
+        JsonArray radioArr = doc["radio_discovered"].to<JsonArray>();
+        for (int i = 0; i < hc12DiscoveredCount; ++i) {
+            JsonObject peer = radioArr.add<JsonObject>();
+            peer["name"] = hc12DiscoveredPeers[i].name;
+            peer["public_key"] = hc12DiscoveredPeers[i].pubKeyHex;
+            peer["last_seen_ms"] = static_cast<uint64_t>(hc12DiscoveredPeers[i].lastSeenMs);
+        }
         String payload;
         serializeJson(doc, payload);
         request->send(200, "application/json", payload);
@@ -15783,20 +16180,12 @@ void setupWebRoutes()
             return;
         }
 
-        const String messageId = chatGenerateMessageId();
-        chatQueueOutgoingMessage(currentChatPeerKey, deviceShortNameValue(), text, messageId);
-        const bool sentLan = p2pSendChatMessageWithId(currentChatPeerKey, text, messageId);
-        const bool sentGlobal = mqttPublishChatMessageWithId(currentChatPeerKey, text, messageId);
-        chatStoreMessage(currentChatPeerKey, "Me", text, true, sentGlobal ? CHAT_TRANSPORT_MQTT : CHAT_TRANSPORT_WIFI, messageId);
-        if (lvglReady) lvglRefreshChatUi();
-        uiStatusLine = sentGlobal ? "Chat sent globally" : (sentLan ? "Chat sent to peers" : "Chat saved locally");
-        if (lvglReady) lvglSyncStatusLine();
-
-        doc["ok"] = true;
-        doc["transport"] = sentGlobal ? "mqtt_global" : (sentLan ? "p2p_udp_encrypted" : "local_only");
+        const bool ok = chatSendAndStoreMessage(currentChatPeerKey, text);
+        doc["ok"] = ok;
+        doc["transport"] = "auto";
         String payload;
         serializeJson(doc, payload);
-        request->send(200, "application/json", payload);
+        request->send(ok ? 200 : 409, "application/json", payload);
     });
 
     server.on("/list_sd_files", HTTP_GET, [](AsyncWebServerRequest *request) {
