@@ -185,6 +185,9 @@ static constexpr unsigned long LCD_IDLE_TIMEOUT_MS_MIN = 15000UL;
 static constexpr unsigned long LCD_IDLE_TIMEOUT_MS_MAX = 600000UL;
 static constexpr unsigned long LCD_IDLE_TIMEOUT_STEP_MS = 15000UL;
 static constexpr unsigned long SENSOR_SAMPLE_PERIOD_MS = 2000;
+static constexpr unsigned long TOP_INDICATOR_REFRESH_MS = 1500;
+static constexpr unsigned long TOP_INDICATOR_WIFI_CONNECT_ANIM_MS = 220;
+static constexpr unsigned long WIFI_CONNECT_BARS_ANIM_PERIOD_MS = 240;
 static constexpr unsigned long LIGHT_SLEEP_AFTER_IDLE_MS = 20000;
 static constexpr bool LIGHT_SLEEP_TIMER_FALLBACK = false;
 static constexpr uint64_t LIGHT_SLEEP_TIMER_US = 5000000ULL;
@@ -226,7 +229,7 @@ static constexpr uint16_t LIGHT_RAW_CAL_MAX = 600;
 static constexpr bool LIGHT_LOG_RAW_TO_SERIAL = false;
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.2.4";
+static constexpr const char *FW_VERSION = "0.2.5";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -2997,6 +3000,7 @@ void lvglTopIndicatorsDrawEvent(lv_event_t *e)
     const bool battPulse = batteryCharging && (((millis() / 280UL) & 0x1U) != 0U);
 
     const bool connected = wifiConnectedSafe();
+    const bool connecting = !connected && !airplaneModeEnabled && bootStaConnectInProgress;
     const int rssi = connected ? wifiRssiSafe() : -127;
     const bool mqttConnected = mqttCfg.enabled && mqttClient.connected();
     int bars = 0;
@@ -3030,14 +3034,17 @@ void lvglTopIndicatorsDrawEvent(lv_event_t *e)
         lvglDrawLineSeg(drawCtx, antX + 22, topY + 8, antX + 28, topY + 6, planeDim, 2);
         lvglDrawLineSeg(drawCtx, antX + 22, topY + 16, antX + 28, topY + 18, planeDim, 2);
     } else {
+        const uint8_t animPhase = static_cast<uint8_t>((millis() / WIFI_CONNECT_BARS_ANIM_PERIOD_MS) & 0x03U);
         for (int i = 0; i < 4; i++) {
-            const bool on = connected && i < bars;
+            const bool on = connected ? (i < bars) : (connecting && i == animPhase);
             lv_color_t col = on ? lv_color_hex(0x79E28A) : lv_color_hex(0x30404A);
             lvglDrawRectSolid(drawCtx, antX + (i * 8), topY + 23 - antHeights[i], 4, antHeights[i], col, on ? LV_OPA_COVER : LV_OPA_70);
         }
     }
     if (!connected && !airplaneModeEnabled) {
-        if (apModeActive) {
+        if (connecting) {
+            // Animated bars above already communicate the in-progress STA connection attempt.
+        } else if (apModeActive) {
             const lv_color_t apCol = lv_color_hex(0xF2993A);
             const int ax = antX - 1;
             const int ay = topY + 4;
@@ -3053,10 +3060,6 @@ void lvglTopIndicatorsDrawEvent(lv_event_t *e)
             lvglDrawRectSolid(drawCtx, px + 3, ay + 0, 8, 3, apCol);
             lvglDrawRectSolid(drawCtx, px + 8, ay + 3, 3, 5, apCol);
             lvglDrawRectSolid(drawCtx, px + 3, ay + 8, 8, 3, apCol);
-        } else {
-            const lv_color_t cross = lv_color_hex(0xE45B5B);
-            lvglDrawLineSeg(drawCtx, antX - 2, topY + 2, antX + 31, topY + 23, cross, 2, LV_OPA_COVER);
-            lvglDrawLineSeg(drawCtx, antX - 2, topY + 23, antX + 31, topY + 2, cross, 2, LV_OPA_COVER);
         }
     }
 
@@ -17888,7 +17891,9 @@ void loop()
         lastWiFi = cur;
     }
 
-    if (lvglReady && displayAwake && millis() - lastTopIndicatorRefreshMs >= 1500) {
+    const unsigned long topIndicatorRefreshMs =
+        bootStaConnectInProgress ? TOP_INDICATOR_WIFI_CONNECT_ANIM_MS : TOP_INDICATOR_REFRESH_MS;
+    if (lvglReady && displayAwake && millis() - lastTopIndicatorRefreshMs >= topIndicatorRefreshMs) {
         lastTopIndicatorRefreshMs = millis();
         sampleTopIndicators();
         lvglRefreshTopIndicators();
