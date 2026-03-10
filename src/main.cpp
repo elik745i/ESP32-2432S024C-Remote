@@ -226,7 +226,7 @@ static constexpr uint16_t LIGHT_RAW_CAL_MAX = 600;
 static constexpr bool LIGHT_LOG_RAW_TO_SERIAL = false;
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.2.3";
+static constexpr const char *FW_VERSION = "0.2.4";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -258,7 +258,7 @@ static constexpr int8_t HC12_POWER_DBM[] = {-1, 2, 5, 8, 11, 14, 17, 20};
 static constexpr int HC12_MIN_CHANNEL = 1;
 static constexpr int HC12_MAX_CHANNEL = 100;
 static constexpr char HC12_RADIO_FRAME_PREFIX[] = "@RMT|";
-static constexpr size_t HC12_RADIO_MAX_LINE = 320;
+static constexpr size_t HC12_RADIO_MAX_LINE = 1216;
 static constexpr int MAX_HC12_DISCOVERED = 8;
 static constexpr unsigned long HC12_DISCOVERY_INTERVAL_MS = 8000UL;
 static constexpr unsigned long HC12_DISCOVERY_STALE_MS = 45000UL;
@@ -8617,6 +8617,47 @@ static bool hc12SendRadioDocument(JsonDocument &doc)
     return true;
 }
 
+static bool hc12SendRadioPayload(const char *payload, size_t len)
+{
+    hc12InitIfNeeded();
+    if (hc12SetIsAsserted() || !payload || len == 0 || len >= HC12_RADIO_MAX_LINE) return false;
+    Serial1.print(HC12_RADIO_FRAME_PREFIX);
+    Serial1.write(reinterpret_cast<const uint8_t *>(payload), len);
+    Serial1.write('\n');
+    Serial1.flush();
+    return true;
+}
+
+static bool hc12SendEncryptedPayload(const String &peerKey, const uint8_t *plain, size_t plainLen)
+{
+    if (peerKey.isEmpty() || !plain || plainLen == 0 || plainLen > (P2P_MAX_PACKET - 64U)) return false;
+
+    unsigned char peerPk[P2P_PUBLIC_KEY_BYTES] = {0};
+    if (!p2pHexToBytes(peerKey, peerPk, sizeof(peerPk))) return false;
+
+    unsigned char nonce[P2P_NONCE_BYTES] = {0};
+    unsigned char cipher[P2P_MAX_PACKET] = {0};
+    randombytes_buf(nonce, sizeof(nonce));
+    if (crypto_box_curve25519xchacha20poly1305_easy(cipher, plain, plainLen, nonce, peerPk, p2pSecretKey) != 0) return false;
+
+    const size_t cipherLen = plainLen + P2P_MAC_BYTES;
+    char senderPubHex[(P2P_PUBLIC_KEY_BYTES * 2U) + 1U] = {0};
+    char nonceHex[(P2P_NONCE_BYTES * 2U) + 1U] = {0};
+    char cipherHex[(P2P_MAX_PACKET * 2U) + 1U] = {0};
+    char payload[HC12_RADIO_MAX_LINE] = {0};
+    sodium_bin2hex(senderPubHex, sizeof(senderPubHex), p2pPublicKey, sizeof(p2pPublicKey));
+    sodium_bin2hex(nonceHex, sizeof(nonceHex), nonce, sizeof(nonce));
+    sodium_bin2hex(cipherHex, sizeof(cipherHex), cipher, cipherLen);
+    const int written = snprintf(payload,
+                                 sizeof(payload),
+                                 "{\"sender_pub\":\"%s\",\"nonce\":\"%s\",\"cipher\":\"%s\"}",
+                                 senderPubHex,
+                                 nonceHex,
+                                 cipherHex);
+    if (written <= 0 || static_cast<size_t>(written) >= sizeof(payload)) return false;
+    return hc12SendRadioPayload(payload, static_cast<size_t>(written));
+}
+
 static bool hc12BroadcastDiscoveryFrame(const char *kind)
 {
     JsonDocument doc;
@@ -8640,12 +8681,13 @@ bool hc12SendChatMessageWithId(const String &peerKey, const String &text, const 
     if (peerKey.isEmpty() || text.isEmpty() || messageId.isEmpty()) return false;
     JsonDocument doc;
     doc["kind"] = "chat";
-    doc["device"] = deviceShortNameValue();
-    doc["public_key"] = p2pPublicKeyHex();
-    doc["to"] = peerKey;
     doc["id"] = messageId;
-    doc["text"] = text;
-    return hc12SendRadioDocument(doc);
+    doc["author"] = deviceShortNameValue();
+    doc["text"] = text.substring(0, P2P_MAX_CHAT_TEXT);
+    char plain[P2P_MAX_PACKET] = {0};
+    const size_t plainLen = serializeJson(doc, plain, sizeof(plain));
+    if (plainLen == 0) return false;
+    return hc12SendEncryptedPayload(peerKey, reinterpret_cast<const uint8_t *>(plain), plainLen);
 }
 
 bool hc12SendChatAck(const String &peerKey, const String &messageId)
@@ -8653,11 +8695,11 @@ bool hc12SendChatAck(const String &peerKey, const String &messageId)
     if (peerKey.isEmpty() || messageId.isEmpty()) return false;
     JsonDocument doc;
     doc["kind"] = "ack";
-    doc["device"] = deviceShortNameValue();
-    doc["public_key"] = p2pPublicKeyHex();
-    doc["to"] = peerKey;
     doc["ack_id"] = messageId;
-    return hc12SendRadioDocument(doc);
+    char plain[P2P_MAX_PACKET] = {0};
+    const size_t plainLen = serializeJson(doc, plain, sizeof(plain));
+    if (plainLen == 0) return false;
+    return hc12SendEncryptedPayload(peerKey, reinterpret_cast<const uint8_t *>(plain), plainLen);
 }
 
 bool hc12SendMessageDelete(const String &peerKey, const String &messageId)
@@ -8665,11 +8707,12 @@ bool hc12SendMessageDelete(const String &peerKey, const String &messageId)
     if (peerKey.isEmpty() || messageId.isEmpty()) return false;
     JsonDocument doc;
     doc["kind"] = "delete_message";
-    doc["device"] = deviceShortNameValue();
-    doc["public_key"] = p2pPublicKeyHex();
-    doc["to"] = peerKey;
     doc["id"] = messageId;
-    return hc12SendRadioDocument(doc);
+    doc["author"] = deviceShortNameValue();
+    char plain[P2P_MAX_PACKET] = {0};
+    const size_t plainLen = serializeJson(doc, plain, sizeof(plain));
+    if (plainLen == 0) return false;
+    return hc12SendEncryptedPayload(peerKey, reinterpret_cast<const uint8_t *>(plain), plainLen);
 }
 
 bool hc12SendConversationDelete(const String &peerKey)
@@ -8677,36 +8720,53 @@ bool hc12SendConversationDelete(const String &peerKey)
     if (peerKey.isEmpty()) return false;
     JsonDocument doc;
     doc["kind"] = "delete_conversation";
-    doc["device"] = deviceShortNameValue();
-    doc["public_key"] = p2pPublicKeyHex();
-    doc["to"] = peerKey;
-    return hc12SendRadioDocument(doc);
+    doc["author"] = deviceShortNameValue();
+    char plain[P2P_MAX_PACKET] = {0};
+    const size_t plainLen = serializeJson(doc, plain, sizeof(plain));
+    if (plainLen == 0) return false;
+    return hc12SendEncryptedPayload(peerKey, reinterpret_cast<const uint8_t *>(plain), plainLen);
 }
 
 static void hc12HandleIncomingRadioLine(const String &line)
 {
     if (!line.startsWith(HC12_RADIO_FRAME_PREFIX)) return;
 
-    JsonDocument doc;
-    if (deserializeJson(doc, line.substring(strlen(HC12_RADIO_FRAME_PREFIX))) != DeserializationError::Ok) return;
+    JsonDocument outerDoc;
+    if (deserializeJson(outerDoc, line.substring(strlen(HC12_RADIO_FRAME_PREFIX))) != DeserializationError::Ok) return;
 
-    const String senderPubHex = String(static_cast<const char *>(doc["public_key"] | ""));
-    if (senderPubHex.isEmpty() || senderPubHex.equalsIgnoreCase(p2pPublicKeyHex())) return;
-
-    const String senderName = sanitizeDeviceShortName(String(static_cast<const char *>(doc["device"] | "Peer")));
-    hc12TouchDiscoveredPeer(senderName, senderPubHex);
-
-    const String kind = String(static_cast<const char *>(doc["kind"] | ""));
-    if (kind == "probe") {
-        hc12BroadcastDiscoveryFrame("hello");
+    const String discoveryKind = String(static_cast<const char *>(outerDoc["kind"] | ""));
+    const String discoveryPubHex = String(static_cast<const char *>(outerDoc["public_key"] | ""));
+    if (!discoveryKind.isEmpty() && !discoveryPubHex.isEmpty()) {
+        if (discoveryPubHex.equalsIgnoreCase(p2pPublicKeyHex())) return;
+        const String senderName = sanitizeDeviceShortName(String(static_cast<const char *>(outerDoc["device"] | "Peer")));
+        hc12TouchDiscoveredPeer(senderName, discoveryPubHex);
+        if (discoveryKind == "probe") hc12BroadcastDiscoveryFrame("hello");
         return;
     }
-    if (kind == "hello") return;
 
-    const String targetPubHex = String(static_cast<const char *>(doc["to"] | ""));
-    if (!targetPubHex.equalsIgnoreCase(p2pPublicKeyHex())) return;
+    const String senderPubHex = String(static_cast<const char *>(outerDoc["sender_pub"] | ""));
+    const String nonceHex = String(static_cast<const char *>(outerDoc["nonce"] | ""));
+    const String cipherHex = String(static_cast<const char *>(outerDoc["cipher"] | ""));
+    if (senderPubHex.isEmpty() || nonceHex.isEmpty() || cipherHex.isEmpty() || senderPubHex.equalsIgnoreCase(p2pPublicKeyHex())) return;
 
-    const String author = senderName.isEmpty() ? chatDisplayNameForPeerKey(senderPubHex) : senderName;
+    unsigned char senderPk[P2P_PUBLIC_KEY_BYTES] = {0};
+    unsigned char nonce[P2P_NONCE_BYTES] = {0};
+    unsigned char cipher[P2P_MAX_PACKET] = {0};
+    size_t cipherLen = 0;
+    if (!p2pHexToBytes(senderPubHex, senderPk, sizeof(senderPk))) return;
+    if (!p2pHexToBytes(nonceHex, nonce, sizeof(nonce))) return;
+    if (sodium_hex2bin(cipher, sizeof(cipher), cipherHex.c_str(), cipherHex.length(), nullptr, &cipherLen, nullptr) != 0 ||
+        cipherLen < P2P_MAC_BYTES) return;
+
+    unsigned char plain[P2P_MAX_PACKET] = {0};
+    if (crypto_box_curve25519xchacha20poly1305_open_easy(plain, cipher, cipherLen, nonce, senderPk, p2pSecretKey) != 0) return;
+
+    JsonDocument doc;
+    if (deserializeJson(doc, plain, cipherLen - P2P_MAC_BYTES) != DeserializationError::Ok) return;
+
+    const String author = sanitizeDeviceShortName(String(static_cast<const char *>(doc["author"] | chatDisplayNameForPeerKey(senderPubHex).c_str())));
+    hc12TouchDiscoveredPeer(author, senderPubHex);
+    const String kind = String(static_cast<const char *>(doc["kind"] | ""));
     if (kind == "chat") {
         const String messageId = String(static_cast<const char *>(doc["id"] | ""));
         const String text = String(static_cast<const char *>(doc["text"] | ""));
@@ -8740,9 +8800,7 @@ static void hc12HandleIncomingRadioLine(const String &line)
         return;
     }
 
-    if (kind == "delete_conversation") {
-        chatApplyConversationDeletion(senderPubHex, "Conversation deleted by " + author);
-    }
+    if (kind == "delete_conversation") chatApplyConversationDeletion(senderPubHex, "Conversation deleted by " + author);
 }
 
 void lvglHc12ToggleSetEvent(lv_event_t *e)
