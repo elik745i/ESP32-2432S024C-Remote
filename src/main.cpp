@@ -416,6 +416,9 @@ static void wifiEnsureRuntimeEnabled(const char *reason, wifi_mode_t mode, bool 
 void ensureApOnline(const char *reason);
 void disableApWhenStaConnected(const char *reason);
 static void stopDnsForAp();
+static void stopWebServerRuntime();
+static void ensureWebServerRuntime();
+static void persistWebServerEnabled();
 void wifiConnectionService();
 bool mediaStartTrack(const String &sourcePath, const String &displayName);
 String mediaFindAdjacentTrack(const String &sourcePath, bool nextDir);
@@ -691,6 +694,7 @@ static lv_obj_t *lvglWifiApSsidTa = nullptr;
 static lv_obj_t *lvglWifiApPassTa = nullptr;
 static lv_obj_t *lvglWifiApPassShowBtnLabel = nullptr;
 static lv_obj_t *lvglWifiApPassShowBtn = nullptr;
+static lv_obj_t *lvglWifiWebServerBtn = nullptr;
 static lv_obj_t *lvglWifiPwdModal = nullptr;
 static lv_obj_t *lvglWifiPwdTa = nullptr;
 static lv_obj_t *lvglWifiPwdSsidLabel = nullptr;
@@ -1029,6 +1033,7 @@ bool mdnsStarted = false;
 bool webRoutesRegistered = false;
 bool webServerRunning = false;
 bool dnsRunning = false;
+bool webServerEnabled = true;
 bool networkSuspendedForAudio = false;
 unsigned long networkResumeLastAttemptMs = 0;
 uint32_t touchI2cHzActive = TOUCH_I2C_HZ;
@@ -4497,6 +4502,7 @@ void lvglWifiRescanEvent(lv_event_t *e);
 void lvglWifiDisconnectEvent(lv_event_t *e);
 void lvglWifiForgetEvent(lv_event_t *e);
 void lvglWifiApSaveEvent(lv_event_t *e);
+void lvglWifiWebServerToggleEvent(lv_event_t *e);
 void lvglMediaRefreshEvent(lv_event_t *e);
 static void mediaEnsureStorageReadyForUi();
 void lvglOpenSnakeEvent(lv_event_t *e);
@@ -6384,6 +6390,26 @@ void lvglWifiApSaveEvent(lv_event_t *e)
     lvglRefreshWifiList();
 }
 
+void lvglWifiWebServerToggleEvent(lv_event_t *e)
+{
+    (void)e;
+    webServerEnabled = !webServerEnabled;
+    persistWebServerEnabled();
+    if (webServerEnabled) {
+        ensureWebServerRuntime();
+        uiStatusLine = "Web server enabled";
+    } else {
+        stopWebServerRuntime();
+        uiStatusLine = "Web server disabled";
+    }
+    if (lvglReady) {
+        lvglSyncStatusLine();
+        lvglRefreshWifiList();
+        lvglRefreshTopIndicators();
+        if (uiScreen == UI_INFO) lvglRefreshInfoPanel();
+    }
+}
+
 void lvglWifiEntryEvent(lv_event_t *e)
 {
     const int idx = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
@@ -7953,6 +7979,7 @@ void lvglRefreshWifiList()
     lvglWifiApPassTa = nullptr;
     lvglWifiApPassShowBtnLabel = nullptr;
     lvglWifiApPassShowBtn = nullptr;
+    lvglWifiWebServerBtn = nullptr;
 
     auto makeCard = [&](const char *title) -> lv_obj_t * {
         lv_obj_t *card = lv_obj_create(lvglWifiList);
@@ -8020,6 +8047,15 @@ void lvglRefreshWifiList()
         if (!desiredStaSsid.isEmpty() || pendingSaveCreds || wifiForgetPendingUi) {
             makeBtn(row, "Forget", 64, 28, lv_color_hex(0x8A3A3A), lvglWifiForgetEvent);
         }
+
+        lvglWifiWebServerBtn = makeBtn(
+            staCard,
+            webServerEnabled ? "Web Server: ON" : "Web Server: OFF",
+            132,
+            30,
+            webServerEnabled ? lv_color_hex(0x357A38) : lv_color_hex(0x6B3A3A),
+            lvglWifiWebServerToggleEvent
+        );
     }
 
     makeBtn(lvglWifiList, "Scan", 92, 30, lv_color_hex(0x2F6D86), lvglWifiRescanEvent);
@@ -13763,6 +13799,7 @@ void loadUiRuntimeConfig()
     deviceShortName = sanitizeDeviceShortName(uiPrefs.getString("dev_name", DEVICE_SHORT_NAME));
     if (deviceShortName.isEmpty()) deviceShortName = DEVICE_SHORT_NAME;
     wsRebootOnDisconnectEnabled = uiPrefs.getBool("ws_reboot", false);
+    webServerEnabled = uiPrefs.getBool("web_srv", true);
     airplaneModeEnabled = uiPrefs.getBool("airplane", false);
     telemetryMaxKB = uiPrefs.getUInt("tele_kb", 512);
     serialLogWsMinIntervalMs = uiPrefs.getUInt("ser_rate", SERIAL_LOG_RATE_MS_DEFAULT);
@@ -14250,6 +14287,7 @@ void registerWifiEvents()
 static void beginDnsForAp(IPAddress ip)
 {
     if (ip[0] == 0) return;
+    if (!webServerEnabled) return;
     dnsServer.stop();
     dnsServer.start(53, "*", ip);
     dnsRunning = true;
@@ -14262,6 +14300,41 @@ static void stopDnsForAp()
     dnsRunning = false;
 }
 
+static void stopWebServerRuntime()
+{
+    if (mdnsStarted) {
+        MDNS.end();
+        mdnsStarted = false;
+    }
+    stopDnsForAp();
+    if (webServerRunning) {
+        wsCarInput.cleanupClients();
+        server.end();
+        webServerRunning = false;
+    }
+}
+
+static void ensureWebServerRuntime()
+{
+    if (!webServerEnabled || airplaneModeEnabled || networkSuspendedForAudio) return;
+    if (!webRoutesRegistered) {
+        setupWebRoutes();
+        webRoutesRegistered = true;
+    }
+    if (!webServerRunning) {
+        server.begin();
+        webServerRunning = true;
+    }
+    if (apModeActive) beginDnsForAp(WiFi.softAPIP());
+}
+
+static void persistWebServerEnabled()
+{
+    uiPrefs.begin("ui", false);
+    uiPrefs.putBool("web_srv", webServerEnabled);
+    uiPrefs.end();
+}
+
 static void wifiEnsureRuntimeEnabled(const char *reason, wifi_mode_t mode, bool startWebServer)
 {
     if (airplaneModeEnabled) return;
@@ -14271,20 +14344,11 @@ static void wifiEnsureRuntimeEnabled(const char *reason, wifi_mode_t mode, bool 
     WiFi.setAutoReconnect(false);
     WiFi.setSleep(false);
     if (WiFi.getMode() != mode) WiFi.mode(mode);
-    if (startWebServer) {
-        if (!webRoutesRegistered) {
-            setupWebRoutes();
-            webRoutesRegistered = true;
-        }
-        if (!webServerRunning) {
-            server.begin();
-            webServerRunning = true;
-        }
-    }
+    if (startWebServer && webServerEnabled) ensureWebServerRuntime();
     Serial.printf("[WIFI] runtime enabled reason=%s mode=%d web=%d\n",
                   reason ? reason : "-",
                   static_cast<int>(mode),
-                  startWebServer ? 1 : 0);
+                  (startWebServer && webServerEnabled) ? 1 : 0);
 }
 
 void ensureApOnline(const char *reason)
@@ -17489,14 +17553,7 @@ void wifiConnectionService()
 
 void refreshMdnsState()
 {
-    if (airplaneModeEnabled) {
-        if (mdnsStarted) {
-            MDNS.end();
-            mdnsStarted = false;
-        }
-        return;
-    }
-    if (networkSuspendedForAudio) {
+    if (airplaneModeEnabled || networkSuspendedForAudio || !webServerEnabled) {
         if (mdnsStarted) {
             MDNS.end();
             mdnsStarted = false;
@@ -17522,19 +17579,7 @@ void networkSuspendForAudio()
     if (networkSuspendedForAudio) return;
 
     mqttClient.disconnect();
-    if (mdnsStarted) {
-        MDNS.end();
-        mdnsStarted = false;
-    }
-    if (dnsRunning) {
-        dnsServer.stop();
-        dnsRunning = false;
-    }
-    if (webServerRunning) {
-        wsCarInput.cleanupClients();
-        server.end();
-        webServerRunning = false;
-    }
+    stopWebServerRuntime();
 
     WiFi.softAPdisconnect(true);
     apModeActive = false;
@@ -17586,7 +17631,7 @@ void setupWifiAndServer()
         wifiRuntimeManaged = false;
         WiFi.mode(WIFI_OFF);
         apModeActive = false;
-        stopDnsForAp();
+        stopWebServerRuntime();
         return;
     }
     wifiRuntimeManaged = true;
@@ -17597,15 +17642,7 @@ void setupWifiAndServer()
     WiFi.mode(WIFI_STA);
     apModeActive = false;
     stopDnsForAp();
-
-    if (!webRoutesRegistered) {
-        setupWebRoutes();
-        webRoutesRegistered = true;
-    }
-    if (!webServerRunning) {
-        server.begin();
-        webServerRunning = true;
-    }
+    ensureWebServerRuntime();
 
     loadSavedStaCreds();
     tryBootStaReconnect();
