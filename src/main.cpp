@@ -229,7 +229,7 @@ static constexpr uint16_t LIGHT_RAW_CAL_MAX = 600;
 static constexpr bool LIGHT_LOG_RAW_TO_SERIAL = false;
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.2.5";
+static constexpr const char *FW_VERSION = "0.2.6";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -2755,6 +2755,23 @@ static inline bool lvglClickSuppressed()
 static inline bool uiScreenKeepsDisplayAwake()
 {
     return uiScreen == UI_GAME_SNAKE || uiScreen == UI_GAME_TETRIS || uiScreen == UI_GAME_CHECKERS || uiScreen == UI_GAME_SNAKE3D;
+}
+
+static inline bool uiScreenNeedsRealtimeMessaging()
+{
+    return uiScreen == UI_CHAT ||
+           uiScreen == UI_CHAT_PEERS ||
+           uiScreen == UI_GAME_CHECKERS ||
+           uiScreen == UI_CONFIG_HC12 ||
+           uiScreen == UI_CONFIG_HC12_TERMINAL ||
+           uiScreen == UI_CONFIG_HC12_INFO ||
+           uiScreen == UI_CONFIG_MQTT_CONFIG ||
+           uiScreen == UI_CONFIG_MQTT_CONTROLS;
+}
+
+static inline bool uiPerformancePriorityActive(bool touchDown)
+{
+    return displayAwake && (touchDown || lv_anim_count_running() > 0U);
 }
 
 static inline void lvglSuppressClicksAfterGesture()
@@ -17785,6 +17802,8 @@ void loop()
     lvglService();
     screensaverService();
     bool isDown = lvglReady ? lvglTouchDown : false;
+    const bool uiPriorityActive = uiPerformancePriorityActive(isDown);
+    const bool realtimeMessaging = uiScreenNeedsRealtimeMessaging();
 
     const unsigned long now = millis();
     if (bootSdInitPending && static_cast<unsigned long>(now - bootDeferredStartMs) >= BOOT_DEFER_SD_MS) {
@@ -17799,7 +17818,8 @@ void loop()
 
     static unsigned long lastServiceSliceMs = 0;
     static uint8_t serviceSlicePhase = 0;
-    if (static_cast<unsigned long>(now - lastServiceSliceMs) >= DNS_SERVICE_INTERVAL_MS) {
+    const unsigned long bgSliceIntervalMs = uiPriorityActive ? (DNS_SERVICE_INTERVAL_MS * 3UL) : DNS_SERVICE_INTERVAL_MS;
+    if (static_cast<unsigned long>(now - lastServiceSliceMs) >= bgSliceIntervalMs) {
         lastServiceSliceMs = now;
         serviceSlicePhase = static_cast<uint8_t>((serviceSlicePhase + 1U) % 5U);
         if (dnsRunning) dnsServer.processNextRequest();
@@ -17807,27 +17827,30 @@ void loop()
         switch (serviceSlicePhase) {
             case 0:
                 wifiConnectionService();
-                mqttService();
+                if (!uiPriorityActive || realtimeMessaging) mqttService();
                 break;
             case 1:
-                if (p2pReady) p2pService();
+                if (p2pReady && (!uiPriorityActive || realtimeMessaging)) p2pService();
                 break;
             case 2:
-                wifiScanService();
-                chatPendingService();
+                if (!uiPriorityActive || uiScreen == UI_WIFI_LIST) wifiScanService();
+                if (!uiPriorityActive || realtimeMessaging) chatPendingService();
                 break;
             case 3:
-                sdStatsService();
-                serviceCarInputTelemetry();
+                if (!uiPriorityActive || uiScreen == UI_INFO || !sdMounted) sdStatsService();
+                if (!uiPriorityActive) serviceCarInputTelemetry();
                 break;
             case 4:
-                refreshMdnsState();
-                otaCheckService();
+                if (!uiPriorityActive) refreshMdnsState();
+                if (!uiPriorityActive || uiScreen == UI_CONFIG_OTA) otaCheckService();
                 break;
         }
     }
     otaUpdateService();
-    hc12Service();
+    if (!uiPriorityActive || realtimeMessaging || Serial1.available() > 0 ||
+        (uiDeferredFlags & UI_DEFERRED_HC12_SETTLE_PENDING) != 0) {
+        hc12Service();
+    }
     screenshotService(isDown);
     const bool allowSdAutoRetry = (uiScreen == UI_MEDIA) || !displayAwake;
     if (!sdMounted && allowSdAutoRetry && !isDown && !fsWriteBusy() &&
@@ -17861,7 +17884,8 @@ void loop()
         }
     }
 
-    if (millis() - lastSensorSampleMs >= SENSOR_SAMPLE_PERIOD_MS) {
+    const unsigned long sensorPeriodMs = uiPriorityActive ? (SENSOR_SAMPLE_PERIOD_MS * 2UL) : SENSOR_SAMPLE_PERIOD_MS;
+    if (millis() - lastSensorSampleMs >= sensorPeriodMs) {
         lastSensorSampleMs = millis();
         sampleTopIndicators();
     }
@@ -17928,8 +17952,9 @@ void loop()
         lastWiFi = cur;
     }
 
-    const unsigned long topIndicatorRefreshMs =
+    unsigned long topIndicatorRefreshMs =
         bootStaConnectInProgress ? TOP_INDICATOR_WIFI_CONNECT_ANIM_MS : TOP_INDICATOR_REFRESH_MS;
+    if (uiPriorityActive) topIndicatorRefreshMs *= 2UL;
     if (lvglReady && displayAwake && millis() - lastTopIndicatorRefreshMs >= topIndicatorRefreshMs) {
         lastTopIndicatorRefreshMs = millis();
         sampleTopIndicators();
