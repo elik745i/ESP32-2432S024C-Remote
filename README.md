@@ -20,7 +20,7 @@ Supported boards:
 - Saved backlight brightness and RGB LED intensity controls in `Config`
 - Brightness and RGB slider values are persisted in `Preferences`
 - `WiFi Config` screen with current network info, manual scan, saved-network actions, and editable AP SSID/password
-- `HC12 Config` screen with `SET` control and a live UART terminal for the HC-12 radio module
+- `HC12 Config` submenu with live channel, baud, mode, power, default-reset, dedicated `Info`, and `Serial Terminal` pages for the HC-12 radio module
 - `OTA Updates` screen with boot-time and periodic update checks, update-available indicator/popup, progress bar, and post-update confirmation
 - `MQTT Config` screen for broker settings, status, and connection control
 - SD recovery browser that can browse all rooted SD folders
@@ -312,6 +312,18 @@ Board-specific defaults:
 - Low-end brightness warning color on the slider
 - Device rename field with persistence
 - Device name is shown in the top bar and shortened there when needed
+
+### HC-12
+
+- `Config -> HC12 Config` opens a submenu instead of dropping directly into the terminal
+- Main HC-12 page can read and change:
+- channel (`CH001` to `CH100`)
+- baud rate (`1200` to `115200`)
+- transmission mode (`FU1` to `FU4`, shown as `Raw Mod`, `Fast`, `Norm`, `LoRa`)
+- transmission power (`P1` to `P8`, with dBm shown)
+- `Default` restores factory settings and then reloads current module values
+- `Serial Terminal` keeps the manual UART terminal and `SET` toggle
+- `Info` queries the module in AT mode and shows version, baud, channel, FU mode, power, and raw summary text
 
 ## Wi-Fi and AP
 
