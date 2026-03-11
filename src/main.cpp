@@ -1268,6 +1268,8 @@ static void chatFlushDeferredAirplaneMessage();
 static bool chatMessagePendingForPeer(const String &peerKey, const String &messageId);
 static bool chatOpenPeerConversation(const String &peerKey);
 static bool chatOpenFirstUnreadConversation();
+static void chatScheduleOpenPeerConversation(const String &peerKey);
+static void lvglDeferredChatOpenFirstUnreadCallback(void *param);
 static bool chatDeleteMessageById(const String &peerKey, const String &messageId, const String &status);
 static bool chatDeleteMessageAt(const String &peerKey, int index);
 static bool checkersHandleIncomingChatPayload(const String &peerKey,
@@ -1522,6 +1524,10 @@ unsigned long snakeLastStepMs = 0;
 static constexpr int SNAKE3D_COLS = 5;
 static constexpr int SNAKE3D_ROWS = 5;
 static constexpr int SNAKE3D_LAYERS = 6;
+static constexpr int SNAKE3D_GROUND_SCALE = 4;
+static constexpr int SNAKE3D_GROUND_TILE_SPAN = 2;
+static constexpr int SNAKE3D_GROUND_COLS = (SNAKE3D_COLS * SNAKE3D_GROUND_SCALE) / SNAKE3D_GROUND_TILE_SPAN;
+static constexpr int SNAKE3D_GROUND_ROWS = (SNAKE3D_ROWS * SNAKE3D_GROUND_SCALE) / SNAKE3D_GROUND_TILE_SPAN;
 static constexpr int SNAKE3D_MAX_CELLS = SNAKE3D_COLS * SNAKE3D_ROWS * SNAKE3D_LAYERS;
 static constexpr unsigned long SNAKE3D_STEP_MS_START = 720;
 static constexpr unsigned long SNAKE3D_STEP_MS_MIN = 280;
@@ -1553,6 +1559,11 @@ static constexpr int TETRIS_BOARD_Y = 50;
 static constexpr unsigned long TETRIS_STEP_MS_START = 900;
 static constexpr unsigned long TETRIS_STEP_MS_MIN = 420;
 static constexpr unsigned long TETRIS_STEP_MS_DELTA_PER_100_SCORE = 10;
+static constexpr unsigned long TETRIS_DROP_ANIM_MS_MIN = 70UL;
+static constexpr unsigned long TETRIS_DROP_ANIM_MS_PER_ROW = 24UL;
+static constexpr unsigned long TETRIS_DROP_ANIM_MS_MAX = 260UL;
+static constexpr uint8_t TETRIS_DROP_ANIM_ACTIVE = 0x01;
+static constexpr uint8_t TETRIS_DROP_LOCK_PENDING = 0x02;
 uint8_t tetrisGrid[TETRIS_ROWS][TETRIS_COLS];
 int8_t tetrisType = 0;
 int8_t tetrisRot = 0;
@@ -1565,6 +1576,10 @@ uint16_t tetrisScore = 0;
 uint16_t tetrisHighScore = 0;
 uint16_t tetrisLastScore = 0;
 unsigned long tetrisLastStepMs = 0;
+uint8_t tetrisDropAnimFlags = 0;
+int8_t tetrisAnimFromY = 0;
+uint16_t tetrisAnimStartTick = 0;
+uint16_t tetrisAnimDurationMs = 0;
 
 static constexpr int CHECKERS_MAX_BOARD_SIZE = 12;
 static constexpr int CHECKERS_MAX_HINT_MOVES = 32;
@@ -3205,7 +3220,7 @@ void lvglTopUnreadTapEvent(lv_event_t *e)
     if (lvglClickSuppressed()) return;
     if (!displayAwake) return;
     if (lvglKb && !lv_obj_has_flag(lvglKb, LV_OBJ_FLAG_HIDDEN)) lvglHideKeyboard();
-    chatOpenFirstUnreadConversation();
+    lv_async_call(lvglDeferredChatOpenFirstUnreadCallback, nullptr);
 }
 
 void lvglTopOtaTapEvent(lv_event_t *e)
@@ -4301,6 +4316,27 @@ static bool chatOpenPeerConversation(const String &peerKey)
     lvglOpenScreen(UI_CHAT, LV_SCR_LOAD_ANIM_MOVE_LEFT);
     lvglRefreshTopIndicators();
     return true;
+}
+
+static void lvglDeferredChatOpenPeerCallback(void *param)
+{
+    String *peerKey = static_cast<String *>(param);
+    if (peerKey && !peerKey->isEmpty()) chatOpenPeerConversation(*peerKey);
+    delete peerKey;
+}
+
+static void chatScheduleOpenPeerConversation(const String &peerKey)
+{
+    if (peerKey.isEmpty()) return;
+    String *deferredKey = new String(peerKey);
+    if (!deferredKey) return;
+    lv_async_call(lvglDeferredChatOpenPeerCallback, deferredKey);
+}
+
+static void lvglDeferredChatOpenFirstUnreadCallback(void *param)
+{
+    (void)param;
+    chatOpenFirstUnreadConversation();
 }
 
 static bool chatOpenFirstUnreadConversation()
@@ -5721,9 +5757,9 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             const lv_coord_t snakePadBtn = (DISPLAY_WIDTH >= 460) ? 58 : 42;
             const lv_coord_t snakeDirBtnWidth = snakePadBtn * 2;
             const lv_coord_t snakeDirBtnHeight = snakePadBtn - 2;
-            const lv_coord_t snakePauseBtnWidth = snakePadBtn * 3;
-            const lv_coord_t snakePauseBtnHeight = max<lv_coord_t>(18, snakeDirBtnHeight / 2);
             const lv_coord_t snakeSideOffsetRequested = snakePadBtn + 28;
+            const lv_coord_t snakePauseBtnWidth = snakeDirBtnWidth;
+            const lv_coord_t snakePauseBtnHeight = snakeDirBtnHeight;
             const lv_coord_t snakeSideOffsetMinNoOverlap = ((snakePauseBtnWidth + snakeDirBtnWidth) / 2) + 4;
             const lv_coord_t snakeSideOffsetMaxFit = (DISPLAY_WIDTH - snakeDirBtnWidth) / 2 - 6;
             const lv_coord_t snakeSideOffset = min<lv_coord_t>(snakeSideOffsetMaxFit,
@@ -5797,7 +5833,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             if (leftBtn) lv_obj_align(leftBtn, LV_ALIGN_CENTER, -snakeSideOffset, 6);
             lv_obj_t *pauseBtn = makeSmallBtn(snakeCtl, LV_SYMBOL_PLAY, snakePauseBtnWidth, snakePauseBtnHeight, lv_color_hex(0x3A8F4B), lvglSnakePauseEvent, nullptr);
             if (pauseBtn) {
-                lv_obj_align(pauseBtn, LV_ALIGN_CENTER, 0, 6);
+                lv_obj_align(pauseBtn, LV_ALIGN_TOP_MID, -snakeSideOffset, 4);
                 lvglSnakePauseBtnLabel = lv_obj_get_child(pauseBtn, 0);
             }
             lv_obj_t *rightBtn = makeSmallBtn(snakeCtl, LV_SYMBOL_RIGHT, snakeDirBtnWidth, snakeDirBtnHeight, lv_color_hex(0x2F6D86), lvglSnakeDirEvent, reinterpret_cast<void *>(static_cast<intptr_t>(1)));
@@ -5817,8 +5853,8 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             const lv_coord_t tetrisPadBtn = (DISPLAY_WIDTH >= 460) ? 58 : 42;
             const lv_coord_t tetrisDirBtnWidth = tetrisPadBtn * 2;
             const lv_coord_t tetrisDirBtnHeight = tetrisPadBtn - 2;
-            const lv_coord_t tetrisPauseBtnWidth = tetrisPadBtn * 3;
-            const lv_coord_t tetrisPauseBtnHeight = max<lv_coord_t>(18, tetrisDirBtnHeight / 2);
+            const lv_coord_t tetrisPauseBtnWidth = tetrisDirBtnWidth;
+            const lv_coord_t tetrisPauseBtnHeight = max<lv_coord_t>(18, tetrisDirBtnHeight - 5);
             const lv_coord_t tetrisSideOffsetRequested = tetrisPadBtn + 28;
             const lv_coord_t tetrisSideOffsetMinNoOverlap = ((tetrisPauseBtnWidth + tetrisDirBtnWidth) / 2) + 4;
             const lv_coord_t tetrisSideOffsetMaxFit = (DISPLAY_WIDTH - tetrisDirBtnWidth) / 2 - 6;
@@ -5849,8 +5885,8 @@ void lvglEnsureScreenBuilt(UiScreen screen)
 
                 lvglTetrisOverlay = lv_obj_create(lvglScrTetris);
                 if (lvglTetrisOverlay) {
-                    lv_obj_set_size(lvglTetrisOverlay, min<lv_coord_t>(DISPLAY_WIDTH - 40, 180), min<lv_coord_t>(UI_CONTENT_H - 24, 144));
-                    lv_obj_align(lvglTetrisOverlay, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y + 8);
+                    lv_obj_set_size(lvglTetrisOverlay, min<lv_coord_t>(tetrisBoardWidth - 16, 324), min<lv_coord_t>(tetrisBoardHeight - 16, 467));
+                    lv_obj_center(lvglTetrisOverlay);
                     lv_obj_set_style_bg_color(lvglTetrisOverlay, lv_color_hex(0x12202B), 0);
                     lv_obj_set_style_bg_opa(lvglTetrisOverlay, LV_OPA_90, 0);
                     lv_obj_set_style_border_width(lvglTetrisOverlay, 1, 0);
@@ -5892,7 +5928,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             if (leftBtn) lv_obj_align(leftBtn, LV_ALIGN_CENTER, -tetrisSideOffset, 6);
             lv_obj_t *pauseBtn = makeSmallBtn(tCtl, LV_SYMBOL_PLAY, tetrisPauseBtnWidth, tetrisPauseBtnHeight, lv_color_hex(0x376B93), lvglTetrisPauseEvent, nullptr);
             if (pauseBtn) {
-                lv_obj_align(pauseBtn, LV_ALIGN_CENTER, 0, 6);
+                lv_obj_align(pauseBtn, LV_ALIGN_TOP_MID, -tetrisSideOffset, 4);
                 lvglTetrisPauseBtnLabel = lv_obj_get_child(pauseBtn, 0);
             }
             lv_obj_t *rightBtn = makeSmallBtn(tCtl, LV_SYMBOL_RIGHT, tetrisDirBtnWidth, tetrisDirBtnHeight, lv_color_hex(0x2F6D86), lvglTetrisMoveRightEvent);
@@ -6087,7 +6123,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
 
                 lvglSnake3dOverlay = lv_obj_create(lvglSnake3dBoardObj);
                 if (lvglSnake3dOverlay) {
-                    lv_obj_set_size(lvglSnake3dOverlay, min<lv_coord_t>(snake3dBoardWidth - 16, 250), min<lv_coord_t>(snake3dBoardHeight - 16, 196));
+                    lv_obj_set_size(lvglSnake3dOverlay, min<lv_coord_t>(snake3dBoardWidth - 16, 250), min<lv_coord_t>(snake3dBoardHeight - 16, 255));
                     lv_obj_center(lvglSnake3dOverlay);
                     lv_obj_set_style_bg_color(lvglSnake3dOverlay, lv_color_hex(0x102030), 0);
                     lv_obj_set_style_bg_opa(lvglSnake3dOverlay, LV_OPA_90, 0);
@@ -6945,11 +6981,11 @@ void lvglRefreshChatContactsUi()
                 if (rawIdx >= 10000) {
                     const int radioIdx = rawIdx - 10000;
                     if (radioIdx < 0 || radioIdx >= hc12DiscoveredCount) return;
-                    chatOpenPeerConversation(hc12DiscoveredPeers[radioIdx].pubKeyHex);
+                    chatScheduleOpenPeerConversation(hc12DiscoveredPeers[radioIdx].pubKeyHex);
                     return;
                 }
                 if (rawIdx < 0 || rawIdx >= p2pPeerCount) return;
-                chatOpenPeerConversation(p2pPeers[rawIdx].pubKeyHex);
+                chatScheduleOpenPeerConversation(p2pPeers[rawIdx].pubKeyHex);
             },
             reinterpret_cast<void *>(static_cast<intptr_t>(i)));
         if (!btn) continue;
@@ -6984,7 +7020,7 @@ void lvglRefreshChatContactsUi()
             [](lv_event_t *e) {
                 const int radioIdx = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e))) - 10000;
                 if (radioIdx < 0 || radioIdx >= hc12DiscoveredCount) return;
-                chatOpenPeerConversation(hc12DiscoveredPeers[radioIdx].pubKeyHex);
+                chatScheduleOpenPeerConversation(hc12DiscoveredPeers[radioIdx].pubKeyHex);
             },
             reinterpret_cast<void *>(static_cast<intptr_t>(10000 + i)));
         if (!btn) continue;
@@ -7329,7 +7365,7 @@ void lvglRefreshChatPeerUi()
         makeSmallBtnLocal(row, "Open", 54, 26, lv_color_hex(0x7A5C2E), [](lv_event_t *e) {
             const int radioIdx = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e))) - 20000;
             if (radioIdx < 0 || radioIdx >= hc12DiscoveredCount) return;
-            chatOpenPeerConversation(hc12DiscoveredPeers[radioIdx].pubKeyHex);
+            chatScheduleOpenPeerConversation(hc12DiscoveredPeers[radioIdx].pubKeyHex);
         }, reinterpret_cast<void *>(static_cast<intptr_t>(20000 + i)));
     }
 
@@ -9503,6 +9539,7 @@ void lvglTetrisPauseEvent(lv_event_t *e)
 {
     (void)e;
     if (tetrisGameOver) return;
+    if (tetrisDropAnimFlags & TETRIS_DROP_ANIM_ACTIVE) return;
     if (!tetrisStarted) {
         tetrisStartGame();
     } else {
@@ -9606,14 +9643,25 @@ void lvglTetrisBoardDrawEvent(lv_event_t *e)
         }
     }
 
+    const bool dropAnimating = (tetrisDropAnimFlags & TETRIS_DROP_ANIM_ACTIVE) != 0;
+    const int drawPieceBaseY = dropAnimating ? static_cast<int>(tetrisAnimFromY) : static_cast<int>(tetrisY);
+    int animOffsetPx = 0;
+    if (dropAnimating && tetrisAnimDurationMs > 0) {
+        const uint16_t elapsedTick = static_cast<uint16_t>(millis()) - tetrisAnimStartTick;
+        const unsigned long elapsed = min<unsigned long>(elapsedTick, tetrisAnimDurationMs);
+        const int totalRows = static_cast<int>(tetrisY - tetrisAnimFromY);
+        const int stepPx = cellH + gap;
+        animOffsetPx = static_cast<int>((static_cast<uint64_t>(stepPx * totalRows) * elapsed) / tetrisAnimDurationMs);
+    }
+
     for (int i = 0; i < 4; i++) {
         int ox = 0, oy = 0;
         tetrisCellFor(tetrisType, tetrisRot, i, ox, oy);
         int gx = tetrisX + ox;
-        int gy = tetrisY + oy;
+        int gy = drawPieceBaseY + oy;
         if (gx < 0 || gx >= TETRIS_COLS || gy < 0 || gy >= TETRIS_ROWS) continue;
         const int px = static_cast<int>(coords.x1) + gx * (cellW + gap);
-        const int py = static_cast<int>(coords.y1) + gy * (cellH + gap);
+        const int py = static_cast<int>(coords.y1) + gy * (cellH + gap) + animOffsetPx;
         lvglDrawGridCell(drawCtx, px, py, cellW, cellH, cols[(tetrisType + 1) & 0x07]);
     }
 }
@@ -9883,14 +9931,15 @@ static void snake3dDrawCube(lv_draw_ctx_t *drawCtx, int cx, int cy, float focal,
     }
 }
 
-static void snake3dDrawFloorTile(lv_draw_ctx_t *drawCtx, int cx, int cy, float focal, const Snake3dCamera &cam, int gx, int gy, float spacing)
+static void snake3dDrawFloorTile(lv_draw_ctx_t *drawCtx, int cx, int cy, float focal, const Snake3dCamera &cam,
+                                 int gx, int gy, int planeCols, int planeRows, float tileSpacing)
 {
-    const float floorY = -spacing * 0.22f;
-    const float tileInset = spacing * 0.06f;
-    const float left = (static_cast<float>(gx) - (SNAKE3D_COLS * 0.5f)) * spacing + tileInset;
-    const float right = left + spacing - (tileInset * 2.0f);
-    const float back = (((SNAKE3D_ROWS * 0.5f) - static_cast<float>(gy)) * spacing) - tileInset;
-    const float front = back - spacing + (tileInset * 2.0f);
+    const float floorY = -tileSpacing * 0.11f;
+    const float tileInset = tileSpacing * 0.05f;
+    const float left = (static_cast<float>(gx) - (planeCols * 0.5f)) * tileSpacing + tileInset;
+    const float right = left + tileSpacing - (tileInset * 2.0f);
+    const float back = (((planeRows * 0.5f) - static_cast<float>(gy)) * tileSpacing) - tileInset;
+    const float front = back - tileSpacing + (tileInset * 2.0f);
     Snake3dVec corners[4] = {
         {left, floorY, back},
         {right, floorY, back},
@@ -9906,20 +9955,26 @@ static void snake3dDrawFloorTile(lv_draw_ctx_t *drawCtx, int cx, int cy, float f
     }
     if (!(ok[0] && ok[1] && ok[2] && ok[3])) return;
 
-    const uint8_t hue = static_cast<uint8_t>(min(255, (gx * 16) + (gy * 10) + 30));
-    const lv_color_t fill = lv_color_mix(lv_color_hex(0x39F0FF), lv_color_hex(0x133D96), hue);
-    const lv_color_t edge = snake3dMixColor(fill, lv_color_white(), 110);
+    static const lv_color_t kGroundPalette[4] = {
+        lv_color_hex(0x0D6E6E),
+        lv_color_hex(0x1D4ED8),
+        lv_color_hex(0x7C3AED),
+        lv_color_hex(0x0F766E)
+    };
+    const uint8_t colorIdx = static_cast<uint8_t>((gx + (gy * 3)) & 0x03);
+    const lv_color_t fill = kGroundPalette[colorIdx];
+    const lv_color_t edge = snake3dMixColor(fill, lv_color_white(), 90);
     const lv_point_t quad[4] = {
         {static_cast<lv_coord_t>(px[0]), static_cast<lv_coord_t>(py[0])},
         {static_cast<lv_coord_t>(px[1]), static_cast<lv_coord_t>(py[1])},
         {static_cast<lv_coord_t>(px[2]), static_cast<lv_coord_t>(py[2])},
         {static_cast<lv_coord_t>(px[3]), static_cast<lv_coord_t>(py[3])}
     };
-    snake3dFillQuad(drawCtx, quad, fill, LV_OPA_70);
-    lvglDrawLineSeg(drawCtx, px[0], py[0], px[1], py[1], edge, 2, LV_OPA_COVER);
-    lvglDrawLineSeg(drawCtx, px[1], py[1], px[2], py[2], edge, 2, LV_OPA_COVER);
-    lvglDrawLineSeg(drawCtx, px[2], py[2], px[3], py[3], edge, 2, LV_OPA_COVER);
-    lvglDrawLineSeg(drawCtx, px[3], py[3], px[0], py[0], edge, 2, LV_OPA_COVER);
+    snake3dFillQuad(drawCtx, quad, fill, LV_OPA_60);
+    lvglDrawLineSeg(drawCtx, px[0], py[0], px[1], py[1], edge, 1, LV_OPA_COVER);
+    lvglDrawLineSeg(drawCtx, px[1], py[1], px[2], py[2], edge, 1, LV_OPA_COVER);
+    lvglDrawLineSeg(drawCtx, px[2], py[2], px[3], py[3], edge, 1, LV_OPA_COVER);
+    lvglDrawLineSeg(drawCtx, px[3], py[3], px[0], py[0], edge, 1, LV_OPA_COVER);
 }
 
 void lvglSnake3dBoardDrawEvent(lv_event_t *e)
@@ -9936,13 +9991,15 @@ void lvglSnake3dBoardDrawEvent(lv_event_t *e)
     const int centerX = static_cast<int>(coords.x1) + (width / 2);
     const int centerY = static_cast<int>(coords.y1) + (height / 2) + 30;
     const float spacing = static_cast<float>(min(width, height)) * 0.16f;
+    const float groundTileSpacing = spacing * static_cast<float>(SNAKE3D_GROUND_TILE_SPAN);
     const float cubeHalf = spacing * 0.34f;
     const float focal = static_cast<float>(min(width, height)) * 1.35f;
     const Snake3dCamera cam = snake3dBuildCamera(spacing);
 
-    for (int gy = 0; gy < SNAKE3D_ROWS; ++gy) {
-        for (int gx = 0; gx < SNAKE3D_COLS; ++gx) {
-            snake3dDrawFloorTile(drawCtx, centerX, centerY, focal, cam, gx, gy, spacing);
+    for (int gy = 0; gy < SNAKE3D_GROUND_ROWS; ++gy) {
+        for (int gx = 0; gx < SNAKE3D_GROUND_COLS; ++gx) {
+            snake3dDrawFloorTile(drawCtx, centerX, centerY, focal, cam, gx, gy,
+                                 SNAKE3D_GROUND_COLS, SNAKE3D_GROUND_ROWS, groundTileSpacing);
         }
     }
 
@@ -10005,7 +10062,7 @@ void lvglRefreshSnake3dBoard()
     const bool showOverlay = !snake3dStarted || snake3dPaused || snake3dGameOver;
     const bool pauseOverlay = snake3dPaused && snake3dStarted && !snake3dGameOver;
     lv_coord_t overlayW = pauseOverlay ? min<lv_coord_t>(DISPLAY_WIDTH - 64, 150) : min<lv_coord_t>(DISPLAY_WIDTH - 24, 250);
-    lv_coord_t overlayH = pauseOverlay ? 84 : min<lv_coord_t>(UI_CONTENT_H - 24, 196);
+    lv_coord_t overlayH = pauseOverlay ? 84 : min<lv_coord_t>(UI_CONTENT_H - 24, 255);
     if (lvglSnake3dBoardObj) {
         lv_area_t boardCoords;
         lv_obj_get_coords(lvglSnake3dBoardObj, &boardCoords);
@@ -10050,22 +10107,18 @@ void lvglRefreshTetrisBoard()
     if (lvglTetrisOverlay) {
         const bool showOverlay = !tetrisStarted || tetrisGameOver || tetrisPaused;
         const bool pauseOverlay = tetrisPaused && tetrisStarted && !tetrisGameOver;
-        lv_coord_t overlayW = pauseOverlay ? min<lv_coord_t>(DISPLAY_WIDTH - 64, 140) : min<lv_coord_t>(DISPLAY_WIDTH - 40, 180);
-        lv_coord_t overlayH = pauseOverlay ? 76 : min<lv_coord_t>(UI_CONTENT_H - 24, 144);
-        lv_coord_t overlayX = (DISPLAY_WIDTH - overlayW) / 2;
-        lv_coord_t overlayY = UI_CONTENT_TOP_Y + 8;
+        lv_coord_t overlayW = pauseOverlay ? min<lv_coord_t>(DISPLAY_WIDTH - 64, 140) : min<lv_coord_t>(DISPLAY_WIDTH - 20, 324);
+        lv_coord_t overlayH = pauseOverlay ? 76 : min<lv_coord_t>(UI_CONTENT_H - 8, 467);
         if (lvglTetrisBoardObj) {
             lv_area_t boardCoords;
             lv_obj_get_coords(lvglTetrisBoardObj, &boardCoords);
             const lv_coord_t boardWidth = static_cast<lv_coord_t>(boardCoords.x2 - boardCoords.x1 + 1);
             const lv_coord_t boardHeight = static_cast<lv_coord_t>(boardCoords.y2 - boardCoords.y1 + 1);
             overlayW = min<lv_coord_t>(overlayW, max<lv_coord_t>(120, boardWidth - 16));
-            overlayH = min<lv_coord_t>(overlayH, max<lv_coord_t>(76, boardHeight - 16));
-            overlayX = boardCoords.x1 + ((boardWidth - overlayW) / 2);
-            overlayY = boardCoords.y1 + ((boardHeight - overlayH) / 2);
+            overlayH = min<lv_coord_t>(overlayH, max<lv_coord_t>(137, boardHeight - 16));
         }
         lv_obj_set_size(lvglTetrisOverlay, overlayW, overlayH);
-        lv_obj_set_pos(lvglTetrisOverlay, overlayX, overlayY);
+        lv_obj_center(lvglTetrisOverlay);
         lv_obj_move_foreground(lvglTetrisOverlay);
         if (showOverlay) lv_obj_clear_flag(lvglTetrisOverlay, LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(lvglTetrisOverlay, LV_OBJ_FLAG_HIDDEN);
@@ -11769,6 +11822,8 @@ bool tetrisCanPlace(int px, int py, int type, int rot)
 
 void tetrisSpawnPiece()
 {
+    tetrisDropAnimFlags = 0;
+    tetrisAnimDurationMs = 0;
     tetrisType = static_cast<int8_t>(random(0, 7));
     tetrisRot = 0;
     tetrisX = 3;
@@ -11821,6 +11876,8 @@ void tetrisResetGame()
     for (int y = 0; y < TETRIS_ROWS; y++) {
         for (int x = 0; x < TETRIS_COLS; x++) tetrisGrid[y][x] = 0;
     }
+    tetrisDropAnimFlags = 0;
+    tetrisAnimDurationMs = 0;
     tetrisStarted = true;
     tetrisPaused = false;
     tetrisGameOver = false;
@@ -11855,7 +11912,7 @@ static unsigned long tetrisCurrentStepMs()
 
 void tetrisMove(int dx)
 {
-    if (!tetrisStarted || tetrisPaused || tetrisGameOver) return;
+    if (!tetrisStarted || tetrisPaused || tetrisGameOver || (tetrisDropAnimFlags & TETRIS_DROP_ANIM_ACTIVE)) return;
     if (tetrisCanPlace(tetrisX + dx, tetrisY, tetrisType, tetrisRot)) {
         tetrisX += static_cast<int8_t>(dx);
         lvglRefreshTetrisBoard();
@@ -11864,7 +11921,7 @@ void tetrisMove(int dx)
 
 void tetrisRotate()
 {
-    if (!tetrisStarted || tetrisPaused || tetrisGameOver) return;
+    if (!tetrisStarted || tetrisPaused || tetrisGameOver || (tetrisDropAnimFlags & TETRIS_DROP_ANIM_ACTIVE)) return;
     int nr = (tetrisRot + 1) & 3;
     if (tetrisCanPlace(tetrisX, tetrisY, tetrisType, nr)) tetrisRot = static_cast<int8_t>(nr);
     else if (tetrisCanPlace(tetrisX - 1, tetrisY, tetrisType, nr)) {
@@ -11879,23 +11936,48 @@ void tetrisRotate()
 
 void tetrisDrop()
 {
-    if (!tetrisStarted || tetrisPaused || tetrisGameOver) return;
+    if (!tetrisStarted || tetrisPaused || tetrisGameOver || (tetrisDropAnimFlags & TETRIS_DROP_ANIM_ACTIVE)) return;
+    const int startY = tetrisY;
     while (tetrisCanPlace(tetrisX, tetrisY + 1, tetrisType, tetrisRot)) tetrisY++;
-    tetrisLockPiece();
+    if (tetrisY == startY) {
+        tetrisLockPiece();
+    } else {
+        tetrisAnimFromY = static_cast<int8_t>(startY);
+        tetrisAnimStartTick = static_cast<uint16_t>(millis());
+        const unsigned long travelMs = static_cast<unsigned long>(tetrisY - startY) * TETRIS_DROP_ANIM_MS_PER_ROW;
+        tetrisAnimDurationMs = min<unsigned long>(TETRIS_DROP_ANIM_MS_MAX,
+                                                  max<unsigned long>(TETRIS_DROP_ANIM_MS_MIN, travelMs));
+        tetrisDropAnimFlags = TETRIS_DROP_ANIM_ACTIVE | TETRIS_DROP_LOCK_PENDING;
+    }
     lvglRefreshTetrisBoard();
 }
 
 void tetrisStepDown()
 {
-    if (!tetrisStarted || tetrisPaused || tetrisGameOver) return;
+    if (!tetrisStarted || tetrisPaused || tetrisGameOver || (tetrisDropAnimFlags & TETRIS_DROP_ANIM_ACTIVE)) return;
     if (tetrisCanPlace(tetrisX, tetrisY + 1, tetrisType, tetrisRot)) tetrisY++;
     else tetrisLockPiece();
+}
+
+void tetrisAnimationService()
+{
+    if (uiScreen != UI_GAME_TETRIS || (tetrisDropAnimFlags & TETRIS_DROP_ANIM_ACTIVE) == 0) return;
+    const uint16_t elapsedTick = static_cast<uint16_t>(millis()) - tetrisAnimStartTick;
+    if (elapsedTick >= tetrisAnimDurationMs) {
+        const bool lockPending = (tetrisDropAnimFlags & TETRIS_DROP_LOCK_PENDING) != 0;
+        tetrisDropAnimFlags = 0;
+        tetrisAnimDurationMs = 0;
+        if (lockPending) tetrisLockPiece();
+        lvglRefreshTetrisBoard();
+        return;
+    }
+    if (lvglTetrisBoardObj) lv_obj_invalidate(lvglTetrisBoardObj);
 }
 
 void tetrisTick()
 {
     if (uiScreen != UI_GAME_TETRIS) return;
-    if (!tetrisStarted || tetrisPaused || tetrisGameOver) return;
+    if (!tetrisStarted || tetrisPaused || tetrisGameOver || (tetrisDropAnimFlags & TETRIS_DROP_ANIM_ACTIVE)) return;
     if (millis() - tetrisLastStepMs < tetrisCurrentStepMs()) return;
     tetrisLastStepMs = millis();
     tetrisStepDown();
@@ -17918,6 +18000,7 @@ void loop()
 
     snakeTick();
     tetrisTick();
+    tetrisAnimationService();
     checkersTick();
     snake3dTick();
 
