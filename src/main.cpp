@@ -229,7 +229,7 @@ static constexpr uint16_t LIGHT_RAW_CAL_MAX = 600;
 static constexpr bool LIGHT_LOG_RAW_TO_SERIAL = false;
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.2.6";
+static constexpr const char *FW_VERSION = "0.2.7";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -5059,14 +5059,23 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_scroll_dir(lvglInfoList, LV_DIR_VER);
             lv_obj_set_scrollbar_mode(lvglInfoList, LV_SCROLLBAR_MODE_OFF);
 
-            lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_BATTERY_FULL, "Battery", lv_color_hex(0x52B788),
-                               &lvglInfoBatteryValueLabel, &lvglInfoBatterySubLabel);
-            lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_WIFI, "WiFi Strength", lv_color_hex(0x4FC3F7),
-                               &lvglInfoWifiValueLabel, &lvglInfoWifiSubLabel);
+            {
+                lv_obj_t *tmp = nullptr;
+                lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_BATTERY_FULL, "Battery", lv_color_hex(0x52B788),
+                                   &lvglInfoBatteryValueLabel, &lvglInfoBatterySubLabel, &tmp);
+            }
+            {
+                lv_obj_t *tmp = nullptr;
+                lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_WIFI, "WiFi Strength", lv_color_hex(0x4FC3F7),
+                                   &lvglInfoWifiValueLabel, &lvglInfoWifiSubLabel, &tmp);
+            }
             lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_SETTINGS, "HC-12 Info", lv_color_hex(0x7A5C2E),
                                &lvglInfoHc12ValueLabel, &lvglInfoHc12SubLabel);
-            lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_EYE_OPEN, "Lighting", lv_color_hex(0xF4B942),
-                               &lvglInfoLightValueLabel, &lvglInfoLightSubLabel);
+            {
+                lv_obj_t *tmp = nullptr;
+                lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_EYE_OPEN, "Lighting", lv_color_hex(0xF4B942),
+                                   &lvglInfoLightValueLabel, &lvglInfoLightSubLabel, &tmp);
+            }
             {
                 lv_obj_t *tmp = nullptr;
                 lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_SD_CARD, "SD Card", lv_color_hex(0xE59F45),
@@ -7846,10 +7855,20 @@ void lvglRefreshInfoPanel()
              batteryCentivolts / 100,
              abs(batteryCentivolts % 100),
              batteryCharging ? "Charging" : "On battery");
+    lv_obj_t *batteryCard = lvglFindInfoCardByTitle("Battery");
+    lv_obj_t *wifiCard = lvglFindInfoCardByTitle("WiFi Strength");
+    lv_obj_t *lightCard = lvglFindInfoCardByTitle("Lighting");
 
     if (lvglInfoBatteryValueLabel) lv_label_set_text_fmt(lvglInfoBatteryValueLabel, "%u%%", batteryPercent);
     if (lvglInfoBatterySubLabel) {
         lv_label_set_text(lvglInfoBatterySubLabel, batteryBuf);
+    }
+    if (lv_obj_t *batteryBar = lvglInfoCardBar(batteryCard)) {
+        lv_bar_set_value(batteryBar, static_cast<int32_t>(batteryPercent), LV_ANIM_ON);
+        lv_color_t batteryColor = lv_color_hex(0x52B788);
+        if (batteryPercent <= 20) batteryColor = lv_color_hex(0xD95C5C);
+        else if (batteryPercent <= 45) batteryColor = lv_color_hex(0xF2C35E);
+        lvglSetInfoBarColor(batteryBar, batteryColor);
     }
 
     if (lvglInfoWifiValueLabel) lv_label_set_text_fmt(lvglInfoWifiValueLabel, connected ? "%u%%" : "Offline", wifiQuality);
@@ -7857,6 +7876,16 @@ void lvglRefreshInfoPanel()
         if (connected) lv_label_set_text_fmt(lvglInfoWifiSubLabel, "%s  |  %s  |  %ddBm", ssid.c_str(), ip.c_str(), rssi);
         else if (apModeActive) lv_label_set_text_fmt(lvglInfoWifiSubLabel, "AP %s  |  %s  |  Touch to Config > WiFi Config to connect", savedApSsid.c_str(), WiFi.softAPIP().toString().c_str());
         else lv_label_set_text_fmt(lvglInfoWifiSubLabel, "AP %s  |  Touch to Config > WiFi Config to connect", savedApSsid.c_str());
+    }
+    if (lv_obj_t *wifiBar = lvglInfoCardBar(wifiCard)) {
+        lv_bar_set_value(wifiBar, static_cast<int32_t>(connected ? wifiQuality : 0U), LV_ANIM_ON);
+        lv_color_t wifiColor = lv_color_hex(0x4A5563);
+        if (connected) {
+            wifiColor = lv_color_hex(0x4FC3F7);
+            if (wifiQuality <= 25) wifiColor = lv_color_hex(0xD95C5C);
+            else if (wifiQuality <= 55) wifiColor = lv_color_hex(0xF2C35E);
+        }
+        lvglSetInfoBarColor(wifiBar, wifiColor);
     }
 
     if (lvglInfoHc12ValueLabel) lv_label_set_text(lvglInfoHc12ValueLabel, hc12InfoValueText.c_str());
@@ -7868,6 +7897,14 @@ void lvglRefreshInfoPanel()
                               displayAwake ? "awake" : "sleeping",
                               static_cast<unsigned int>(displayBrightnessPercent),
                               static_cast<unsigned int>(lightRawAdc));
+    }
+    if (lv_obj_t *lightBar = lvglInfoCardBar(lightCard)) {
+        lv_bar_set_value(lightBar, static_cast<int32_t>(lightPercent), LV_ANIM_ON);
+        lv_color_t lightColor = lv_color_hex(0x4A5563);
+        if (lightPercent >= 75) lightColor = lv_color_hex(0xF4B942);
+        else if (lightPercent >= 35) lightColor = lv_color_hex(0xF2C35E);
+        else lightColor = lv_color_hex(0x6AAEE6);
+        lvglSetInfoBarColor(lightBar, lightColor);
     }
 
     lv_obj_t *sdCard = lvglFindInfoCardByTitle("SD Card");
