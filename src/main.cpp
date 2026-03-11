@@ -434,6 +434,7 @@ String mqttDefaultButtonName(int idx);
 String mqttButtonPayloadForIndex(int idx);
 String mediaBuildListLabel(const String &name, bool isDir, size_t sizeBytes);
 void displaySetAwake(bool awake);
+static void wakeDisplayForIncomingNotification();
 void displayBacklightInit();
 void displayBacklightSet(uint8_t level);
 void displayBacklightFadeIn(uint16_t durationMs = 220);
@@ -7717,6 +7718,7 @@ void p2pService()
                                 p2pPairRequestPending = true;
                                 p2pPairPromptVisible = false;
                                 p2pPairRequestDiscoveredIdx = requestIdx;
+                                wakeDisplayForIncomingNotification();
                             }
                         } else if (kind == "pair_accept" && !pubKeyHex.equalsIgnoreCase(p2pPublicKeyHex())) {
                             const bool ok = p2pAddOrUpdateTrustedPeer(device.isEmpty() ? String("Peer") : device,
@@ -7765,6 +7767,7 @@ void p2pService()
                                         const String messageId = String(static_cast<const char *>(doc["id"] | ""));
                                         const String text = String(static_cast<const char *>(doc["text"] | ""));
                                         if (!text.isEmpty()) {
+                                            wakeDisplayForIncomingNotification();
                                             p2pRefreshTrustedPeerIdentity(p2pPeers[peerIdx].pubKeyHex, author, p2pUdp.remoteIP(), p2pUdp.remotePort());
                                             p2pTouchPeerSeen(peerIdx, p2pUdp.remoteIP(), p2pUdp.remotePort());
                                             if (checkersHandleIncomingChatPayload(p2pPeers[peerIdx].pubKeyHex,
@@ -8900,6 +8903,7 @@ static void hc12HandleIncomingRadioLine(const String &line)
         const String messageId = String(static_cast<const char *>(doc["id"] | ""));
         const String text = String(static_cast<const char *>(doc["text"] | ""));
         if (text.isEmpty()) return;
+        wakeDisplayForIncomingNotification();
         if (checkersHandleIncomingChatPayload(senderPubHex, author, text, CHAT_TRANSPORT_HC12, messageId)) {
             if (lvglReady) {
                 lvglSyncStatusLine();
@@ -13696,6 +13700,14 @@ void displaySetAwake(bool awake)
     }
 }
 
+static void wakeDisplayForIncomingNotification()
+{
+    if (displayAwake && !screensaverActive) return;
+    if (screensaverActive) screensaverSetActive(false);
+    if (!displayAwake) displaySetAwake(true);
+    lastUserActivityMs = millis();
+}
+
 bool canEnterLowPowerSleep(bool touchDownNow)
 {
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
@@ -14698,6 +14710,7 @@ bool mqttConnectNow()
         const String messageId = String(static_cast<const char *>(plainDoc["id"] | ""));
         const String text = String(static_cast<const char *>(plainDoc["text"] | ""));
         if (text.isEmpty()) return;
+        wakeDisplayForIncomingNotification();
         if (checkersHandleIncomingChatPayload(senderPubHex, author, text, CHAT_TRANSPORT_MQTT, messageId)) {
             if (lvglReady) {
                 lvglSyncStatusLine();
