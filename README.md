@@ -2,7 +2,7 @@
 
 Firmware for Sunton-style ESP32 touch display boards with an LVGL touch UI, Wi-Fi/AP management, SD-backed recovery tools, MQTT controls, and encrypted device-to-device chat.
 
-Current firmware version: **`0.2.7`**
+Current firmware version: **`0.2.8`**
 
 Supported boards:
 - `ESP32-2432S024C` (`240x320`, `ILI9341`, `CST820`)
@@ -15,6 +15,7 @@ Supported boards:
 
 - Multi-board firmware with board-specific display and touch support selected at build time
 - LVGL touch UI with swipe-back navigation, delayed click feedback, and global double-tap sleep
+- Reorderable menus and submenu items with press-and-hold drag, persisted order, and raised/pressed button themes
 - LVGL touch/UI hot paths trimmed to reduce callback and off-screen refresh overhead
 - Discovery-gated device pairing with accept/reject confirmation on the target device
 - Saved backlight brightness and RGB LED intensity controls in `Config`
@@ -34,7 +35,7 @@ Supported boards:
 - `Snake`, `Tetris`, `Snake 3D`, and `Checkers` save scores or win counts in `Preferences`
 - `Snake 3D` is enabled on the `ESP32-S3-3248S035-N16R8` target with a software-rendered chase camera prototype
 - `Info` screen with battery, Wi-Fi, light, CPU, SRAM, PSRAM, and SD usage indicators
-- S3 build uses PSRAM-first allocation for major UI/work buffers to reduce internal SRAM pressure
+- S3 build uses PSRAM-first allocation for LVGL and major UI/work buffers to reduce internal SRAM pressure
 - Swipe-back and scroll gestures are filtered to avoid triggering button clicks while navigating lists and menus
 - Screensaver now renders the exact `esp32-eyes` eye geometry adapted to each supported display resolution
 
@@ -633,3 +634,4 @@ For future UI experiments and LVGL demo ideas:
 ## Release Binary
 
 Release binaries are published in GitHub Releases for this repository.
+Matching staged release payloads are also kept under [`release_assets`](release_assets) before upload.

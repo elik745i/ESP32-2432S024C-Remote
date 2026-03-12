@@ -32,11 +32,17 @@
 #include <freertos/semphr.h>
 #include <sodium.h>
 
+#include "generated/img_airplane_mode_icon.h"
 #include "generated/recovery_browser_asset.h"
 
 enum TouchControllerType : uint8_t {
     TOUCH_CTRL_CST820 = 0,
     TOUCH_CTRL_GT911 = 1,
+};
+
+enum UiButtonStyleMode : uint8_t {
+    UI_BUTTON_STYLE_FLAT = 0,
+    UI_BUTTON_STYLE_3D = 1,
 };
 
 static constexpr int DISPLAY_WIDTH = TFT_WIDTH;
@@ -229,7 +235,7 @@ static constexpr uint16_t LIGHT_RAW_CAL_MAX = 600;
 static constexpr bool LIGHT_LOG_RAW_TO_SERIAL = false;
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.2.7";
+static constexpr const char *FW_VERSION = "0.2.8";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -414,7 +420,10 @@ IPAddress wifiLanBroadcastIpSafe();
 void registerWifiEvents();
 static void wifiEnsureRuntimeEnabled(const char *reason, wifi_mode_t mode, bool startWebServer);
 void ensureApOnline(const char *reason);
+void forceSessionApMode(const char *reason);
 void disableApWhenStaConnected(const char *reason);
+static bool wifiHasStaTarget();
+static void beginStaConnectAttempt(const char *reason);
 static void stopDnsForAp();
 static void stopWebServerRuntime();
 static void ensureWebServerRuntime();
@@ -514,6 +523,13 @@ bool handleUiSettingMessage(const char *msg);
 void loadUiRuntimeConfig();
 void applyAirplaneMode(bool enabled, const char *reason);
 void lvglRefreshConfigUi();
+void lvglRefreshAllButtonStyles();
+void lvglSetButtonStyleMode(UiButtonStyleMode mode, bool persist);
+void lvglRefreshStyleUi();
+void lvglApplyAirplaneButtonStyle();
+void lvglApplyApModeButtonStyle();
+void lvglApplyChatDiscoveryButtonStyle();
+void lvglApplyWifiWebServerButtonStyle();
 void lvglHc12ToggleSetEvent(lv_event_t *e);
 void lvglHc12SendEvent(lv_event_t *e);
 void lvglSaveDeviceNameEvent(lv_event_t *e);
@@ -535,6 +551,7 @@ bool hc12SendChatMessageWithId(const String &peerKey, const String &text, const 
 bool hc12SendMessageDelete(const String &peerKey, const String &messageId);
 bool hc12SendConversationDelete(const String &peerKey);
 bool hc12SendChatAck(const String &peerKey, const String &messageId);
+static void lvglAirplaneButtonDrawEvent(lv_event_t *e);
 String p2pPublicKeyHex();
 static int p2pFindPeerByPubKeyHex(const String &pubKeyHex);
 void p2pBroadcastDiscover();
@@ -744,10 +761,17 @@ static lv_obj_t *lvglChatPeerIdentityLabel = nullptr;
 static lv_obj_t *lvglChatPeerScanBtn = nullptr;
 static lv_obj_t *lvglAirplaneBtn = nullptr;
 static lv_obj_t *lvglAirplaneBtnLabel = nullptr;
+static lv_obj_t *lvglApModeBtn = nullptr;
+static lv_obj_t *lvglApModeBtnLabel = nullptr;
 static lv_obj_t *lvglConfigWrap = nullptr;
 static lv_obj_t *lvglStyleScreensaverSw = nullptr;
+static lv_obj_t *lvglStyleButtonFlatBtn = nullptr;
+static lv_obj_t *lvglStyleButtonFlatBtnLabel = nullptr;
+static lv_obj_t *lvglStyleButton3dBtn = nullptr;
+static lv_obj_t *lvglStyleButton3dBtnLabel = nullptr;
 static lv_obj_t *lvglStyleTimeoutSlider = nullptr;
 static lv_obj_t *lvglStyleTimeoutValueLabel = nullptr;
+static bool lvglStyleUiSyncing = false;
 static lv_obj_t *lvglOtaCurrentLabel = nullptr;
 static lv_obj_t *lvglOtaLatestLabel = nullptr;
 static lv_obj_t *lvglOtaStatusLabel = nullptr;
@@ -826,6 +850,7 @@ static bool lvglSwipeBackPending = false;
 static bool lvglSwipeCandidate = false;
 static bool lvglSwipeHorizontalLocked = false;
 static bool lvglGestureBlocked = false;
+static bool lvglReorderOwnsHorizontalGesture = false;
 static unsigned long lvglClickSuppressUntilMs = 0;
 static unsigned long lvglLastTapReleaseMs = 0;
 static int16_t lvglLastTapReleaseX = 0;
@@ -841,6 +866,22 @@ static bool p2pPairRequestPending = false;
 static int p2pPairRequestDiscoveredIdx = -1;
 static bool lvglOtaPostUpdatePopupVisible = false;
 static bool lvglOtaUpdatePromptVisible = false;
+struct LvglTopIndicatorState {
+    uint8_t batteryPercent;
+    uint8_t wifiBars;
+    bool batteryCharging;
+    bool batteryPulse;
+    bool airplaneMode;
+    bool wifiConnected;
+    bool wifiConnecting;
+    bool apVisible;
+    bool mqttConnected;
+    bool unreadMailVisible;
+    bool otaVisible;
+    char topName[9];
+};
+static LvglTopIndicatorState lvglLastTopIndicatorState = {};
+static bool lvglTopIndicatorStateValid = false;
 
 bool sdLock(TickType_t timeout = pdMS_TO_TICKS(3000))
 {
@@ -1721,6 +1762,9 @@ bool recordTelemetryEnabled = false;
 bool systemSoundsEnabled = true;
 bool wsRebootOnDisconnectEnabled = false;
 bool airplaneModeEnabled = false;
+UiButtonStyleMode uiButtonStyleMode = UI_BUTTON_STYLE_3D;
+uint32_t uiButtonStyleFlatSelectorColor = 0;
+uint32_t uiButtonStyle3dSelectorColor = 0;
 uint8_t uiDeferredFlags = 0;
 enum OtaUiState : uint8_t {
     OTA_UI_IDLE = 0,
@@ -1770,6 +1814,7 @@ static constexpr unsigned long BOOT_STA_TIMEOUT_MS = 12000;
 static constexpr unsigned long CAR_INPUT_TELEMETRY_PERIOD_MS = 1000UL;
 unsigned long staLastConnectAttemptMs = 0;
 bool apModeActive = false;
+bool wifiSessionApMode = false;
 bool wifiForgetPendingUi = false;
 bool wifiEventsRegistered = false;
 volatile bool wifiStaGotIpPending = false;
@@ -2742,6 +2787,8 @@ static inline void lvglResetGestureTracking()
 
 static bool lvglTouchOwnsHorizontalGesture()
 {
+    if (lvglReorderOwnsHorizontalGesture) return true;
+
     lv_obj_t *obj = lv_indev_get_obj_act();
     if (!obj || !lv_obj_is_valid(obj)) return false;
 
@@ -2932,11 +2979,71 @@ void lvglSyncStatusLine()
     lv_label_set_text(lvglStatusLabel, next.c_str());
 }
 
+static void lvglLabelSetTextIfChanged(lv_obj_t *label, const char *text)
+{
+    if (!label) return;
+    const char *next = text ? text : "";
+    const char *current = lv_label_get_text(label);
+    if (current && strcmp(current, next) == 0) return;
+    lv_label_set_text(label, next);
+}
+
+static void lvglLabelSetTextIfChanged(lv_obj_t *label, const String &text)
+{
+    lvglLabelSetTextIfChanged(label, text.c_str());
+}
+
+static void lvglBarSetValueIfChanged(lv_obj_t *bar, int32_t value, lv_anim_enable_t anim)
+{
+    if (!bar) return;
+    if (lv_bar_get_value(bar) == value) return;
+    lv_bar_set_value(bar, value, anim);
+}
+
+static void lvglApplyStyleScreenControlStyles()
+{
+    if (lvglStyleScreensaverSw) {
+        lv_obj_set_style_bg_color(lvglStyleScreensaverSw, lv_color_hex(0x48515C), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(lvglStyleScreensaverSw, lv_color_hex(0x3A8F4B), LV_PART_INDICATOR | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_color(lvglStyleScreensaverSw, lv_color_hex(0xDCE7F2), LV_PART_KNOB);
+    }
+    if (lvglStyleTimeoutSlider) {
+        lv_obj_set_style_bg_color(lvglStyleTimeoutSlider, lv_color_hex(0x2A3340), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(lvglStyleTimeoutSlider, lv_color_hex(0x4FC3F7), LV_PART_INDICATOR);
+        lv_obj_set_style_bg_color(lvglStyleTimeoutSlider, lv_color_hex(0xE5ECF3), LV_PART_KNOB);
+    }
+}
+
+static void lvglApplyConfigScreenControlStyles()
+{
+    if (lvglBrightnessSlider) {
+        const lv_color_t normalCol = lv_color_hex(0x52B788);
+        const lv_color_t highCol = lv_color_hex(0xC94B4B);
+        lv_obj_set_style_bg_color(lvglBrightnessSlider, lv_color_hex(0x2A3340), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(lvglBrightnessSlider, normalCol, LV_PART_INDICATOR);
+        lv_obj_set_style_bg_grad_color(lvglBrightnessSlider, highCol, LV_PART_INDICATOR);
+        lv_obj_set_style_bg_grad_dir(lvglBrightnessSlider, LV_GRAD_DIR_HOR, LV_PART_INDICATOR);
+        lv_obj_set_style_bg_main_stop(lvglBrightnessSlider, 204, LV_PART_INDICATOR);
+        lv_obj_set_style_bg_grad_stop(lvglBrightnessSlider, 255, LV_PART_INDICATOR);
+        lv_obj_set_style_bg_color(lvglBrightnessSlider, lv_color_hex(0xE5ECF3), LV_PART_KNOB);
+    }
+    if (lvglRgbLedSlider) {
+        lv_obj_set_style_bg_color(lvglRgbLedSlider, lv_color_hex(0x2A3340), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(lvglRgbLedSlider, lv_color_hex(0x7C4DFF), LV_PART_INDICATOR);
+        lv_obj_set_style_bg_grad_color(lvglRgbLedSlider, lv_color_hex(0xFF6B6B), LV_PART_INDICATOR);
+        lv_obj_set_style_bg_grad_dir(lvglRgbLedSlider, LV_GRAD_DIR_HOR, LV_PART_INDICATOR);
+        lv_obj_set_style_bg_main_stop(lvglRgbLedSlider, 96, LV_PART_INDICATOR);
+        lv_obj_set_style_bg_grad_stop(lvglRgbLedSlider, 255, LV_PART_INDICATOR);
+        lv_obj_set_style_bg_color(lvglRgbLedSlider, lv_color_hex(0xE5ECF3), LV_PART_KNOB);
+    }
+}
+
 void lvglRegisterTopIndicator(lv_obj_t *obj)
 {
     if (!obj) return;
     if (lvglTopIndicatorCount >= LVGL_MAX_TOP_INDICATORS) return;
     lvglTopIndicators[lvglTopIndicatorCount++] = obj;
+    lvglTopIndicatorStateValid = false;
 }
 
 wl_status_t wifiStatusSafe()
@@ -3063,14 +3170,20 @@ void lvglTopIndicatorsDrawEvent(lv_event_t *e)
     static const int antHeights[4] = {6, 10, 16, 22};
     const int antX = ox + 10;
     if (airplaneModeEnabled) {
-        const lv_color_t planeCol = lv_color_hex(0xF2C35E);
-        const lv_color_t planeDim = lv_color_hex(0x5E6570);
-        lvglDrawLineSeg(drawCtx, antX + 2, topY + 12, antX + 29, topY + 12, planeCol, 2);
-        lvglDrawLineSeg(drawCtx, antX + 14, topY + 4, antX + 14, topY + 20, planeCol, 2);
-        lvglDrawLineSeg(drawCtx, antX + 9, topY + 8, antX + 18, topY + 12, planeCol, 2);
-        lvglDrawLineSeg(drawCtx, antX + 9, topY + 16, antX + 18, topY + 12, planeCol, 2);
-        lvglDrawLineSeg(drawCtx, antX + 22, topY + 8, antX + 28, topY + 6, planeDim, 2);
-        lvglDrawLineSeg(drawCtx, antX + 22, topY + 16, antX + 28, topY + 18, planeDim, 2);
+        lv_draw_img_dsc_t planeDsc;
+        lv_draw_img_dsc_init(&planeDsc);
+        planeDsc.opa = LV_OPA_COVER;
+        const int planeW = static_cast<int>(img_airplane_mode_icon.header.w);
+        const int planeH = static_cast<int>(img_airplane_mode_icon.header.h);
+        const int planeX = antX + 2;
+        const int planeY = topY + 4;
+        lv_area_t planeArea = {
+            static_cast<lv_coord_t>(planeX),
+            static_cast<lv_coord_t>(planeY),
+            static_cast<lv_coord_t>(planeX + planeW - 1),
+            static_cast<lv_coord_t>(planeY + planeH - 1),
+        };
+        lv_draw_img(drawCtx, &planeDsc, &planeArea, &img_airplane_mode_icon);
     } else {
         const uint8_t animPhase = static_cast<uint8_t>((millis() / WIFI_CONNECT_BARS_ANIM_PERIOD_MS) & 0x03U);
         for (int i = 0; i < 4; i++) {
@@ -3303,6 +3416,32 @@ void lvglEnsurePersistentTopBar()
 void lvglRefreshTopIndicators()
 {
     if (lvglTopIndicatorCount == 0) return;
+    LvglTopIndicatorState next = {};
+    next.batteryPercent = batteryPercent;
+    next.batteryCharging = batteryCharging;
+    next.batteryPulse = batteryCharging && (((millis() / 280UL) & 0x1U) != 0U);
+    next.airplaneMode = airplaneModeEnabled;
+    next.wifiConnected = wifiConnectedSafe();
+    next.wifiConnecting = !next.wifiConnected && !airplaneModeEnabled && bootStaConnectInProgress;
+    next.apVisible = !next.wifiConnected && !airplaneModeEnabled && apModeActive;
+    next.mqttConnected = mqttCfg.enabled && mqttClient.connected();
+    next.otaVisible = otaUpdateAvailable;
+    const bool conversationOpen = (uiScreen == UI_CHAT) && !currentChatPeerKey.isEmpty();
+    next.unreadMailVisible = chatHasUnreadMessages() && !conversationOpen;
+    if (next.wifiConnected) {
+        const int rssi = wifiRssiSafe();
+        if (rssi >= -55) next.wifiBars = 4;
+        else if (rssi >= -67) next.wifiBars = 3;
+        else if (rssi >= -75) next.wifiBars = 2;
+        else next.wifiBars = 1;
+    }
+    String topName = deviceShortNameValue();
+    if (topName.length() > 8) topName.remove(8);
+    snprintf(next.topName, sizeof(next.topName), "%s", topName.c_str());
+
+    if (lvglTopIndicatorStateValid && memcmp(&lvglLastTopIndicatorState, &next, sizeof(next)) == 0) return;
+    lvglLastTopIndicatorState = next;
+    lvglTopIndicatorStateValid = true;
     for (uint8_t i = 0; i < lvglTopIndicatorCount; i++) {
         if (lvglTopIndicators[i]) lv_obj_invalidate(lvglTopIndicators[i]);
     }
@@ -3422,6 +3561,501 @@ static GameBoardLayout gameBoardLayout(int cols, int rows)
     return layout;
 }
 
+struct LvglStyledButtonEntry {
+    lv_obj_t *obj;
+    lv_color_t baseColor;
+    uint8_t flags;
+};
+
+static constexpr uint8_t LVGL_STYLED_BUTTON_FLAG_COMPACT = 0x01;
+static constexpr size_t LVGL_STYLED_BUTTON_CAPACITY = 256;
+static LvglStyledButtonEntry lvglStyledButtons[LVGL_STYLED_BUTTON_CAPACITY] = {};
+static constexpr size_t LVGL_REORDER_ITEM_CAPACITY = 192;
+static constexpr unsigned long UI_REORDER_HOLD_MS = 2000UL;
+static constexpr lv_coord_t UI_REORDER_AUTO_SCROLL_MARGIN = 26;
+static constexpr lv_coord_t UI_REORDER_AUTO_SCROLL_STEP = 10;
+static constexpr lv_coord_t UI_REORDER_SWAP_HYSTERESIS = 10;
+
+struct LvglReorderItemEntry {
+    lv_obj_t *obj;
+    lv_obj_t *parent;
+    char prefKey[16];
+    char itemKey[16];
+};
+
+struct UiReorderDragState {
+    lv_obj_t *obj;
+    lv_obj_t *parent;
+    unsigned long pressedAtMs;
+    lv_coord_t fingerOffsetY;
+    lv_coord_t originalWidth;
+    lv_coord_t originalHeight;
+    bool active;
+    bool parentOverflowTemporarilyEnabled;
+};
+
+static LvglReorderItemEntry lvglReorderItems[LVGL_REORDER_ITEM_CAPACITY] = {};
+static UiReorderDragState lvglReorderDrag = {};
+
+static void lvglApplyReorderDragVisual(lv_obj_t *obj, bool active)
+{
+    if (!obj || !lv_obj_is_valid(obj)) return;
+
+    const lv_coord_t outlineWidth = active ? 2 : 0;
+    const lv_coord_t shadowWidth = active ? 26 : 0;
+    const lv_coord_t shadowOfs = active ? 7 : 0;
+    const lv_opa_t shadowOpa = active ? LV_OPA_70 : LV_OPA_TRANSP;
+
+    lv_obj_set_style_transform_zoom(obj, 256, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_transform_zoom(obj, 256, LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_set_style_transform_width(obj, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_transform_width(obj, 0, LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_set_style_transform_height(obj, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_transform_height(obj, 0, LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_set_style_outline_width(obj, outlineWidth, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_outline_width(obj, outlineWidth, LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_set_style_outline_pad(obj, active ? 1 : 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_outline_pad(obj, active ? 1 : 0, LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_set_style_outline_color(obj, lv_color_hex(0xE7F2FF), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_outline_color(obj, lv_color_hex(0xE7F2FF), LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_set_style_outline_opa(obj, active ? LV_OPA_60 : LV_OPA_TRANSP, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_outline_opa(obj, active ? LV_OPA_60 : LV_OPA_TRANSP, LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_width(obj, shadowWidth, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_shadow_width(obj, shadowWidth, LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_ofs_x(obj, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_shadow_ofs_x(obj, 0, LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_ofs_y(obj, shadowOfs, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_shadow_ofs_y(obj, shadowOfs, LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_color(obj, lv_color_hex(0x000000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_shadow_color(obj, lv_color_hex(0x000000), LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_opa(obj, shadowOpa, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_shadow_opa(obj, shadowOpa, LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_invalidate(obj);
+}
+
+static uint32_t lvglRandomStyleAccent(uint32_t avoid = 0)
+{
+    static const uint32_t palette[] = {
+        0x3A8F4B, 0x2F6D86, 0x8A5A25, 0x925A73, 0x5A4CC7, 0x2B7D7D, 0xA35757, 0x2E6F95
+    };
+    const size_t count = sizeof(palette) / sizeof(palette[0]);
+    uint32_t chosen = palette[random(0, static_cast<int>(count))];
+    if (chosen == avoid) chosen = palette[(random(0, static_cast<int>(count - 1)) + 1U) % count];
+    return chosen;
+}
+
+static uint32_t lvglFnv1a32(const char *text)
+{
+    uint32_t hash = 2166136261UL;
+    if (!text) return hash;
+    while (*text) {
+        hash ^= static_cast<uint8_t>(*text++);
+        hash *= 16777619UL;
+    }
+    return hash;
+}
+
+static String lvglOrderTokenFromText(const char *prefix, const String &text)
+{
+    char buf[48];
+    snprintf(buf, sizeof(buf), "%s%08lx", prefix ? prefix : "", static_cast<unsigned long>(lvglFnv1a32(text.c_str())));
+    return String(buf);
+}
+
+static String lvglSymbolText(const char *symbol, const char *text)
+{
+    if (!text || !*text) return symbol ? String(symbol) : String("");
+    if (!symbol || !*symbol) return String(text);
+    return String(symbol) + " " + text;
+}
+
+static String lvglSymbolText(const char *symbol, const String &text)
+{
+    return lvglSymbolText(symbol, text.c_str());
+}
+
+static lv_color_t lvglActiveToggleGreen(bool compact)
+{
+    return compact ? lv_color_hex(0x2B5A32) : lv_color_hex(0x28552F);
+}
+
+static LvglReorderItemEntry *lvglFindReorderItemEntry(lv_obj_t *obj)
+{
+    if (!obj) return nullptr;
+    for (size_t i = 0; i < LVGL_REORDER_ITEM_CAPACITY; ++i) {
+        if (lvglReorderItems[i].obj == obj) return &lvglReorderItems[i];
+    }
+    return nullptr;
+}
+
+static const LvglReorderItemEntry *lvglFindReorderItemEntryConst(const lv_obj_t *obj)
+{
+    if (!obj) return nullptr;
+    for (size_t i = 0; i < LVGL_REORDER_ITEM_CAPACITY; ++i) {
+        if (lvglReorderItems[i].obj == obj) return &lvglReorderItems[i];
+    }
+    return nullptr;
+}
+
+static void lvglPersistReorderForParent(lv_obj_t *parent, const char *prefKey)
+{
+    if (!parent || !prefKey || !*prefKey) return;
+    String order;
+    const uint32_t childCount = lv_obj_get_child_cnt(parent);
+    for (uint32_t i = 0; i < childCount; ++i) {
+        lv_obj_t *child = lv_obj_get_child(parent, i);
+        const LvglReorderItemEntry *entry = lvglFindReorderItemEntryConst(child);
+        if (!entry || entry->parent != parent || strcmp(entry->prefKey, prefKey) != 0 || entry->itemKey[0] == '\0') continue;
+        if (!order.isEmpty()) order += '|';
+        order += entry->itemKey;
+    }
+    uiPrefs.begin("ui", false);
+    if (order.isEmpty()) uiPrefs.remove(prefKey);
+    else uiPrefs.putString(prefKey, order);
+    uiPrefs.end();
+}
+
+static void lvglApplySavedOrder(lv_obj_t *parent, const char *prefKey)
+{
+    if (!parent || !prefKey || !*prefKey) return;
+    uiPrefs.begin("ui", true);
+    String order = uiPrefs.getString(prefKey, "");
+    uiPrefs.end();
+    if (order.isEmpty()) return;
+
+    int nextIndex = 0;
+    int start = 0;
+    while (start < static_cast<int>(order.length())) {
+        int sep = order.indexOf('|', start);
+        if (sep < 0) sep = order.length();
+        const String token = order.substring(start, sep);
+        start = sep + 1;
+        if (token.isEmpty()) continue;
+
+        for (size_t i = 0; i < LVGL_REORDER_ITEM_CAPACITY; ++i) {
+            LvglReorderItemEntry &entry = lvglReorderItems[i];
+            if (!entry.obj || !lv_obj_is_valid(entry.obj)) continue;
+            if (entry.parent != parent || strcmp(entry.prefKey, prefKey) != 0) continue;
+            if (strcmp(entry.itemKey, token.c_str()) != 0) continue;
+            lv_obj_move_to_index(entry.obj, nextIndex++);
+            break;
+        }
+    }
+}
+
+static void lvglEndReorderDrag(bool persistOrder)
+{
+    if (!lvglReorderDrag.obj || !lv_obj_is_valid(lvglReorderDrag.obj)) {
+        lvglReorderDrag = {};
+        lvglGestureBlocked = false;
+        lvglReorderOwnsHorizontalGesture = false;
+        return;
+    }
+
+    lv_obj_t *obj = lvglReorderDrag.obj;
+    lv_obj_t *parent = lvglReorderDrag.parent;
+    const LvglReorderItemEntry *entry = lvglFindReorderItemEntryConst(obj);
+    const bool wasActive = lvglReorderDrag.active;
+    if (lvglReorderDrag.originalWidth > 0 && lvglReorderDrag.originalHeight > 0) {
+        lv_obj_set_size(obj, lvglReorderDrag.originalWidth, lvglReorderDrag.originalHeight);
+    }
+    lv_obj_set_style_translate_y(obj, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_translate_y(obj, 0, LV_PART_MAIN | LV_STATE_PRESSED);
+    lvglApplyReorderDragVisual(obj, false);
+    if (lvglReorderDrag.parentOverflowTemporarilyEnabled && parent && lv_obj_is_valid(parent)) {
+        lv_obj_clear_flag(parent, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+    }
+
+    if (persistOrder && parent && lv_obj_is_valid(parent) && entry) {
+        lvglPersistReorderForParent(parent, entry->prefKey);
+    }
+
+    lvglReorderDrag = {};
+    lvglGestureBlocked = false;
+    lvglReorderOwnsHorizontalGesture = false;
+    if (wasActive) lvglSuppressClicksAfterGesture();
+    lvglRefreshAllButtonStyles();
+}
+
+static void lvglReorderItemDeleteEvent(lv_event_t *e)
+{
+    lv_obj_t *obj = lv_event_get_target(e);
+    if (!obj) return;
+    for (size_t i = 0; i < LVGL_REORDER_ITEM_CAPACITY; ++i) {
+        if (lvglReorderItems[i].obj == obj) {
+            lvglReorderItems[i].obj = nullptr;
+            lvglReorderItems[i].parent = nullptr;
+            lvglReorderItems[i].prefKey[0] = '\0';
+            lvglReorderItems[i].itemKey[0] = '\0';
+        }
+    }
+    if (lvglReorderDrag.obj == obj) lvglEndReorderDrag(false);
+}
+
+static void lvglReorderItemEvent(lv_event_t *e)
+{
+    lv_obj_t *obj = lv_event_get_target(e);
+    LvglReorderItemEntry *entry = lvglFindReorderItemEntry(obj);
+    if (!obj || !entry || !entry->parent || !lv_obj_is_valid(entry->parent)) return;
+
+    const lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_PRESSED) {
+        lvglResetGestureTracking();
+        lvglReorderOwnsHorizontalGesture = true;
+        lvglReorderDrag.obj = obj;
+        lvglReorderDrag.parent = entry->parent;
+        lvglReorderDrag.pressedAtMs = millis();
+        lvglReorderDrag.fingerOffsetY = 0;
+        lvglReorderDrag.originalWidth = lv_obj_get_width(obj);
+        lvglReorderDrag.originalHeight = lv_obj_get_height(obj);
+        lvglReorderDrag.active = false;
+        lvglReorderDrag.parentOverflowTemporarilyEnabled = false;
+        return;
+    }
+
+    if (code == LV_EVENT_PRESSING) {
+        if (lvglReorderDrag.obj != obj || lvglReorderDrag.parent != entry->parent) return;
+        lv_indev_t *indev = lv_indev_get_act();
+        if (!indev) return;
+        lv_point_t pt = {0, 0};
+        lv_indev_get_point(indev, &pt);
+
+        if (!lvglReorderDrag.active) {
+            if (static_cast<unsigned long>(millis() - lvglReorderDrag.pressedAtMs) < UI_REORDER_HOLD_MS) return;
+            lv_area_t startArea;
+            lv_obj_get_coords(obj, &startArea);
+            lvglReorderDrag.fingerOffsetY = static_cast<lv_coord_t>(pt.y - ((startArea.y1 + startArea.y2) / 2));
+            lvglReorderDrag.active = true;
+            lvglGestureBlocked = true;
+            lvglResetGestureTracking();
+            if (!lv_obj_has_flag(entry->parent, LV_OBJ_FLAG_OVERFLOW_VISIBLE)) {
+                lv_obj_add_flag(entry->parent, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+                lvglReorderDrag.parentOverflowTemporarilyEnabled = true;
+            }
+            const lv_coord_t dragWidth = static_cast<lv_coord_t>(lvglReorderDrag.originalWidth + max<lv_coord_t>(8, lvglReorderDrag.originalWidth / 8));
+            const lv_coord_t dragHeight = static_cast<lv_coord_t>(lvglReorderDrag.originalHeight + max<lv_coord_t>(4, lvglReorderDrag.originalHeight / 8));
+            lv_obj_set_size(obj, dragWidth, dragHeight);
+            lvglApplyReorderDragVisual(obj, true);
+        }
+
+        if (lv_obj_has_flag(entry->parent, LV_OBJ_FLAG_SCROLLABLE)) {
+            lv_area_t parentArea;
+            lv_obj_get_coords(entry->parent, &parentArea);
+            if (pt.y < (parentArea.y1 + UI_REORDER_AUTO_SCROLL_MARGIN)) {
+                lv_obj_scroll_by(entry->parent, 0, -UI_REORDER_AUTO_SCROLL_STEP, LV_ANIM_OFF);
+            } else if (pt.y > (parentArea.y2 - UI_REORDER_AUTO_SCROLL_MARGIN)) {
+                lv_obj_scroll_by(entry->parent, 0, UI_REORDER_AUTO_SCROLL_STEP, LV_ANIM_OFF);
+            }
+        }
+
+        lv_obj_set_style_translate_y(obj, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_translate_y(obj, 0, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_update_layout(entry->parent);
+
+        lv_area_t objArea;
+        lv_obj_get_coords(obj, &objArea);
+        const lv_coord_t baseCenterY = static_cast<lv_coord_t>((objArea.y1 + objArea.y2) / 2);
+        const lv_coord_t desiredCenterY = static_cast<lv_coord_t>(pt.y - lvglReorderDrag.fingerOffsetY);
+        const lv_coord_t deltaY = desiredCenterY - baseCenterY;
+
+        int32_t targetIndex = lv_obj_get_index(obj);
+        const uint32_t childCount = lv_obj_get_child_cnt(entry->parent);
+        while (targetIndex > 0) {
+            lv_obj_t *prevChild = lv_obj_get_child(entry->parent, targetIndex - 1);
+            if (!prevChild || prevChild == obj) break;
+            lv_area_t prevArea;
+            lv_obj_get_coords(prevChild, &prevArea);
+            const lv_coord_t prevCenterY = static_cast<lv_coord_t>((prevArea.y1 + prevArea.y2) / 2);
+            const lv_coord_t prevHalfH = static_cast<lv_coord_t>((prevArea.y2 - prevArea.y1 + 1) / 2);
+            const lv_coord_t swapThreshold = max<lv_coord_t>(UI_REORDER_SWAP_HYSTERESIS, prevHalfH / 3);
+            if (desiredCenterY >= (prevCenterY - swapThreshold)) break;
+            targetIndex--;
+        }
+        while (targetIndex < static_cast<int32_t>(childCount) - 1) {
+            lv_obj_t *nextChild = lv_obj_get_child(entry->parent, targetIndex + 1);
+            if (!nextChild || nextChild == obj) break;
+            lv_area_t nextArea;
+            lv_obj_get_coords(nextChild, &nextArea);
+            const lv_coord_t nextCenterY = static_cast<lv_coord_t>((nextArea.y1 + nextArea.y2) / 2);
+            const lv_coord_t nextHalfH = static_cast<lv_coord_t>((nextArea.y2 - nextArea.y1 + 1) / 2);
+            const lv_coord_t swapThreshold = max<lv_coord_t>(UI_REORDER_SWAP_HYSTERESIS, nextHalfH / 3);
+            if (desiredCenterY <= (nextCenterY + swapThreshold)) break;
+            targetIndex++;
+        }
+
+        if (lv_obj_get_index(obj) != targetIndex) {
+            lv_obj_move_to_index(obj, targetIndex);
+            lv_obj_update_layout(entry->parent);
+            lv_obj_get_coords(obj, &objArea);
+        }
+
+        const lv_coord_t refreshedCenterY = static_cast<lv_coord_t>((objArea.y1 + objArea.y2) / 2);
+        const lv_coord_t refreshedDeltaY = desiredCenterY - refreshedCenterY;
+        lv_obj_set_style_translate_y(obj, refreshedDeltaY, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_translate_y(obj, refreshedDeltaY, LV_PART_MAIN | LV_STATE_PRESSED);
+        return;
+    }
+
+    if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        if (lvglReorderDrag.obj == obj) {
+            const bool persistOrder = lvglReorderDrag.active;
+            lvglEndReorderDrag(persistOrder);
+        } else {
+            lvglReorderOwnsHorizontalGesture = false;
+        }
+    }
+}
+
+static void lvglRegisterReorderableItem(lv_obj_t *obj, const char *prefKey, const char *itemKey)
+{
+    if (!obj || !prefKey || !*prefKey || !itemKey || !*itemKey) return;
+    lv_obj_t *parent = lv_obj_get_parent(obj);
+    if (!parent) return;
+
+    LvglReorderItemEntry *entry = lvglFindReorderItemEntry(obj);
+    bool isNew = false;
+    if (!entry) {
+        for (size_t i = 0; i < LVGL_REORDER_ITEM_CAPACITY; ++i) {
+            if (!lvglReorderItems[i].obj || !lv_obj_is_valid(lvglReorderItems[i].obj)) {
+                entry = &lvglReorderItems[i];
+                isNew = true;
+                break;
+            }
+        }
+    }
+    if (!entry) return;
+
+    entry->obj = obj;
+    entry->parent = parent;
+    snprintf(entry->prefKey, sizeof(entry->prefKey), "%s", prefKey);
+    snprintf(entry->itemKey, sizeof(entry->itemKey), "%s", itemKey);
+
+    if (!lv_obj_has_flag(obj, LV_OBJ_FLAG_CLICKABLE)) lv_obj_add_flag(obj, LV_OBJ_FLAG_CLICKABLE);
+
+    if (isNew) {
+        lv_obj_add_event_cb(obj, lvglReorderItemEvent, LV_EVENT_PRESSED, nullptr);
+        lv_obj_add_event_cb(obj, lvglReorderItemEvent, LV_EVENT_PRESSING, nullptr);
+        lv_obj_add_event_cb(obj, lvglReorderItemEvent, LV_EVENT_RELEASED, nullptr);
+        lv_obj_add_event_cb(obj, lvglReorderItemEvent, LV_EVENT_PRESS_LOST, nullptr);
+        lv_obj_add_event_cb(obj, lvglReorderItemDeleteEvent, LV_EVENT_DELETE, nullptr);
+    }
+}
+
+static void lvglStyledButtonDeleteEvent(lv_event_t *e)
+{
+    lv_obj_t *obj = lv_event_get_target(e);
+    if (!obj) return;
+    for (size_t i = 0; i < LVGL_STYLED_BUTTON_CAPACITY; ++i) {
+        if (lvglStyledButtons[i].obj == obj) lvglStyledButtons[i].obj = nullptr;
+    }
+}
+
+static LvglStyledButtonEntry *lvglFindStyledButtonEntry(lv_obj_t *obj)
+{
+    if (!obj) return nullptr;
+    for (size_t i = 0; i < LVGL_STYLED_BUTTON_CAPACITY; ++i) {
+        if (lvglStyledButtons[i].obj == obj) return &lvglStyledButtons[i];
+    }
+    return nullptr;
+}
+
+static const LvglStyledButtonEntry *lvglFindStyledButtonEntryConst(const lv_obj_t *obj)
+{
+    if (!obj) return nullptr;
+    for (size_t i = 0; i < LVGL_STYLED_BUTTON_CAPACITY; ++i) {
+        if (lvglStyledButtons[i].obj == obj) return &lvglStyledButtons[i];
+    }
+    return nullptr;
+}
+
+static void lvglApplyMomentaryButtonStyle(lv_obj_t *btn, lv_obj_t *label, lv_color_t bodyCol, bool compact)
+{
+    if (!btn) return;
+
+    const lv_color_t flashColor = lv_color_mix(lv_color_white(), bodyCol, UI_BUTTON_CLICK_FLASH_MIX);
+    if (uiButtonStyleMode == UI_BUTTON_STYLE_FLAT) {
+        const lv_color_t pressedCol = lv_color_mix(lv_color_black(), bodyCol, compact ? 32 : 44);
+        lv_obj_set_style_bg_color(btn, bodyCol, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_grad_color(btn, bodyCol, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(btn, pressedCol, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_grad_color(btn, pressedCol, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_color(btn, flashColor, LV_PART_MAIN | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_grad_color(btn, flashColor, LV_PART_MAIN | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_color(btn, flashColor, LV_PART_MAIN | LV_STATE_CHECKED | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_grad_color(btn, flashColor, LV_PART_MAIN | LV_STATE_CHECKED | LV_STATE_PRESSED);
+        lv_obj_set_style_border_width(btn, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_width(btn, compact ? 0 : 6, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_ofs_x(btn, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_ofs_y(btn, compact ? 0 : 2, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_opa(btn, compact ? LV_OPA_TRANSP : LV_OPA_20, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_width(btn, 0, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_translate_y(btn, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_translate_y(btn, 0, LV_PART_MAIN | LV_STATE_PRESSED);
+    } else {
+        const lv_color_t topCol = lv_color_mix(lv_color_white(), bodyCol, compact ? 70 : 92);
+        const lv_color_t bottomCol = lv_color_mix(lv_color_black(), bodyCol, compact ? 80 : 104);
+        const lv_color_t pressedTopCol = lv_color_mix(lv_color_black(), bodyCol, compact ? 88 : 116);
+        const lv_color_t pressedBottomCol = lv_color_mix(lv_color_white(), bodyCol, compact ? 56 : 76);
+        const lv_color_t borderCol = lv_color_mix(lv_color_black(), bodyCol, compact ? 76 : 108);
+        lv_obj_set_style_bg_color(btn, topCol, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_grad_color(btn, bottomCol, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_grad_dir(btn, LV_GRAD_DIR_VER, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(btn, pressedTopCol, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_grad_color(btn, pressedBottomCol, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_grad_dir(btn, LV_GRAD_DIR_VER, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_color(btn, flashColor, LV_PART_MAIN | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_grad_color(btn, lv_color_mix(lv_color_white(), bottomCol, UI_BUTTON_CLICK_FLASH_MIX / 2),
+                                       LV_PART_MAIN | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_color(btn, flashColor, LV_PART_MAIN | LV_STATE_CHECKED | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_grad_color(btn, lv_color_mix(lv_color_white(), bottomCol, UI_BUTTON_CLICK_FLASH_MIX / 2),
+                                       LV_PART_MAIN | LV_STATE_CHECKED | LV_STATE_PRESSED);
+        lv_obj_set_style_border_width(btn, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_color(btn, borderCol, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_opa(btn, LV_OPA_50, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_width(btn, 1, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_border_color(btn, borderCol, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_shadow_width(btn, compact ? 5 : 12, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_spread(btn, compact ? 0 : 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_ofs_x(btn, compact ? 1 : 3, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_ofs_y(btn, compact ? 2 : 4, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_color(btn, lv_color_hex(0x000000), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_opa(btn, compact ? LV_OPA_30 : LV_OPA_40, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_width(btn, compact ? 1 : 3, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_shadow_ofs_x(btn, 1, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_shadow_ofs_y(btn, 1, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_shadow_opa(btn, compact ? LV_OPA_10 : LV_OPA_20, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_translate_y(btn, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_translate_y(btn, 1, LV_PART_MAIN | LV_STATE_PRESSED);
+    }
+
+    if (label) {
+        lv_obj_set_style_text_color(label, lv_color_hex(0xF7FBFF), 0);
+        lv_obj_set_style_text_font(label, LV_FONT_DEFAULT, 0);
+    }
+    lv_obj_invalidate(btn);
+}
+
+static void lvglRegisterStyledButton(lv_obj_t *btn, lv_color_t baseColor, bool compact)
+{
+    if (!btn) return;
+    LvglStyledButtonEntry *entry = lvglFindStyledButtonEntry(btn);
+    if (!entry) {
+        for (size_t i = 0; i < LVGL_STYLED_BUTTON_CAPACITY; ++i) {
+            if (!lvglStyledButtons[i].obj || !lv_obj_is_valid(lvglStyledButtons[i].obj)) {
+                entry = &lvglStyledButtons[i];
+                entry->obj = btn;
+                lv_obj_add_event_cb(btn, lvglAirplaneButtonDrawEvent, LV_EVENT_DRAW_MAIN, nullptr);
+                lv_obj_add_event_cb(btn, lvglStyledButtonDeleteEvent, LV_EVENT_DELETE, nullptr);
+                break;
+            }
+        }
+    }
+    if (!entry) return;
+    entry->baseColor = baseColor;
+    entry->flags = compact ? LVGL_STYLED_BUTTON_FLAG_COMPACT : 0;
+    lvglApplyMomentaryButtonStyle(btn, lv_obj_get_child(btn, 0), baseColor, compact);
+}
+
 lv_obj_t *lvglCreateMenuButton(lv_obj_t *parent, const char *txt, lv_color_t color, lv_event_cb_t cb, void *user)
 {
     if (!parent) return nullptr;
@@ -3434,14 +4068,6 @@ lv_obj_t *lvglCreateMenuButton(lv_obj_t *parent, const char *txt, lv_color_t col
     lv_obj_set_size(btn, lv_pct(100), compactList ? 38 : 44);
     lv_obj_set_style_radius(btn, 12, 0);
     lv_obj_set_style_border_width(btn, 0, 0);
-    lv_obj_set_style_shadow_width(btn, compactList ? 0 : 6, 0);
-    lv_obj_set_style_shadow_color(btn, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_shadow_opa(btn, compactList ? LV_OPA_TRANSP : LV_OPA_20, 0);
-    const lv_color_t flashColor = lv_color_mix(lv_color_white(), color, UI_BUTTON_CLICK_FLASH_MIX);
-    lv_obj_set_style_bg_color(btn, color, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(btn, color, LV_PART_MAIN | LV_STATE_PRESSED);
-    lv_obj_set_style_bg_color(btn, flashColor, LV_PART_MAIN | LV_STATE_CHECKED);
-    lv_obj_set_style_bg_color(btn, flashColor, LV_PART_MAIN | LV_STATE_CHECKED | LV_STATE_PRESSED);
     lv_obj_add_event_cb(btn, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
     lv_obj_add_event_cb(btn, lvglFilteredClickFlashEvent, LV_EVENT_CLICKED, nullptr);
     lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, user);
@@ -3450,7 +4076,250 @@ lv_obj_t *lvglCreateMenuButton(lv_obj_t *parent, const char *txt, lv_color_t col
         lv_label_set_text(lbl, txt);
         lv_obj_center(lbl);
     }
+    lvglRegisterStyledButton(btn, color, compactList);
     return btn;
+}
+
+static void lvglApplyPersistentToggleButtonStyle(lv_obj_t *btn,
+                                                 lv_obj_t *label,
+                                                 bool enabled,
+                                                 lv_color_t offBodyCol,
+                                                 lv_color_t onBodyCol,
+                                                 bool compact)
+{
+    if (!btn) return;
+
+    const lv_color_t bodyCol = enabled ? lvglActiveToggleGreen(compact) : offBodyCol;
+    const lv_color_t flashColor = lv_color_mix(lv_color_white(), bodyCol, UI_BUTTON_CLICK_FLASH_MIX);
+    if (uiButtonStyleMode == UI_BUTTON_STYLE_FLAT) {
+        const lv_color_t pressedCol = lv_color_mix(lv_color_black(), bodyCol, compact ? 40 : 56);
+        const lv_color_t borderCol = enabled
+                                         ? lv_color_mix(lv_color_white(), bodyCol, compact ? 108 : 132)
+                                         : lv_color_mix(lv_color_black(), bodyCol, compact ? 84 : 108);
+        lv_obj_set_style_bg_color(btn, bodyCol, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_grad_color(btn, bodyCol, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(btn, pressedCol, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_grad_color(btn, pressedCol, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_color(btn, flashColor, LV_PART_MAIN | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_grad_color(btn, flashColor, LV_PART_MAIN | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_color(btn, flashColor, LV_PART_MAIN | LV_STATE_CHECKED | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_grad_color(btn, flashColor, LV_PART_MAIN | LV_STATE_CHECKED | LV_STATE_PRESSED);
+        lv_obj_set_style_border_width(btn, enabled ? 2 : 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_color(btn, borderCol, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_opa(btn, enabled ? LV_OPA_90 : static_cast<lv_opa_t>(72), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_width(btn, enabled ? 2 : 1, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_border_color(btn, borderCol, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_shadow_width(btn, enabled ? 0 : (compact ? 0 : 4), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_ofs_x(btn, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_ofs_y(btn, compact ? 0 : 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_opa(btn, compact ? LV_OPA_TRANSP : static_cast<lv_opa_t>(18), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_width(btn, 0, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_translate_y(btn, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_translate_y(btn, 0, LV_PART_MAIN | LV_STATE_PRESSED);
+    } else {
+        const lv_color_t lightCol = lv_color_mix(lv_color_white(), bodyCol, compact ? 56 : 76);
+        const lv_color_t darkCol = lv_color_mix(lv_color_black(), bodyCol, compact ? 92 : 118);
+        const lv_color_t topCol = enabled ? darkCol : lightCol;
+        const lv_color_t bottomCol = enabled ? lightCol : darkCol;
+        const lv_color_t pressedTopCol = lv_color_mix(lv_color_black(), topCol, compact ? 64 : 82);
+        const lv_color_t pressedBottomCol = lv_color_mix(lv_color_black(), bottomCol, compact ? 52 : 68);
+        const lv_color_t borderCol = enabled ? lv_color_mix(lv_color_black(), bodyCol, 104) : lv_color_mix(lv_color_white(), bodyCol, 88);
+        const lv_color_t flashBottomCol = lv_color_mix(lv_color_white(), bottomCol, UI_BUTTON_CLICK_FLASH_MIX / 2);
+
+        lv_obj_set_style_bg_color(btn, topCol, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_grad_color(btn, bottomCol, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_grad_dir(btn, LV_GRAD_DIR_VER, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_main_stop(btn, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_grad_stop(btn, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+        lv_obj_set_style_bg_color(btn, pressedTopCol, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_grad_color(btn, pressedBottomCol, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_grad_dir(btn, LV_GRAD_DIR_VER, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_main_stop(btn, 0, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_grad_stop(btn, 255, LV_PART_MAIN | LV_STATE_PRESSED);
+
+        lv_obj_set_style_bg_color(btn, flashColor, LV_PART_MAIN | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_grad_color(btn, flashBottomCol, LV_PART_MAIN | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_grad_dir(btn, LV_GRAD_DIR_VER, LV_PART_MAIN | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_color(btn, flashColor, LV_PART_MAIN | LV_STATE_CHECKED | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_grad_color(btn, flashBottomCol, LV_PART_MAIN | LV_STATE_CHECKED | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_grad_dir(btn, LV_GRAD_DIR_VER, LV_PART_MAIN | LV_STATE_CHECKED | LV_STATE_PRESSED);
+
+        lv_obj_set_style_border_width(btn, enabled ? 3 : 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_color(btn, borderCol, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_opa(btn, enabled ? static_cast<lv_opa_t>(76) : static_cast<lv_opa_t>(72), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_width(btn, enabled ? 2 : 1, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_border_color(btn, borderCol, LV_PART_MAIN | LV_STATE_PRESSED);
+
+        lv_obj_set_style_shadow_width(btn, compact ? (enabled ? 1 : 6) : (enabled ? 1 : 12), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_spread(btn, enabled ? 0 : 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_ofs_x(btn, compact ? (enabled ? 0 : 2) : (enabled ? 0 : 4), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_ofs_y(btn, compact ? (enabled ? 0 : 2) : (enabled ? 0 : 4), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_color(btn, lv_color_hex(0x000000), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_opa(btn,
+                                    compact ? (enabled ? static_cast<lv_opa_t>(6) : static_cast<lv_opa_t>(28))
+                                            : (enabled ? static_cast<lv_opa_t>(8) : LV_OPA_40),
+                                    LV_PART_MAIN | LV_STATE_DEFAULT);
+
+        lv_obj_set_style_shadow_width(btn, compact ? 1 : 2, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_shadow_ofs_x(btn, enabled ? 0 : 1, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_shadow_ofs_y(btn, enabled ? 0 : 1, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_shadow_opa(btn, compact ? static_cast<lv_opa_t>(6) : static_cast<lv_opa_t>(10), LV_PART_MAIN | LV_STATE_PRESSED);
+
+        lv_obj_set_style_translate_y(btn, enabled ? 2 : 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_translate_y(btn, enabled ? 3 : 1, LV_PART_MAIN | LV_STATE_PRESSED);
+    }
+
+    if (label) {
+        lv_obj_set_style_text_color(label, lv_color_hex(0xF7FBFF), 0);
+        lv_obj_set_style_text_font(label, LV_FONT_DEFAULT, 0);
+    }
+
+    lv_obj_invalidate(btn);
+}
+
+static void lvglAirplaneButtonDrawEvent(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_DRAW_MAIN) return;
+    if (uiButtonStyleMode != UI_BUTTON_STYLE_3D) return;
+    lv_obj_t *obj = lv_event_get_target(e);
+    lv_draw_ctx_t *drawCtx = lv_event_get_draw_ctx(e);
+    if (!obj || !drawCtx) return;
+
+    lv_color_t bodyCol = lv_color_hex(0x4E5D6C);
+    bool sunken = lv_obj_has_state(obj, LV_STATE_PRESSED);
+    bool compact = false;
+    if (obj == lvglAirplaneBtn) {
+        bodyCol = airplaneModeEnabled ? lvglActiveToggleGreen(false) : lv_color_hex(0x98632E);
+        sunken = airplaneModeEnabled || sunken;
+    } else if (obj == lvglApModeBtn) {
+        bodyCol = wifiSessionApMode ? lvglActiveToggleGreen(false) : lv_color_hex(0xA66A2A);
+        sunken = wifiSessionApMode || sunken;
+    } else if (obj == lvglChatDiscoveryBtn) {
+        bodyCol = p2pDiscoveryEnabled ? lvglActiveToggleGreen(true) : lv_color_hex(0x4E5D6C);
+        sunken = p2pDiscoveryEnabled || sunken;
+        compact = true;
+    } else if (obj == lvglWifiWebServerBtn) {
+        bodyCol = webServerEnabled ? lvglActiveToggleGreen(true) : lv_color_hex(0x6B3A3A);
+        sunken = webServerEnabled || sunken;
+        compact = true;
+    } else if (obj == lvglStyleButtonFlatBtn) {
+        bodyCol = (uiButtonStyleMode == UI_BUTTON_STYLE_FLAT) ? lvglActiveToggleGreen(true) : lv_color_hex(uiButtonStyleFlatSelectorColor);
+        sunken = (uiButtonStyleMode == UI_BUTTON_STYLE_FLAT) || sunken;
+        compact = true;
+    } else if (obj == lvglStyleButton3dBtn) {
+        bodyCol = (uiButtonStyleMode == UI_BUTTON_STYLE_3D) ? lvglActiveToggleGreen(true) : lv_color_hex(uiButtonStyle3dSelectorColor);
+        sunken = (uiButtonStyleMode == UI_BUTTON_STYLE_3D) || sunken;
+        compact = true;
+    } else {
+        const LvglStyledButtonEntry *entry = lvglFindStyledButtonEntryConst(obj);
+        if (!entry) return;
+        bodyCol = entry->baseColor;
+        compact = (entry->flags & LVGL_STYLED_BUTTON_FLAG_COMPACT) != 0;
+    }
+
+    lv_area_t a;
+    lv_obj_get_coords(obj, &a);
+    const int inset = compact ? 3 : 4;
+    const int x1 = static_cast<int>(a.x1) + inset;
+    const int y1 = static_cast<int>(a.y1) + inset;
+    const int x2 = static_cast<int>(a.x2) - inset;
+    const int y2 = static_cast<int>(a.y2) - inset;
+    if (x2 <= x1 || y2 <= y1) return;
+
+    const lv_color_t lightCol = lv_color_mix(lv_color_white(), bodyCol, compact ? 56 : 76);
+    const lv_color_t darkCol = lv_color_mix(lv_color_black(), bodyCol, compact ? 92 : 118);
+    const lv_opa_t strongOpa = sunken ? (compact ? static_cast<lv_opa_t>(56) : static_cast<lv_opa_t>(72))
+                                      : (compact ? static_cast<lv_opa_t>(72) : LV_OPA_90);
+    const lv_opa_t softOpa = sunken ? (compact ? static_cast<lv_opa_t>(34) : static_cast<lv_opa_t>(46))
+                                    : (compact ? static_cast<lv_opa_t>(44) : LV_OPA_60);
+
+    const lv_color_t topCol = sunken ? darkCol : lightCol;
+    const lv_color_t leftCol = sunken ? darkCol : lightCol;
+    const lv_color_t bottomCol = sunken ? lightCol : darkCol;
+    const lv_color_t rightCol = sunken ? lightCol : darkCol;
+
+    lvglDrawLineSeg(drawCtx, x1 + 3, y1, x2 - 3, y1, topCol, 1, strongOpa);
+    lvglDrawLineSeg(drawCtx, x1, y1 + 3, x1, y2 - 3, leftCol, 1, strongOpa);
+    lvglDrawLineSeg(drawCtx, x1 + 3, y2, x2 - 3, y2, bottomCol, 1, strongOpa);
+    lvglDrawLineSeg(drawCtx, x2, y1 + 3, x2, y2 - 3, rightCol, 1, strongOpa);
+
+    lvglDrawLineSeg(drawCtx, x1 + 4, y1 + 1, x2 - 4, y1 + 1, topCol, 1, softOpa);
+    lvglDrawLineSeg(drawCtx, x1 + 1, y1 + 4, x1 + 1, y2 - 4, leftCol, 1, softOpa);
+    lvglDrawLineSeg(drawCtx, x1 + 4, y2 - 1, x2 - 4, y2 - 1, bottomCol, 1, softOpa);
+    lvglDrawLineSeg(drawCtx, x2 - 1, y1 + 4, x2 - 1, y2 - 4, rightCol, 1, softOpa);
+}
+
+void lvglApplyAirplaneButtonStyle()
+{
+    lvglApplyPersistentToggleButtonStyle(
+        lvglAirplaneBtn, lvglAirplaneBtnLabel, airplaneModeEnabled, lv_color_hex(0x98632E), lv_color_hex(0x3B78B6), false);
+}
+
+void lvglApplyApModeButtonStyle()
+{
+    lvglApplyPersistentToggleButtonStyle(
+        lvglApModeBtn, lvglApModeBtnLabel, wifiSessionApMode, lv_color_hex(0xA66A2A), lv_color_hex(0xA66A2A), false);
+}
+
+void lvglApplyChatDiscoveryButtonStyle()
+{
+    lv_obj_t *label = lvglChatDiscoveryBtn ? lv_obj_get_child(lvglChatDiscoveryBtn, 0) : nullptr;
+    lvglApplyPersistentToggleButtonStyle(
+        lvglChatDiscoveryBtn, label, p2pDiscoveryEnabled, lv_color_hex(0x4E5D6C), lv_color_hex(0x3A7A3A), true);
+}
+
+void lvglApplyWifiWebServerButtonStyle()
+{
+    lv_obj_t *label = lvglWifiWebServerBtn ? lv_obj_get_child(lvglWifiWebServerBtn, 0) : nullptr;
+    lvglApplyPersistentToggleButtonStyle(
+        lvglWifiWebServerBtn, label, webServerEnabled, lv_color_hex(0x6B3A3A), lv_color_hex(0x357A38), true);
+}
+
+void lvglRefreshAllButtonStyles()
+{
+    for (size_t i = 0; i < LVGL_STYLED_BUTTON_CAPACITY; ++i) {
+        LvglStyledButtonEntry &entry = lvglStyledButtons[i];
+        if (!entry.obj || !lv_obj_is_valid(entry.obj)) {
+            entry.obj = nullptr;
+            continue;
+        }
+        const bool compact = (entry.flags & LVGL_STYLED_BUTTON_FLAG_COMPACT) != 0;
+        lvglApplyMomentaryButtonStyle(entry.obj, lv_obj_get_child(entry.obj, 0), entry.baseColor, compact);
+    }
+    lvglApplyAirplaneButtonStyle();
+    lvglApplyApModeButtonStyle();
+    lvglApplyChatDiscoveryButtonStyle();
+    lvglApplyWifiWebServerButtonStyle();
+    if (lvglStyleButtonFlatBtn) {
+        lvglApplyPersistentToggleButtonStyle(lvglStyleButtonFlatBtn,
+                                             lvglStyleButtonFlatBtnLabel,
+                                             uiButtonStyleMode == UI_BUTTON_STYLE_FLAT,
+                                             lv_color_hex(uiButtonStyleFlatSelectorColor),
+                                             lv_color_hex(uiButtonStyleFlatSelectorColor),
+                                             true);
+    }
+    if (lvglStyleButton3dBtn) {
+        lvglApplyPersistentToggleButtonStyle(lvglStyleButton3dBtn,
+                                             lvglStyleButton3dBtnLabel,
+                                             uiButtonStyleMode == UI_BUTTON_STYLE_3D,
+                                             lv_color_hex(uiButtonStyle3dSelectorColor),
+                                             lv_color_hex(uiButtonStyle3dSelectorColor),
+                                             true);
+    }
+}
+
+void lvglSetButtonStyleMode(UiButtonStyleMode mode, bool persist)
+{
+    if (mode != UI_BUTTON_STYLE_FLAT && mode != UI_BUTTON_STYLE_3D) mode = UI_BUTTON_STYLE_3D;
+    uiButtonStyleMode = mode;
+    if (persist) {
+        uiPrefs.begin("ui", false);
+        uiPrefs.putUChar("btn_style", static_cast<uint8_t>(uiButtonStyleMode));
+        uiPrefs.end();
+    }
+    lvglRefreshAllButtonStyles();
+    lvglRefreshStyleUi();
 }
 
 static lv_obj_t *lvglCreateInfoCard(lv_obj_t *parent, const char *symbol, const char *title, lv_color_t accent, lv_obj_t **valueOut, lv_obj_t **subOut, lv_obj_t **barOut = nullptr)
@@ -4551,7 +5420,7 @@ void lvglMediaNextTrackEvent(lv_event_t *e);
 void lvglMediaVolumeEvent(lv_event_t *e);
 void lvglMediaVolumeStepEvent(lv_event_t *e);
 void lvglHomeNavEvent(lv_event_t *e);
-void lvglRecoveryHintEvent(lv_event_t *e);
+void lvglApModeEvent(lv_event_t *e);
 void lvglWifiRescanEvent(lv_event_t *e);
 void lvglWifiDisconnectEvent(lv_event_t *e);
 void lvglWifiForgetEvent(lv_event_t *e);
@@ -4571,6 +5440,8 @@ void lvglOpenChatPeersEvent(lv_event_t *e);
 void lvglChatDiscoveryToggleEvent(lv_event_t *e);
 void lvglOpenStyleScreenEvent(lv_event_t *e);
 void lvglStyleScreensaverToggleEvent(lv_event_t *e);
+void lvglStyleButtonFlatEvent(lv_event_t *e);
+void lvglStyleButton3dEvent(lv_event_t *e);
 void lvglStyleTimeoutEvent(lv_event_t *e);
 void lvglRefreshStyleUi();
 void lvglGestureBlockEvent(lv_event_t *e);
@@ -4670,6 +5541,11 @@ static bool checkersPromotionContinuesCapture();
 inline void lvglLoadScreen(lv_obj_t *target, lv_scr_load_anim_t anim)
 {
     if (!target) return;
+    lvglSwipeBackPending = false;
+    lvglResetGestureTracking();
+    lvglGestureBlocked = false;
+    lvglReorderOwnsHorizontalGesture = false;
+    if (lvglTouchIndev) lv_indev_reset(lvglTouchIndev, nullptr);
     lv_scr_load_anim(target, anim, UI_ANIM_MS, 0, false);
 }
 
@@ -4741,20 +5617,15 @@ void lvglEnsureScreenBuilt(UiScreen screen)
         lv_obj_set_size(b, w, h);
         lv_obj_set_style_radius(b, 8, 0);
         lv_obj_set_style_border_width(b, 0, 0);
-        const lv_color_t flashColor = lv_color_mix(lv_color_white(), col, UI_BUTTON_CLICK_FLASH_MIX);
-        lv_obj_set_style_bg_color(b, col, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_color(b, col, LV_PART_MAIN | LV_STATE_PRESSED);
-        lv_obj_set_style_bg_color(b, flashColor, LV_PART_MAIN | LV_STATE_CHECKED);
-        lv_obj_set_style_bg_color(b, flashColor, LV_PART_MAIN | LV_STATE_CHECKED | LV_STATE_PRESSED);
         lv_obj_add_event_cb(b, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
         lv_obj_add_event_cb(b, lvglFilteredClickFlashEvent, LV_EVENT_CLICKED, nullptr);
-        lv_obj_add_event_cb(b, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
         lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, ud);
         lv_obj_t *l = lv_label_create(b);
         if (l) {
             lv_label_set_text(l, txt);
             lv_obj_center(l);
         }
+        lvglRegisterStyledButton(b, col, true);
         return b;
     };
 
@@ -4774,12 +5645,29 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_flex_flow(homeWrap, LV_FLEX_FLOW_COLUMN);
             lv_obj_set_scrollbar_mode(homeWrap, LV_SCROLLBAR_MODE_OFF);
             lvglStatusLabel = nullptr;
-            lvglCreateMenuButton(homeWrap, "Chat", lv_color_hex(0x7A4F2F), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CHAT)));
-            lvglCreateMenuButton(homeWrap, "Media", lv_color_hex(0x376B93), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_MEDIA)));
-            lvglCreateMenuButton(homeWrap, "Info", lv_color_hex(0x7750A0), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_INFO)));
-            lvglCreateMenuButton(homeWrap, "Games", lv_color_hex(0x2B7D7D), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_GAMES)));
-            lvglCreateMenuButton(homeWrap, "Config", lv_color_hex(0x925A73), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CONFIG)));
-            lvglCreateMenuButton(homeWrap, "Web Recovery", lv_color_hex(0xA66A2A), lvglRecoveryHintEvent, nullptr);
+            lv_obj_t *homeChatBtn = lvglCreateMenuButton(homeWrap, lvglSymbolText(LV_SYMBOL_LIST, "Chat").c_str(), lv_color_hex(0x7A4F2F), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CHAT)));
+            lv_obj_t *homeMediaBtn = lvglCreateMenuButton(homeWrap, lvglSymbolText(LV_SYMBOL_PLAY, "Media").c_str(), lv_color_hex(0x376B93), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_MEDIA)));
+            lv_obj_t *homeInfoBtn = lvglCreateMenuButton(homeWrap, lvglSymbolText(LV_SYMBOL_LIST, "Info").c_str(), lv_color_hex(0x7750A0), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_INFO)));
+            lv_obj_t *homeGamesBtn = lvglCreateMenuButton(homeWrap, lvglSymbolText(LV_SYMBOL_PLAY, "Games").c_str(), lv_color_hex(0x2B7D7D), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_GAMES)));
+            lv_obj_t *homeConfigBtn = lvglCreateMenuButton(homeWrap, lvglSymbolText(LV_SYMBOL_SETTINGS, "Config").c_str(), lv_color_hex(0x925A73), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CONFIG)));
+            lvglAirplaneBtn = lvglCreateMenuButton(homeWrap, lvglSymbolText(LV_SYMBOL_POWER, "Airplane: OFF").c_str(), lv_color_hex(0x8A5A25), lvglAirplaneToggleEvent, nullptr);
+            if (lvglAirplaneBtn) {
+                lvglAirplaneBtnLabel = lv_obj_get_child(lvglAirplaneBtn, 0);
+                lvglApplyAirplaneButtonStyle();
+            }
+            lvglApModeBtn = lvglCreateMenuButton(homeWrap, lvglSymbolText(LV_SYMBOL_WIFI, "AP Mode: OFF").c_str(), lv_color_hex(0xA66A2A), lvglApModeEvent, nullptr);
+            if (lvglApModeBtn) {
+                lvglApModeBtnLabel = lv_obj_get_child(lvglApModeBtn, 0);
+                lvglApplyApModeButtonStyle();
+            }
+            lvglRegisterReorderableItem(homeChatBtn, "ord_home", "chat");
+            lvglRegisterReorderableItem(homeMediaBtn, "ord_home", "media");
+            lvglRegisterReorderableItem(homeInfoBtn, "ord_home", "info");
+            lvglRegisterReorderableItem(homeGamesBtn, "ord_home", "games");
+            lvglRegisterReorderableItem(homeConfigBtn, "ord_home", "config");
+            lvglRegisterReorderableItem(lvglAirplaneBtn, "ord_home", "air");
+            lvglRegisterReorderableItem(lvglApModeBtn, "ord_home", "ap");
+            lvglApplySavedOrder(homeWrap, "ord_home");
             break;
         }
         case UI_CHAT: {
@@ -4793,7 +5681,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_style_pad_column(chatOps, 6, 0);
             lv_obj_set_flex_flow(chatOps, LV_FLEX_FLOW_ROW);
             lv_obj_clear_flag(chatOps, LV_OBJ_FLAG_SCROLLABLE);
-            lvglChatPeersBtn = makeSmallBtn(chatOps, "Peers", 62, 28, lv_color_hex(0x2F6D86), lvglOpenChatPeersEvent);
+            lvglChatPeersBtn = makeSmallBtn(chatOps, lvglSymbolText(LV_SYMBOL_LIST, "Peers").c_str(), 82, 28, lv_color_hex(0x2F6D86), lvglOpenChatPeersEvent);
 
             lvglChatContactLabel = lv_label_create(chatOps);
             lv_obj_set_width(lvglChatContactLabel, lv_pct(100));
@@ -4804,11 +5692,14 @@ void lvglEnsureScreenBuilt(UiScreen screen)
 
             lvglChatMenuBtn = makeSmallBtn(chatOps, LV_SYMBOL_LIST, 34, 28, lv_color_hex(0x2F6D86), lvglToggleChatMenuEvent, nullptr);
             lvglChatDiscoveryBtn = makeSmallBtn(chatOps,
-                                                "Discovery",
-                                                84,
+                                                lvglSymbolText(LV_SYMBOL_WIFI, "Discovery").c_str(),
+                                                102,
                                                 28,
                                                 p2pDiscoveryEnabled ? lv_color_hex(0x3A7A3A) : lv_color_hex(0x4E5D6C),
                                                 lvglChatDiscoveryToggleEvent);
+            if (lvglChatDiscoveryBtn) {
+                lvglApplyChatDiscoveryButtonStyle();
+            }
 
             lvglChatMenuBackdrop = lv_obj_create(lvglScrChat);
             lv_obj_set_size(lvglChatMenuBackdrop, lv_pct(100), UI_CONTENT_H);
@@ -4840,9 +5731,9 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_flex_align(lvglChatMenuPanel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
             lv_obj_add_flag(lvglChatMenuPanel, LV_OBJ_FLAG_HIDDEN);
             lv_obj_clear_flag(lvglChatMenuPanel, LV_OBJ_FLAG_SCROLLABLE);
-            lv_obj_t *chatClearBtn = makeSmallBtn(lvglChatMenuPanel, "Clear", lv_pct(100), 32, lv_color_hex(0x8A3A3A), lvglDeleteChatConversationEvent, nullptr);
+            lv_obj_t *chatClearBtn = makeSmallBtn(lvglChatMenuPanel, lvglSymbolText(LV_SYMBOL_TRASH, "Clear").c_str(), lv_pct(100), 32, lv_color_hex(0x8A3A3A), lvglDeleteChatConversationEvent, nullptr);
             if (chatClearBtn) lv_obj_set_width(chatClearBtn, lv_pct(100));
-            lv_obj_t *chatClearAllBtn = makeSmallBtn(lvglChatMenuPanel, "Clear for All", lv_pct(100), 32, lv_color_hex(0x944E2B), lvglDeleteChatConversationForAllEvent, nullptr);
+            lv_obj_t *chatClearAllBtn = makeSmallBtn(lvglChatMenuPanel, lvglSymbolText(LV_SYMBOL_TRASH, "Clear for All").c_str(), lv_pct(100), 32, lv_color_hex(0x944E2B), lvglDeleteChatConversationForAllEvent, nullptr);
             if (chatClearAllBtn) lv_obj_set_width(chatClearAllBtn, lv_pct(100));
 
             lvglChatContacts = lv_obj_create(lvglScrChat);
@@ -4886,7 +5777,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_textarea_set_placeholder_text(lvglChatInputTa, "Message");
             lv_obj_add_event_cb(lvglChatInputTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
 
-            makeSmallBtn(lvglChatComposer, "Send", 64, 38, lv_color_hex(0x3A7A3A),
+            makeSmallBtn(lvglChatComposer, lvglSymbolText(LV_SYMBOL_UPLOAD, "Send").c_str(), 82, 38, lv_color_hex(0x3A7A3A),
                          [](lv_event_t *e) {
                              (void)e;
                              if (!lvglChatInputTa) return;
@@ -4936,7 +5827,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_style_pad_column(peerOps, 6, 0);
             lv_obj_set_flex_flow(peerOps, LV_FLEX_FLOW_ROW);
             lv_obj_clear_flag(peerOps, LV_OBJ_FLAG_SCROLLABLE);
-            lvglChatPeerScanBtn = makeSmallBtn(peerOps, "Scan", 54, 26, lv_color_hex(0x2F6D86), lvglChatPeerActionEvent, reinterpret_cast<void *>(static_cast<intptr_t>(0)));
+            lvglChatPeerScanBtn = makeSmallBtn(peerOps, lvglSymbolText(LV_SYMBOL_REFRESH, "Scan").c_str(), 74, 26, lv_color_hex(0x2F6D86), lvglChatPeerActionEvent, reinterpret_cast<void *>(static_cast<intptr_t>(0)));
 
             lvglChatPeerIdentityLabel = lv_label_create(peerTop);
             lv_obj_set_width(lvglChatPeerIdentityLabel, lv_pct(100));
@@ -4991,10 +5882,10 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_style_pad_column(mediaCtrlRow, 4, 0);
             lv_obj_set_flex_flow(mediaCtrlRow, LV_FLEX_FLOW_ROW);
             lv_obj_set_scrollbar_mode(mediaCtrlRow, LV_SCROLLBAR_MODE_OFF);
-            makeSmallBtn(mediaCtrlRow, "Refresh", 58, 24, lv_color_hex(0x2F6D86), lvglMediaRefreshEvent);
-            lvglMediaPrevBtn = makeSmallBtn(mediaCtrlRow, "Prev", 45, 24, lv_color_hex(0x355C3D), lvglMediaPrevTrackEvent);
-            lvglMediaPlayBtn = makeSmallBtn(mediaCtrlRow, "Play", 45, 24, lv_color_hex(0x7C3A3A), lvglMediaPlayStopEvent);
-            lvglMediaNextBtn = makeSmallBtn(mediaCtrlRow, "Next", 45, 24, lv_color_hex(0x355C3D), lvglMediaNextTrackEvent);
+            makeSmallBtn(mediaCtrlRow, lvglSymbolText(LV_SYMBOL_REFRESH, "Refresh").c_str(), 82, 24, lv_color_hex(0x2F6D86), lvglMediaRefreshEvent);
+            lvglMediaPrevBtn = makeSmallBtn(mediaCtrlRow, lvglSymbolText(LV_SYMBOL_PREV, "Prev").c_str(), 60, 24, lv_color_hex(0x355C3D), lvglMediaPrevTrackEvent);
+            lvglMediaPlayBtn = makeSmallBtn(mediaCtrlRow, lvglSymbolText(LV_SYMBOL_PLAY, "Play").c_str(), 60, 24, lv_color_hex(0x7C3A3A), lvglMediaPlayStopEvent);
+            lvglMediaNextBtn = makeSmallBtn(mediaCtrlRow, lvglSymbolText(LV_SYMBOL_NEXT, "Next").c_str(), 60, 24, lv_color_hex(0x355C3D), lvglMediaNextTrackEvent);
             if (lvglMediaPlayBtn) lvglMediaPlayBtnLabel = lv_obj_get_child(lvglMediaPlayBtn, 0);
             lvglMediaTrackLabel = lv_label_create(lvglMediaPlayerPanel);
             lv_obj_set_width(lvglMediaTrackLabel, lv_pct(100));
@@ -5062,25 +5953,30 @@ void lvglEnsureScreenBuilt(UiScreen screen)
 
             {
                 lv_obj_t *tmp = nullptr;
-                lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_BATTERY_FULL, "Battery", lv_color_hex(0x52B788),
-                                   &lvglInfoBatteryValueLabel, &lvglInfoBatterySubLabel, &tmp);
+                lv_obj_t *card = lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_BATTERY_FULL, "Battery", lv_color_hex(0x52B788),
+                                                    &lvglInfoBatteryValueLabel, &lvglInfoBatterySubLabel, &tmp);
+                lvglRegisterReorderableItem(card, "ord_info", "battery");
             }
             {
                 lv_obj_t *tmp = nullptr;
-                lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_WIFI, "WiFi Strength", lv_color_hex(0x4FC3F7),
-                                   &lvglInfoWifiValueLabel, &lvglInfoWifiSubLabel, &tmp);
+                lv_obj_t *card = lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_WIFI, "WiFi Strength", lv_color_hex(0x4FC3F7),
+                                                    &lvglInfoWifiValueLabel, &lvglInfoWifiSubLabel, &tmp);
+                lvglRegisterReorderableItem(card, "ord_info", "wifi");
             }
-            lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_SETTINGS, "HC-12 Info", lv_color_hex(0x7A5C2E),
-                               &lvglInfoHc12ValueLabel, &lvglInfoHc12SubLabel);
+            lv_obj_t *hc12InfoCard = lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_SETTINGS, "HC-12 Info", lv_color_hex(0x7A5C2E),
+                                                        &lvglInfoHc12ValueLabel, &lvglInfoHc12SubLabel);
+            lvglRegisterReorderableItem(hc12InfoCard, "ord_info", "hc12");
             {
                 lv_obj_t *tmp = nullptr;
-                lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_EYE_OPEN, "Lighting", lv_color_hex(0xF4B942),
-                                   &lvglInfoLightValueLabel, &lvglInfoLightSubLabel, &tmp);
+                lv_obj_t *card = lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_EYE_OPEN, "Lighting", lv_color_hex(0xF4B942),
+                                                    &lvglInfoLightValueLabel, &lvglInfoLightSubLabel, &tmp);
+                lvglRegisterReorderableItem(card, "ord_info", "light");
             }
             {
                 lv_obj_t *tmp = nullptr;
-                lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_SD_CARD, "SD Card", lv_color_hex(0xE59F45),
-                                   nullptr, nullptr, &tmp);
+                lv_obj_t *card = lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_SD_CARD, "SD Card", lv_color_hex(0xE59F45),
+                                                    nullptr, nullptr, &tmp);
+                lvglRegisterReorderableItem(card, "ord_info", "sd");
             }
             {
                 lv_obj_t *tmp = nullptr;
@@ -5088,6 +5984,8 @@ void lvglEnsureScreenBuilt(UiScreen screen)
                                                       nullptr, nullptr, &tmp);
                 lvglInfoPsramCard = lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_DRIVE, "PSRAM", lv_color_hex(0x9B7CF2),
                                                        nullptr, nullptr, &tmp);
+                lvglRegisterReorderableItem(lvglInfoSramCard, "ord_info", "sram");
+                lvglRegisterReorderableItem(lvglInfoPsramCard, "ord_info", "psram");
             }
             {
                 lv_obj_t *tmp = nullptr;
@@ -5095,6 +5993,8 @@ void lvglEnsureScreenBuilt(UiScreen screen)
                                                      nullptr, nullptr, &tmp);
                 lvglInfoTempCard = lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_WARNING, "Chip Temperature", lv_color_hex(0xF2C35E),
                                                       nullptr, nullptr, &tmp);
+                lvglRegisterReorderableItem(lvglInfoCpuCard, "ord_info", "cpu");
+                lvglRegisterReorderableItem(lvglInfoTempCard, "ord_info", "temp");
             }
 
             lv_obj_t *systemCard = lv_obj_create(lvglInfoList);
@@ -5111,6 +6011,8 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_width(lvglInfoSystemLabel, lv_pct(100));
             lv_label_set_long_mode(lvglInfoSystemLabel, LV_LABEL_LONG_WRAP);
             lv_obj_set_style_text_color(lvglInfoSystemLabel, lv_color_hex(0xC8D3DD), 0);
+            lvglRegisterReorderableItem(systemCard, "ord_info", "system");
+            lvglApplySavedOrder(lvglInfoList, "ord_info");
             break;
         }
         case UI_GAMES: {
@@ -5124,12 +6026,17 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_style_pad_row(gamesWrap, 10, 0);
             lv_obj_set_flex_flow(gamesWrap, LV_FLEX_FLOW_COLUMN);
             lv_obj_set_scrollbar_mode(gamesWrap, LV_SCROLLBAR_MODE_OFF);
-            lvglCreateMenuButton(gamesWrap, "Snake", lv_color_hex(0x3A8F4B), lvglOpenSnakeEvent, nullptr);
-            lvglCreateMenuButton(gamesWrap, "Tetris", lv_color_hex(0x376B93), lvglOpenTetrisEvent, nullptr);
-            lvglCreateMenuButton(gamesWrap, "Checkers", lv_color_hex(0x8A5A25), lvglOpenCheckersEvent, nullptr);
+            lv_obj_t *gamesSnakeBtn = lvglCreateMenuButton(gamesWrap, lvglSymbolText(LV_SYMBOL_PLAY, "Snake").c_str(), lv_color_hex(0x3A8F4B), lvglOpenSnakeEvent, nullptr);
+            lv_obj_t *gamesTetrisBtn = lvglCreateMenuButton(gamesWrap, lvglSymbolText(LV_SYMBOL_PLAY, "Tetris").c_str(), lv_color_hex(0x376B93), lvglOpenTetrisEvent, nullptr);
+            lv_obj_t *gamesCheckersBtn = lvglCreateMenuButton(gamesWrap, lvglSymbolText(LV_SYMBOL_PLAY, "Checkers").c_str(), lv_color_hex(0x8A5A25), lvglOpenCheckersEvent, nullptr);
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
-            lvglCreateMenuButton(gamesWrap, "Snake 3D", lv_color_hex(0x5A4CC7), lvglOpenSnake3dEvent, nullptr);
+            lv_obj_t *gamesSnake3dBtn = lvglCreateMenuButton(gamesWrap, lvglSymbolText(LV_SYMBOL_PLAY, "Snake 3D").c_str(), lv_color_hex(0x5A4CC7), lvglOpenSnake3dEvent, nullptr);
+            lvglRegisterReorderableItem(gamesSnake3dBtn, "ord_games", "snake3d");
 #endif
+            lvglRegisterReorderableItem(gamesSnakeBtn, "ord_games", "snake");
+            lvglRegisterReorderableItem(gamesTetrisBtn, "ord_games", "tetris");
+            lvglRegisterReorderableItem(gamesCheckersBtn, "ord_games", "checkers");
+            lvglApplySavedOrder(gamesWrap, "ord_games");
             break;
         }
         case UI_CONFIG: {
@@ -5143,15 +6050,13 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_style_pad_row(lvglConfigWrap, 10, 0);
             lv_obj_set_flex_flow(lvglConfigWrap, LV_FLEX_FLOW_COLUMN);
             lv_obj_set_scrollbar_mode(lvglConfigWrap, LV_SCROLLBAR_MODE_OFF);
-            lvglCreateMenuButton(lvglConfigWrap, "WiFi Config", lv_color_hex(0x3A8F4B), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_WIFI_LIST)));
-            lvglCreateMenuButton(lvglConfigWrap, "HC12 Config", lv_color_hex(0x7A5C2E), lvglOpenHc12ScreenEvent, nullptr);
-            lvglAirplaneBtn = lvglCreateMenuButton(lvglConfigWrap, "Airplane: OFF", lv_color_hex(0x8A5A25), lvglAirplaneToggleEvent, nullptr);
-            if (lvglAirplaneBtn) lvglAirplaneBtnLabel = lv_obj_get_child(lvglAirplaneBtn, 0);
-            lvglCreateMenuButton(lvglConfigWrap, "Style", lv_color_hex(0x2D6D8E), lvglOpenStyleScreenEvent, nullptr);
-            lvglCreateMenuButton(lvglConfigWrap, "MQTT Config", lv_color_hex(0x6D4B9A), lvglOpenMqttCfgEvent, nullptr);
-            lvglCreateMenuButton(lvglConfigWrap, "MQTT Controls", lv_color_hex(0x2D6D8E), lvglOpenMqttCtrlEvent, nullptr);
-            lvglCreateMenuButton(lvglConfigWrap, "Screenshot", lv_color_hex(0x6B5B2A), lvglScreenshotEvent, nullptr);
-            lvglCreateMenuButton(lvglConfigWrap, "OTA Updates", lv_color_hex(0x2E6F95), lvglOpenOtaScreenEvent, nullptr);
+            lv_obj_t *cfgWifiBtn = lvglCreateMenuButton(lvglConfigWrap, lvglSymbolText(LV_SYMBOL_WIFI, "WiFi Config").c_str(), lv_color_hex(0x3A8F4B), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_WIFI_LIST)));
+            lv_obj_t *cfgHc12Btn = lvglCreateMenuButton(lvglConfigWrap, lvglSymbolText(LV_SYMBOL_SETTINGS, "HC12 Config").c_str(), lv_color_hex(0x7A5C2E), lvglOpenHc12ScreenEvent, nullptr);
+            lv_obj_t *cfgStyleBtn = lvglCreateMenuButton(lvglConfigWrap, lvglSymbolText(LV_SYMBOL_SETTINGS, "Style").c_str(), lv_color_hex(0x2D6D8E), lvglOpenStyleScreenEvent, nullptr);
+            lv_obj_t *cfgMqttBtn = lvglCreateMenuButton(lvglConfigWrap, lvglSymbolText(LV_SYMBOL_LIST, "MQTT Config").c_str(), lv_color_hex(0x6D4B9A), lvglOpenMqttCfgEvent, nullptr);
+            lv_obj_t *cfgMqttCtlBtn = lvglCreateMenuButton(lvglConfigWrap, lvglSymbolText(LV_SYMBOL_LIST, "MQTT Controls").c_str(), lv_color_hex(0x2D6D8E), lvglOpenMqttCtrlEvent, nullptr);
+            lv_obj_t *cfgShotBtn = lvglCreateMenuButton(lvglConfigWrap, lvglSymbolText(LV_SYMBOL_IMAGE, "Screenshot").c_str(), lv_color_hex(0x6B5B2A), lvglScreenshotEvent, nullptr);
+            lv_obj_t *cfgOtaBtn = lvglCreateMenuButton(lvglConfigWrap, lvglSymbolText(LV_SYMBOL_UPLOAD, "OTA Updates").c_str(), lv_color_hex(0x2E6F95), lvglOpenOtaScreenEvent, nullptr);
 
             lv_obj_t *nameWrap = lv_obj_create(lvglConfigWrap);
             lv_obj_set_size(nameWrap, lv_pct(100), LV_SIZE_CONTENT);
@@ -5251,11 +6156,27 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_width(lvglRgbLedSlider, lv_pct(100));
             lv_slider_set_range(lvglRgbLedSlider, 0, 100);
             lv_obj_add_event_cb(lvglRgbLedSlider, lvglRgbLedEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+            lvglApplyConfigScreenControlStyles();
+            lvglRegisterReorderableItem(cfgWifiBtn, "ord_cfg", "wifi");
+            lvglRegisterReorderableItem(cfgHc12Btn, "ord_cfg", "hc12");
+            lvglRegisterReorderableItem(cfgStyleBtn, "ord_cfg", "style");
+            lvglRegisterReorderableItem(cfgMqttBtn, "ord_cfg", "mqtt");
+            lvglRegisterReorderableItem(cfgMqttCtlBtn, "ord_cfg", "mctl");
+            lvglRegisterReorderableItem(cfgShotBtn, "ord_cfg", "shot");
+            lvglRegisterReorderableItem(cfgOtaBtn, "ord_cfg", "ota");
+            lvglRegisterReorderableItem(nameWrap, "ord_cfg", "name");
+            lvglRegisterReorderableItem(brightWrap, "ord_cfg", "bright");
+            lvglRegisterReorderableItem(rgbWrap, "ord_cfg", "rgb");
+            lvglApplySavedOrder(lvglConfigWrap, "ord_cfg");
             lvglRefreshConfigUi();
             break;
         }
         case UI_CONFIG_STYLE: {
             lvglScrStyle = lvglCreateScreenBase("Style", false);
+            lvglStyleButtonFlatBtn = nullptr;
+            lvglStyleButtonFlatBtnLabel = nullptr;
+            lvglStyleButton3dBtn = nullptr;
+            lvglStyleButton3dBtnLabel = nullptr;
             lv_obj_t *wrap = lv_obj_create(lvglScrStyle);
             lv_obj_set_size(wrap, lv_pct(100), UI_CONTENT_H);
             lv_obj_align(wrap, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
@@ -5286,6 +6207,65 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_add_event_cb(lvglStyleScreensaverSw, lvglGestureBlockEvent, LV_EVENT_PRESSED, nullptr);
             lv_obj_add_event_cb(lvglStyleScreensaverSw, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
             lv_obj_add_event_cb(lvglStyleScreensaverSw, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
+
+            lv_obj_t *buttonStyleWrap = lv_obj_create(wrap);
+            lv_obj_set_size(buttonStyleWrap, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_color(buttonStyleWrap, lv_color_hex(0x18222D), 0);
+            lv_obj_set_style_border_width(buttonStyleWrap, 0, 0);
+            lv_obj_set_style_radius(buttonStyleWrap, 12, 0);
+            lv_obj_set_style_pad_all(buttonStyleWrap, 10, 0);
+            lv_obj_set_style_pad_row(buttonStyleWrap, 8, 0);
+            lv_obj_set_flex_flow(buttonStyleWrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_clear_flag(buttonStyleWrap, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *buttonStyleHdr = lv_label_create(buttonStyleWrap);
+            lv_label_set_text(buttonStyleHdr, "Button Style");
+            lv_obj_set_style_text_color(buttonStyleHdr, lv_color_hex(0xE5ECF3), 0);
+
+            auto makeStyleRow = [&](const char *title,
+                                    lv_color_t accent,
+                                    lv_obj_t **btnOut,
+                                    lv_obj_t **labelOut,
+                                    lv_event_cb_t cb) {
+                lv_obj_t *row = lv_obj_create(buttonStyleWrap);
+                lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+                lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+                lv_obj_set_style_border_width(row, 0, 0);
+                lv_obj_set_style_pad_all(row, 0, 0);
+                lv_obj_set_style_pad_column(row, 8, 0);
+                lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+                lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+                lv_obj_t *titleLbl = lv_label_create(row);
+                lv_label_set_text(titleLbl, title);
+                lv_obj_set_style_text_color(titleLbl, lv_color_hex(0xD7E0E8), 0);
+                lv_obj_set_flex_grow(titleLbl, 1);
+
+                lv_obj_t *btn = lv_btn_create(row);
+                lv_obj_set_size(btn, 82, 28);
+                lv_obj_set_style_radius(btn, 8, 0);
+                lv_obj_set_style_border_width(btn, 0, 0);
+                lv_obj_add_event_cb(btn, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
+                lv_obj_add_event_cb(btn, lvglFilteredClickFlashEvent, LV_EVENT_CLICKED, nullptr);
+                lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, nullptr);
+                lv_obj_t *lbl = lv_label_create(btn);
+                lv_label_set_text(lbl, "Select");
+                lv_obj_center(lbl);
+                lvglRegisterStyledButton(btn, accent, true);
+                *btnOut = btn;
+                *labelOut = lbl;
+            };
+
+            makeStyleRow("Flat Buttons",
+                         lv_color_hex(uiButtonStyleFlatSelectorColor),
+                         &lvglStyleButtonFlatBtn,
+                         &lvglStyleButtonFlatBtnLabel,
+                         lvglStyleButtonFlatEvent);
+            makeStyleRow("3D Buttons",
+                         lv_color_hex(uiButtonStyle3dSelectorColor),
+                         &lvglStyleButton3dBtn,
+                         &lvglStyleButton3dBtnLabel,
+                         lvglStyleButton3dEvent);
 
             lv_obj_t *timeWrap = lv_obj_create(wrap);
             lv_obj_set_size(timeWrap, lv_pct(100), LV_SIZE_CONTENT);
@@ -5324,13 +6304,13 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_add_event_cb(lvglStyleTimeoutSlider, lvglGestureBlockEvent, LV_EVENT_PRESSED, nullptr);
             lv_obj_add_event_cb(lvglStyleTimeoutSlider, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
             lv_obj_add_event_cb(lvglStyleTimeoutSlider, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
+            lvglApplyStyleScreenControlStyles();
 
             lv_obj_t *hint = lv_label_create(timeWrap);
             lv_obj_set_width(hint, lv_pct(100));
             lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
             lv_obj_set_style_text_color(hint, lv_color_hex(0x9FB0C2), 0);
             lv_label_set_text(hint, "Idle timeout can switch to a centered robot-eye screensaver inspired by esp32-eyes. Touch anywhere to return.");
-
             lvglRefreshStyleUi();
             break;
         }
@@ -5346,7 +6326,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_flex_flow(wrap, LV_FLEX_FLOW_COLUMN);
             lv_obj_set_scrollbar_mode(wrap, LV_SCROLLBAR_MODE_OFF);
 
-            auto makeInfoLine = [&](const char *title, lv_obj_t **valueOut) {
+            auto makeInfoLine = [&](const char *title, lv_obj_t **valueOut) -> lv_obj_t * {
                 lv_obj_t *card = lv_obj_create(wrap);
                 lv_obj_set_width(card, lv_pct(100));
                 lv_obj_set_height(card, LV_SIZE_CONTENT);
@@ -5368,11 +6348,12 @@ void lvglEnsureScreenBuilt(UiScreen screen)
                 lv_label_set_text(value, "--");
                 lv_obj_set_style_text_color(value, lv_color_hex(0xF5F8FB), 0);
                 *valueOut = value;
+                return card;
             };
 
-            makeInfoLine("Current version", &lvglOtaCurrentLabel);
-            makeInfoLine("Latest version", &lvglOtaLatestLabel);
-            makeInfoLine("Status", &lvglOtaStatusLabel);
+            lv_obj_t *otaCurrentCard = makeInfoLine("Current version", &lvglOtaCurrentLabel);
+            lv_obj_t *otaLatestCard = makeInfoLine("Latest version", &lvglOtaLatestLabel);
+            lv_obj_t *otaStatusCard = makeInfoLine("Status", &lvglOtaStatusLabel);
 
             lvglOtaProgressBar = lv_bar_create(wrap);
             lv_obj_set_size(lvglOtaProgressBar, lv_pct(100), 14);
@@ -5387,8 +6368,15 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_style_text_color(lvglOtaProgressLabel, lv_color_hex(0xC8D3DD), 0);
             lv_label_set_text(lvglOtaProgressLabel, "");
 
-            lvglOtaUpdateBtn = lvglCreateMenuButton(wrap, "Update", lv_color_hex(0x3A8F4B), lvglOtaUpdateEvent, nullptr);
+            lvglOtaUpdateBtn = lvglCreateMenuButton(wrap, lvglSymbolText(LV_SYMBOL_UPLOAD, "Update").c_str(), lv_color_hex(0x3A8F4B), lvglOtaUpdateEvent, nullptr);
             if (lvglOtaUpdateBtn) lvglOtaUpdateBtnLabel = lv_obj_get_child(lvglOtaUpdateBtn, 0);
+            lvglRegisterReorderableItem(otaCurrentCard, "ord_ota", "cur");
+            lvglRegisterReorderableItem(otaLatestCard, "ord_ota", "latest");
+            lvglRegisterReorderableItem(otaStatusCard, "ord_ota", "status");
+            lvglRegisterReorderableItem(lvglOtaProgressBar, "ord_ota", "bar");
+            lvglRegisterReorderableItem(lvglOtaProgressLabel, "ord_ota", "pct");
+            lvglRegisterReorderableItem(lvglOtaUpdateBtn, "ord_ota", "update");
+            lvglApplySavedOrder(wrap, "ord_ota");
             lvglRefreshOtaUi();
             break;
         }
@@ -5410,7 +6398,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
                                        lv_event_cb_t prevCb,
                                        lv_event_cb_t nextCb,
                                        lv_obj_t **valueOut,
-                                       lv_obj_t **subOut) {
+                                       lv_obj_t **subOut) -> lv_obj_t * {
                 lv_obj_t *card = lv_obj_create(wrap);
                 lv_obj_set_width(card, lv_pct(100));
                 lv_obj_set_height(card, LV_SIZE_CONTENT);
@@ -5464,18 +6452,19 @@ void lvglEnsureScreenBuilt(UiScreen screen)
                 *subOut = subLbl;
 
                 makeSmallBtn(row, LV_SYMBOL_RIGHT, 44, 38, accent, nextCb, nullptr);
+                return card;
             };
 
-            makeSelectorRow("Channel", lv_color_hex(0x7A5C2E), lvglHc12PrevChannelEvent, lvglHc12NextChannelEvent,
-                            &lvglHc12ChannelValueLabel, &lvglHc12ChannelSubLabel);
-            makeSelectorRow("Baud Rate", lv_color_hex(0x2F6D86), lvglHc12PrevBaudEvent, lvglHc12NextBaudEvent,
-                            &lvglHc12BaudValueLabel, &lvglHc12BaudSubLabel);
-            makeSelectorRow("Transmission Mode", lv_color_hex(0x355E8A), lvglHc12PrevModeEvent, lvglHc12NextModeEvent,
-                            &lvglHc12ModeValueLabel, &lvglHc12ModeSubLabel);
-            makeSelectorRow("Transmission Power", lv_color_hex(0xA35757), lvglHc12PrevPowerEvent, lvglHc12NextPowerEvent,
-                            &lvglHc12PowerValueLabel, &lvglHc12PowerSubLabel);
+            lv_obj_t *hc12ChannelCard = makeSelectorRow("Channel", lv_color_hex(0x7A5C2E), lvglHc12PrevChannelEvent, lvglHc12NextChannelEvent,
+                                                        &lvglHc12ChannelValueLabel, &lvglHc12ChannelSubLabel);
+            lv_obj_t *hc12BaudCard = makeSelectorRow("Baud Rate", lv_color_hex(0x2F6D86), lvglHc12PrevBaudEvent, lvglHc12NextBaudEvent,
+                                                     &lvglHc12BaudValueLabel, &lvglHc12BaudSubLabel);
+            lv_obj_t *hc12ModeCard = makeSelectorRow("Transmission Mode", lv_color_hex(0x355E8A), lvglHc12PrevModeEvent, lvglHc12NextModeEvent,
+                                                     &lvglHc12ModeValueLabel, &lvglHc12ModeSubLabel);
+            lv_obj_t *hc12PowerCard = makeSelectorRow("Transmission Power", lv_color_hex(0xA35757), lvglHc12PrevPowerEvent, lvglHc12NextPowerEvent,
+                                                      &lvglHc12PowerValueLabel, &lvglHc12PowerSubLabel);
 
-            lvglCreateMenuButton(wrap, "Default", lv_color_hex(0xA35757), lvglHc12DefaultEvent, nullptr);
+            lv_obj_t *hc12DefaultBtn = lvglCreateMenuButton(wrap, lvglSymbolText(LV_SYMBOL_REFRESH, "Default").c_str(), lv_color_hex(0xA35757), lvglHc12DefaultEvent, nullptr);
             lvglHc12ConfigStatusLabel = lv_label_create(wrap);
             if (lvglHc12ConfigStatusLabel) {
                 lv_obj_set_width(lvglHc12ConfigStatusLabel, lv_pct(100));
@@ -5484,8 +6473,8 @@ void lvglEnsureScreenBuilt(UiScreen screen)
                 lv_obj_set_style_text_color(lvglHc12ConfigStatusLabel, lv_color_hex(0xA8BACB), 0);
             }
 
-            lvglCreateMenuButton(wrap, "Serial Terminal", lv_color_hex(0x2F6D86), lvglOpenHc12TerminalEvent, nullptr);
-            lvglCreateMenuButton(wrap, "Info", lv_color_hex(0x7A5C2E), lvglOpenHc12InfoEvent, nullptr);
+            lv_obj_t *hc12TerminalBtn = lvglCreateMenuButton(wrap, lvglSymbolText(LV_SYMBOL_KEYBOARD, "Serial Terminal").c_str(), lv_color_hex(0x2F6D86), lvglOpenHc12TerminalEvent, nullptr);
+            lv_obj_t *hc12InfoBtn = lvglCreateMenuButton(wrap, lvglSymbolText(LV_SYMBOL_LIST, "Info").c_str(), lv_color_hex(0x7A5C2E), lvglOpenHc12InfoEvent, nullptr);
 
             lv_obj_t *hintCard = lv_obj_create(wrap);
             lv_obj_set_width(hintCard, lv_pct(100));
@@ -5504,6 +6493,16 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_label_set_text_fmt(hintLbl,
                                   "HC12 RXD %d  |  TXD %d  |  SET %d  |  default 9600 baud\nOpen Serial Terminal for manual commands or Info to read the current module settings.",
                                   HC12_TX_PIN, HC12_RX_PIN, HC12_SET_PIN);
+            lvglRegisterReorderableItem(hc12ChannelCard, "ord_hc12", "chan");
+            lvglRegisterReorderableItem(hc12BaudCard, "ord_hc12", "baud");
+            lvglRegisterReorderableItem(hc12ModeCard, "ord_hc12", "mode");
+            lvglRegisterReorderableItem(hc12PowerCard, "ord_hc12", "power");
+            lvglRegisterReorderableItem(hc12DefaultBtn, "ord_hc12", "default");
+            lvglRegisterReorderableItem(lvglHc12ConfigStatusLabel, "ord_hc12", "status");
+            lvglRegisterReorderableItem(hc12TerminalBtn, "ord_hc12", "term");
+            lvglRegisterReorderableItem(hc12InfoBtn, "ord_hc12", "info");
+            lvglRegisterReorderableItem(hintCard, "ord_hc12", "hint");
+            lvglApplySavedOrder(wrap, "ord_hc12");
             lvglRefreshHc12ConfigUi();
             break;
         }
@@ -5566,6 +6565,10 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_add_event_cb(cmdTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
 
             makeSmallBtn(cmdRow, "Send", 70, 36, lv_color_hex(0x2F6D86), lvglHc12SendEvent, nullptr);
+            lvglRegisterReorderableItem(topRow, "ord_hct", "top");
+            lvglRegisterReorderableItem(terminalTa, "ord_hct", "term");
+            lvglRegisterReorderableItem(cmdRow, "ord_hct", "cmd");
+            lvglApplySavedOrder(wrap, "ord_hct");
             hc12InitIfNeeded();
             lvglRefreshHc12Ui();
             break;
@@ -5583,7 +6586,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_scroll_dir(wrap, LV_DIR_VER);
             lv_obj_set_scrollbar_mode(wrap, LV_SCROLLBAR_MODE_OFF);
 
-            auto makeInfoLine = [&](const char *title, lv_obj_t **valueOut) {
+            auto makeInfoLine = [&](const char *title, lv_obj_t **valueOut) -> lv_obj_t * {
                 lv_obj_t *card = lv_obj_create(wrap);
                 lv_obj_set_width(card, lv_pct(100));
                 lv_obj_set_height(card, LV_SIZE_CONTENT);
@@ -5604,14 +6607,22 @@ void lvglEnsureScreenBuilt(UiScreen screen)
                 lv_label_set_text(value, "--");
                 lv_obj_set_style_text_color(value, lv_color_hex(0xF5F8FB), 0);
                 *valueOut = value;
+                return card;
             };
 
-            makeInfoLine("Version", &lvglHc12InfoVersionLabel);
-            makeInfoLine("Baud Rate", &lvglHc12InfoBaudLabel);
-            makeInfoLine("Channel", &lvglHc12InfoChannelLabel);
-            makeInfoLine("FU Mode", &lvglHc12InfoFuModeLabel);
-            makeInfoLine("Power", &lvglHc12InfoPowerLabel);
-            makeInfoLine("Raw", &lvglHc12InfoRawLabel);
+            lv_obj_t *hc12InfoVersionCard = makeInfoLine("Version", &lvglHc12InfoVersionLabel);
+            lv_obj_t *hc12InfoBaudCard = makeInfoLine("Baud Rate", &lvglHc12InfoBaudLabel);
+            lv_obj_t *hc12InfoChannelCard = makeInfoLine("Channel", &lvglHc12InfoChannelLabel);
+            lv_obj_t *hc12InfoFuCard = makeInfoLine("FU Mode", &lvglHc12InfoFuModeLabel);
+            lv_obj_t *hc12InfoPowerCard = makeInfoLine("Power", &lvglHc12InfoPowerLabel);
+            lv_obj_t *hc12InfoRawCard = makeInfoLine("Raw", &lvglHc12InfoRawLabel);
+            lvglRegisterReorderableItem(hc12InfoVersionCard, "ord_hci", "ver");
+            lvglRegisterReorderableItem(hc12InfoBaudCard, "ord_hci", "baud");
+            lvglRegisterReorderableItem(hc12InfoChannelCard, "ord_hci", "chan");
+            lvglRegisterReorderableItem(hc12InfoFuCard, "ord_hci", "fu");
+            lvglRegisterReorderableItem(hc12InfoPowerCard, "ord_hci", "power");
+            lvglRegisterReorderableItem(hc12InfoRawCard, "ord_hci", "raw");
+            lvglApplySavedOrder(wrap, "ord_hci");
             break;
         }
         case UI_SCREENSAVER: {
@@ -5698,13 +6709,13 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_size(lvglMqttPassShowBtn, 34, 34);
             lv_obj_set_style_radius(lvglMqttPassShowBtn, 8, 0);
             lv_obj_set_style_border_width(lvglMqttPassShowBtn, 0, 0);
-            lv_obj_set_style_bg_color(lvglMqttPassShowBtn, lv_color_hex(0x3F4A57), LV_PART_MAIN | LV_STATE_DEFAULT);
-            lv_obj_set_style_bg_color(lvglMqttPassShowBtn, lv_color_hex(0x526274), LV_PART_MAIN | LV_STATE_PRESSED);
-            lv_obj_set_style_shadow_width(lvglMqttPassShowBtn, 0, 0);
+            lv_obj_add_event_cb(lvglMqttPassShowBtn, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
+            lv_obj_add_event_cb(lvglMqttPassShowBtn, lvglFilteredClickFlashEvent, LV_EVENT_CLICKED, nullptr);
             lv_obj_add_event_cb(lvglMqttPassShowBtn, lvglMqttPassShowToggleEvent, LV_EVENT_CLICKED, nullptr);
             lvglMqttPassShowBtnLabel = lv_label_create(lvglMqttPassShowBtn);
             lv_label_set_text(lvglMqttPassShowBtnLabel, LV_SYMBOL_EYE_CLOSE);
             lv_obj_center(lvglMqttPassShowBtnLabel);
+            lvglRegisterStyledButton(lvglMqttPassShowBtn, lv_color_hex(0x3F4A57), true);
 
             lvglMqttDiscTa = addTa("Discovery prefix", false, false);
             lv_obj_t *actRow = lv_obj_create(formWrap);
@@ -5716,9 +6727,17 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_flex_flow(actRow, LV_FLEX_FLOW_ROW);
             lv_obj_set_flex_align(actRow, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
             lv_obj_clear_flag(actRow, LV_OBJ_FLAG_SCROLLABLE);
-            makeSmallBtn(actRow, "Save", 58, 30, lv_color_hex(0x3A7A3A), lvglMqttSaveEvent);
-            makeSmallBtn(actRow, "Connect", 70, 30, lv_color_hex(0x2F6D86), lvglMqttConnectEvent);
-            makeSmallBtn(actRow, "Discover", 82, 30, lv_color_hex(0x2F6D86), lvglMqttPublishDiscoveryEvent);
+            makeSmallBtn(actRow, lvglSymbolText(LV_SYMBOL_SAVE, "Save").c_str(), 76, 30, lv_color_hex(0x3A7A3A), lvglMqttSaveEvent);
+            makeSmallBtn(actRow, lvglSymbolText(LV_SYMBOL_POWER, "Connect").c_str(), 92, 30, lv_color_hex(0x2F6D86), lvglMqttConnectEvent);
+            makeSmallBtn(actRow, lvglSymbolText(LV_SYMBOL_WIFI, "Discover").c_str(), 102, 30, lv_color_hex(0x2F6D86), lvglMqttPublishDiscoveryEvent);
+            lvglRegisterReorderableItem(enableRow, "ord_mcfg", "enable");
+            lvglRegisterReorderableItem(lvglMqttBrokerTa, "ord_mcfg", "broker");
+            lvglRegisterReorderableItem(lvglMqttPortTa, "ord_mcfg", "port");
+            lvglRegisterReorderableItem(lvglMqttUserTa, "ord_mcfg", "user");
+            lvglRegisterReorderableItem(mqttPwdRow, "ord_mcfg", "pass");
+            lvglRegisterReorderableItem(lvglMqttDiscTa, "ord_mcfg", "disc");
+            lvglRegisterReorderableItem(actRow, "ord_mcfg", "act");
+            lvglApplySavedOrder(formWrap, "ord_mcfg");
 
             lvglMqttStatusPanel = lv_obj_create(mqWrap);
             lv_obj_set_size(lvglMqttStatusPanel, lv_pct(100), mqttStatusPanelH);
@@ -6366,25 +7385,36 @@ void lvglChatDiscoveryToggleEvent(lv_event_t *e)
     (void)e;
     p2pDiscoveryEnabled = !p2pDiscoveryEnabled;
     saveP2pConfig();
-    if (lvglChatDiscoveryBtn) {
-        lv_obj_t *lbl = lv_obj_get_child(lvglChatDiscoveryBtn, 0);
-        if (lbl) lv_label_set_text(lbl, "Discovery");
-        lv_obj_set_style_bg_color(lvglChatDiscoveryBtn,
-                                  p2pDiscoveryEnabled ? lv_color_hex(0x3A7A3A) : lv_color_hex(0x4E5D6C),
-                                  LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_color(lvglChatDiscoveryBtn,
-                                  p2pDiscoveryEnabled ? lv_color_hex(0x3A7A3A) : lv_color_hex(0x4E5D6C),
-                                  LV_PART_MAIN | LV_STATE_PRESSED);
-    }
+    lvglApplyChatDiscoveryButtonStyle();
     uiStatusLine = p2pDiscoveryEnabled ? "Peer discovery enabled" : "Peer discovery disabled";
     lvglSyncStatusLine();
 }
 
-void lvglRecoveryHintEvent(lv_event_t *e)
+void lvglApModeEvent(lv_event_t *e)
 {
     (void)e;
-    uiStatusLine = "Open /recovery in browser";
+    if (airplaneModeEnabled) {
+        uiStatusLine = "Disable airplane mode first";
+        lvglSyncStatusLine();
+        return;
+    }
+    if (wifiSessionApMode) {
+        wifiSessionApMode = false;
+        disableApWhenStaConnected("ui_ap_mode_off");
+        if (wifiHasStaTarget()) {
+            beginStaConnectAttempt("ui_ap_mode_off");
+            uiStatusLine = "Trying saved WiFi";
+        } else {
+            uiStatusLine = "No saved WiFi";
+        }
+    } else {
+        forceSessionApMode("ui_ap_mode");
+        uiStatusLine = "AP mode enabled";
+    }
     lvglSyncStatusLine();
+    lvglRefreshConfigUi();
+    lvglRefreshAllButtonStyles();
+    lvglRefreshWifiList();
 }
 
 void lvglWifiRescanEvent(lv_event_t *e)
@@ -6623,7 +7653,8 @@ void lvglRefreshMediaPlayerUi()
     if (trackText.length() > 34) trackText = trackText.substring(0, 31) + "...";
     lv_label_set_text_fmt(lvglMediaTrackLabel, "Track: %s", trackText.c_str());
 
-    lv_label_set_text(lvglMediaPlayBtnLabel, (mediaIsPlaying || mediaPaused) ? "Stop" : "Play");
+    lv_label_set_text(lvglMediaPlayBtnLabel, lvglSymbolText((mediaIsPlaying || mediaPaused) ? LV_SYMBOL_STOP : LV_SYMBOL_PLAY,
+                                                            (mediaIsPlaying || mediaPaused) ? "Stop" : "Play").c_str());
 
     if (lvglMediaVolSlider && lv_slider_get_value(lvglMediaVolSlider) != static_cast<int32_t>(mediaVolumePercent)) {
         lv_slider_set_value(lvglMediaVolSlider, static_cast<int32_t>(mediaVolumePercent), LV_ANIM_OFF);
@@ -6795,7 +7826,6 @@ void lvglRefreshChatUi()
                 lv_obj_set_height(playBtn, 28);
                 lv_obj_set_style_radius(playBtn, 10, 0);
                 lv_obj_set_style_border_width(playBtn, 0, 0);
-                lv_obj_set_style_bg_color(playBtn, lv_color_hex(0x3A8F4B), 0);
                 lv_obj_clear_flag(playBtn, LV_OBJ_FLAG_SCROLLABLE);
                 lv_obj_add_event_cb(playBtn, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
                 lv_obj_add_event_cb(playBtn, lvglFilteredClickFlashEvent, LV_EVENT_CLICKED, nullptr);
@@ -6803,6 +7833,7 @@ void lvglRefreshChatUi()
                 lv_obj_t *playLbl = lv_label_create(playBtn);
                 lv_label_set_text(playLbl, "Play");
                 lv_obj_center(playLbl);
+                lvglRegisterStyledButton(playBtn, lv_color_hex(0x3A8F4B), true);
             } else {
                 lv_obj_t *inviteState = lv_label_create(bubble);
                 const bool activeInvite = (checkersMode == CHECKERS_MODE_TAG) &&
@@ -6820,16 +7851,18 @@ void lvglRefreshChatUi()
         if (chatMessages[i].outgoing) {
             lv_obj_t *delBtn = lv_btn_create(row);
             lv_obj_set_size(delBtn, 24, 24);
-            lv_obj_set_style_bg_color(delBtn, lv_color_hex(0x7A2E2E), 0);
             lv_obj_set_style_border_width(delBtn, 0, 0);
             lv_obj_set_style_radius(delBtn, 12, 0);
             lv_obj_set_style_pad_all(delBtn, 0, 0);
             lv_obj_clear_flag(delBtn, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_add_event_cb(delBtn, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
+            lv_obj_add_event_cb(delBtn, lvglFilteredClickFlashEvent, LV_EVENT_CLICKED, nullptr);
             lv_obj_add_event_cb(delBtn, lvglDeleteChatMessageEvent, LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(i)));
             lv_obj_t *delLbl = lv_label_create(delBtn);
             lv_label_set_text(delLbl, LV_SYMBOL_TRASH);
             lv_obj_set_style_text_color(delLbl, lv_color_hex(0xF5D2D2), 0);
             lv_obj_center(delLbl);
+            lvglRegisterStyledButton(delBtn, lv_color_hex(0x7A2E2E), true);
         }
     }
 
@@ -6960,6 +7993,8 @@ void lvglRefreshChatContactsUi()
         lv_obj_t *lbl = lv_label_create(lvglChatContacts);
         lv_label_set_text(lbl, "No chats yet");
         lv_obj_set_style_text_color(lbl, lv_color_hex(0xC8CED6), 0);
+        lvglRegisterReorderableItem(lbl, "ord_ctc", "empty");
+        lvglApplySavedOrder(lvglChatContacts, "ord_ctc");
         return;
     }
 
@@ -6972,10 +8007,10 @@ void lvglRefreshChatContactsUi()
         lv_obj_set_style_pad_right(b, 10, 0);
         lv_obj_set_style_radius(b, 10, 0);
         lv_obj_set_style_border_width(b, 0, 0);
-        lv_obj_set_style_bg_color(b, col, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_color(b, col, LV_PART_MAIN | LV_STATE_PRESSED);
         lv_obj_add_event_cb(b, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
+        lv_obj_add_event_cb(b, lvglFilteredClickFlashEvent, LV_EVENT_CLICKED, nullptr);
         lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, ud);
+        lvglRegisterStyledButton(b, col, conversationOpen);
         return b;
     };
 
@@ -6999,11 +8034,14 @@ void lvglRefreshChatContactsUi()
             },
             reinterpret_cast<void *>(static_cast<intptr_t>(i)));
         if (!btn) continue;
+        const String orderKey = lvglOrderTokenFromText("p", p2pPeers[i].pubKeyHex);
+        lvglRegisterReorderableItem(btn, "ord_ctc", orderKey.c_str());
 
         lv_obj_t *nameLabel = lv_label_create(btn);
         if (nameLabel) {
             lv_label_set_text(nameLabel, p2pPeers[i].name.isEmpty() ? "Peer" : p2pPeers[i].name.c_str());
             lv_obj_align(nameLabel, LV_ALIGN_LEFT_MID, 10, 0);
+            lvglRegisterStyledButton(btn, col, !currentChatPeerKey.isEmpty());
         }
 
         if (p2pPeers[i].unread) {
@@ -7034,11 +8072,14 @@ void lvglRefreshChatContactsUi()
             },
             reinterpret_cast<void *>(static_cast<intptr_t>(10000 + i)));
         if (!btn) continue;
+        const String orderKey = lvglOrderTokenFromText("r", hc12DiscoveredPeers[i].pubKeyHex);
+        lvglRegisterReorderableItem(btn, "ord_ctc", orderKey.c_str());
 
         lv_obj_t *nameLabel = lv_label_create(btn);
         if (nameLabel) {
             lv_label_set_text(nameLabel, title.c_str());
             lv_obj_align(nameLabel, LV_ALIGN_LEFT_MID, 10, 0);
+            lvglRegisterStyledButton(btn, col, !currentChatPeerKey.isEmpty());
         }
 
         if (hc12DiscoveredPeers[i].unread) {
@@ -7053,6 +8094,7 @@ void lvglRefreshChatContactsUi()
             }
         }
     }
+    lvglApplySavedOrder(lvglChatContacts, "ord_ctc");
 }
 
 void lvglSetChatPeerScanButtonStatus(const char *text, uint32_t revertDelayMs)
@@ -7060,14 +8102,14 @@ void lvglSetChatPeerScanButtonStatus(const char *text, uint32_t revertDelayMs)
     if (!lvglChatPeerScanBtn) return;
     lv_obj_t *label = lv_obj_get_child(lvglChatPeerScanBtn, 0);
     if (!label) return;
-    lv_label_set_text(label, text ? text : "Scan");
+    lv_label_set_text(label, lvglSymbolText(LV_SYMBOL_REFRESH, text ? text : "Scan").c_str());
     if (revertDelayMs == 0) return;
     lv_timer_t *timer = lv_timer_create(
         [](lv_timer_t *timer) {
             lv_obj_t *btn = static_cast<lv_obj_t *>(timer ? timer->user_data : nullptr);
             if (btn) {
                 lv_obj_t *lbl = lv_obj_get_child(btn, 0);
-                if (lbl) lv_label_set_text(lbl, "Scan");
+                if (lbl) lv_label_set_text(lbl, lvglSymbolText(LV_SYMBOL_REFRESH, "Scan").c_str());
             }
             if (timer) lv_timer_del(timer);
         },
@@ -7177,13 +8219,8 @@ void lvglRefreshChatPeerUi()
 {
     if (lvglChatDiscoveryBtn) {
         lv_obj_t *label = lv_obj_get_child(lvglChatDiscoveryBtn, 0);
-        if (label) lv_label_set_text(label, "Discovery");
-        lv_obj_set_style_bg_color(lvglChatDiscoveryBtn,
-                                  p2pDiscoveryEnabled ? lv_color_hex(0x3A7A3A) : lv_color_hex(0x4E5D6C),
-                                  LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_color(lvglChatDiscoveryBtn,
-                                  p2pDiscoveryEnabled ? lv_color_hex(0x3A7A3A) : lv_color_hex(0x4E5D6C),
-                                  LV_PART_MAIN | LV_STATE_PRESSED);
+        if (label) lv_label_set_text(label, lvglSymbolText(LV_SYMBOL_WIFI, "Discovery").c_str());
+        lvglApplyChatDiscoveryButtonStyle();
     }
     if (lvglChatPeerIdentityLabel) {
         const String pub = p2pPublicKeyHex();
@@ -7200,15 +8237,15 @@ void lvglRefreshChatPeerUi()
         lv_obj_set_size(b, w, h);
         lv_obj_set_style_radius(b, 8, 0);
         lv_obj_set_style_border_width(b, 0, 0);
-        lv_obj_set_style_bg_color(b, col, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_color(b, col, LV_PART_MAIN | LV_STATE_PRESSED);
         lv_obj_add_event_cb(b, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
+        lv_obj_add_event_cb(b, lvglFilteredClickFlashEvent, LV_EVENT_CLICKED, nullptr);
         lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, ud);
         lv_obj_t *l = lv_label_create(b);
         if (l) {
             lv_label_set_text(l, txt);
             lv_obj_center(l);
         }
+        lvglRegisterStyledButton(b, col, true);
         return b;
     };
 
@@ -7219,6 +8256,7 @@ void lvglRefreshChatPeerUi()
         lv_obj_set_width(section, lv_pct(100));
         lv_label_set_text(section, "Paired Devices");
         lv_obj_set_style_text_color(section, lv_color_hex(0xE5ECF3), 0);
+        lvglRegisterReorderableItem(section, "ord_cpr", "sec_p");
 
         for (int i = 0; i < p2pPeerCount; ++i) {
             const bool enabled = p2pPeers[i].enabled;
@@ -7234,6 +8272,8 @@ void lvglRefreshChatPeerUi()
             lv_obj_set_style_pad_row(card, 4, 0);
             lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
             lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+            const String orderKey = lvglOrderTokenFromText("p", p2pPeers[i].pubKeyHex);
+            lvglRegisterReorderableItem(card, "ord_cpr", orderKey.c_str());
 
             lv_obj_t *title = lv_label_create(card);
             lv_label_set_text_fmt(title, "%s  [%s]", p2pPeers[i].name.isEmpty() ? "Peer" : p2pPeers[i].name.c_str(), enabled ? "paired" : "disabled");
@@ -7276,6 +8316,7 @@ void lvglRefreshChatPeerUi()
         lv_obj_set_width(section, lv_pct(100));
         lv_label_set_text(section, "Discovered");
         lv_obj_set_style_text_color(section, lv_color_hex(0xE5ECF3), 0);
+        lvglRegisterReorderableItem(section, "ord_cpr", "sec_d");
     }
 
     for (int i = 0; i < p2pDiscoveredCount; ++i) {
@@ -7293,6 +8334,8 @@ void lvglRefreshChatPeerUi()
         lv_obj_set_style_pad_row(card, 4, 0);
         lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
         lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+        const String orderKey = lvglOrderTokenFromText("d", p2pDiscoveredPeers[i].pubKeyHex);
+        lvglRegisterReorderableItem(card, "ord_cpr", orderKey.c_str());
 
         lv_obj_t *title = lv_label_create(card);
         lv_label_set_text_fmt(title, "%s  [discovered]", p2pDiscoveredPeers[i].name.c_str());
@@ -7332,6 +8375,7 @@ void lvglRefreshChatPeerUi()
         lv_obj_set_width(section, lv_pct(100));
         lv_label_set_text(section, "HC-12 Radio");
         lv_obj_set_style_text_color(section, lv_color_hex(0xE5ECF3), 0);
+        lvglRegisterReorderableItem(section, "ord_cpr", "sec_r");
     }
 
     for (int i = 0; i < hc12DiscoveredCount; ++i) {
@@ -7348,6 +8392,8 @@ void lvglRefreshChatPeerUi()
         lv_obj_set_style_pad_row(card, 4, 0);
         lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
         lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+        const String orderKey = lvglOrderTokenFromText("r", hc12DiscoveredPeers[i].pubKeyHex);
+        lvglRegisterReorderableItem(card, "ord_cpr", orderKey.c_str());
 
         lv_obj_t *title = lv_label_create(card);
         lv_label_set_text_fmt(title, "%s  [radio]",
@@ -7385,7 +8431,9 @@ void lvglRefreshChatPeerUi()
         lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
         lv_label_set_text(lbl, "No paired or discovered peers yet.\nOpen this screen on another device on the same WiFi or same HC-12 channel, then tap Scan.");
         lv_obj_set_style_text_color(lbl, lv_color_hex(0xC8CED6), 0);
+        lvglRegisterReorderableItem(lbl, "ord_cpr", "empty");
     }
+    lvglApplySavedOrder(lvglChatPeerList, "ord_cpr");
 }
 
 void p2pEnsureUdp()
@@ -7862,26 +8910,26 @@ void lvglRefreshInfoPanel()
     lv_obj_t *wifiCard = lvglFindInfoCardByTitle("WiFi Strength");
     lv_obj_t *lightCard = lvglFindInfoCardByTitle("Lighting");
 
-    if (lvglInfoBatteryValueLabel) lv_label_set_text_fmt(lvglInfoBatteryValueLabel, "%u%%", batteryPercent);
+    if (lvglInfoBatteryValueLabel) lvglLabelSetTextIfChanged(lvglInfoBatteryValueLabel, String(batteryPercent) + "%");
     if (lvglInfoBatterySubLabel) {
-        lv_label_set_text(lvglInfoBatterySubLabel, batteryBuf);
+        lvglLabelSetTextIfChanged(lvglInfoBatterySubLabel, batteryBuf);
     }
     if (lv_obj_t *batteryBar = lvglInfoCardBar(batteryCard)) {
-        lv_bar_set_value(batteryBar, static_cast<int32_t>(batteryPercent), LV_ANIM_ON);
+        lvglBarSetValueIfChanged(batteryBar, static_cast<int32_t>(batteryPercent), LV_ANIM_ON);
         lv_color_t batteryColor = lv_color_hex(0x52B788);
         if (batteryPercent <= 20) batteryColor = lv_color_hex(0xD95C5C);
         else if (batteryPercent <= 45) batteryColor = lv_color_hex(0xF2C35E);
         lvglSetInfoBarColor(batteryBar, batteryColor);
     }
 
-    if (lvglInfoWifiValueLabel) lv_label_set_text_fmt(lvglInfoWifiValueLabel, connected ? "%u%%" : "Offline", wifiQuality);
+    if (lvglInfoWifiValueLabel) lvglLabelSetTextIfChanged(lvglInfoWifiValueLabel, connected ? String(wifiQuality) + "%" : String("Offline"));
     if (lvglInfoWifiSubLabel) {
-        if (connected) lv_label_set_text_fmt(lvglInfoWifiSubLabel, "%s  |  %s  |  %ddBm", ssid.c_str(), ip.c_str(), rssi);
-        else if (apModeActive) lv_label_set_text_fmt(lvglInfoWifiSubLabel, "AP %s  |  %s  |  Touch to Config > WiFi Config to connect", savedApSsid.c_str(), WiFi.softAPIP().toString().c_str());
-        else lv_label_set_text_fmt(lvglInfoWifiSubLabel, "AP %s  |  Touch to Config > WiFi Config to connect", savedApSsid.c_str());
+        if (connected) lvglLabelSetTextIfChanged(lvglInfoWifiSubLabel, ssid + "  |  " + ip + "  |  " + String(rssi) + "dBm");
+        else if (apModeActive) lvglLabelSetTextIfChanged(lvglInfoWifiSubLabel, "AP " + savedApSsid + "  |  " + WiFi.softAPIP().toString() + "  |  Touch to Config > WiFi Config to connect");
+        else lvglLabelSetTextIfChanged(lvglInfoWifiSubLabel, "AP " + savedApSsid + "  |  Touch to Config > WiFi Config to connect");
     }
     if (lv_obj_t *wifiBar = lvglInfoCardBar(wifiCard)) {
-        lv_bar_set_value(wifiBar, static_cast<int32_t>(connected ? wifiQuality : 0U), LV_ANIM_ON);
+        lvglBarSetValueIfChanged(wifiBar, static_cast<int32_t>(connected ? wifiQuality : 0U), LV_ANIM_ON);
         lv_color_t wifiColor = lv_color_hex(0x4A5563);
         if (connected) {
             wifiColor = lv_color_hex(0x4FC3F7);
@@ -7891,18 +8939,18 @@ void lvglRefreshInfoPanel()
         lvglSetInfoBarColor(wifiBar, wifiColor);
     }
 
-    if (lvglInfoHc12ValueLabel) lv_label_set_text(lvglInfoHc12ValueLabel, hc12InfoValueText.c_str());
-    if (lvglInfoHc12SubLabel) lv_label_set_text(lvglInfoHc12SubLabel, hc12InfoSubText.c_str());
+    if (lvglInfoHc12ValueLabel) lvglLabelSetTextIfChanged(lvglInfoHc12ValueLabel, hc12InfoValueText);
+    if (lvglInfoHc12SubLabel) lvglLabelSetTextIfChanged(lvglInfoHc12SubLabel, hc12InfoSubText);
 
-    if (lvglInfoLightValueLabel) lv_label_set_text_fmt(lvglInfoLightValueLabel, "%u%%", lightPercent);
+    if (lvglInfoLightValueLabel) lvglLabelSetTextIfChanged(lvglInfoLightValueLabel, String(lightPercent) + "%");
     if (lvglInfoLightSubLabel) {
-        lv_label_set_text_fmt(lvglInfoLightSubLabel, "Display %s  |  Backlight %u%%  |  raw %u",
-                              displayAwake ? "awake" : "sleeping",
-                              static_cast<unsigned int>(displayBrightnessPercent),
-                              static_cast<unsigned int>(lightRawAdc));
+        lvglLabelSetTextIfChanged(lvglInfoLightSubLabel,
+                                  String("Display ") + (displayAwake ? "awake" : "sleeping") +
+                                  "  |  Backlight " + String(displayBrightnessPercent) +
+                                  "%  |  raw " + String(lightRawAdc));
     }
     if (lv_obj_t *lightBar = lvglInfoCardBar(lightCard)) {
-        lv_bar_set_value(lightBar, static_cast<int32_t>(lightPercent), LV_ANIM_ON);
+        lvglBarSetValueIfChanged(lightBar, static_cast<int32_t>(lightPercent), LV_ANIM_ON);
         lv_color_t lightColor = lv_color_hex(0x4A5563);
         if (lightPercent >= 75) lightColor = lv_color_hex(0xF4B942);
         else if (lightPercent >= 35) lightColor = lv_color_hex(0xF2C35E);
@@ -7919,21 +8967,21 @@ void lvglRefreshInfoPanel()
     }
     const uint8_t sdPct = (sdTotal > 0) ? static_cast<uint8_t>((sdUsed * 100ULL) / sdTotal) : 0U;
     if (lv_obj_t *sdValue = lvglInfoCardValueLabel(sdCard)) {
-        if (sdTotal > 0) lv_label_set_text_fmt(sdValue, "%u%%", static_cast<unsigned int>(sdPct));
-        else lv_label_set_text(sdValue, sdMounted ? "--" : "Off");
+        if (sdTotal > 0) lvglLabelSetTextIfChanged(sdValue, String(sdPct) + "%");
+        else lvglLabelSetTextIfChanged(sdValue, sdMounted ? "--" : "Off");
     }
     if (lv_obj_t *sdSub = lvglInfoCardSubLabel(sdCard)) {
         if (sdTotal > 0) {
-            lv_label_set_text_fmt(sdSub, "Used %llu / %llu MB  |  Free %llu MB",
-                                  static_cast<unsigned long long>(sdUsed / (1024ULL * 1024ULL)),
-                                  static_cast<unsigned long long>(sdTotal / (1024ULL * 1024ULL)),
-                                  static_cast<unsigned long long>((sdTotal - sdUsed) / (1024ULL * 1024ULL)));
+            lvglLabelSetTextIfChanged(sdSub,
+                                      "Used " + String(static_cast<unsigned long long>(sdUsed / (1024ULL * 1024ULL))) +
+                                      " / " + String(static_cast<unsigned long long>(sdTotal / (1024ULL * 1024ULL))) +
+                                      " MB  |  Free " + String(static_cast<unsigned long long>((sdTotal - sdUsed) / (1024ULL * 1024ULL))) + " MB");
         } else {
-            lv_label_set_text(sdSub, sdMounted ? "Capacity unavailable" : "Card offline");
+            lvglLabelSetTextIfChanged(sdSub, sdMounted ? "Capacity unavailable" : "Card offline");
         }
     }
     if (lv_obj_t *sdBar = lvglInfoCardBar(sdCard)) {
-        lv_bar_set_value(sdBar, static_cast<int32_t>(sdTotal > 0 ? sdPct : 0U), LV_ANIM_ON);
+        lvglBarSetValueIfChanged(sdBar, static_cast<int32_t>(sdTotal > 0 ? sdPct : 0U), LV_ANIM_ON);
         lv_color_t sdColor = lv_color_hex(0xE59F45);
         if (sdPct >= 90) sdColor = lv_color_hex(0xD95C5C);
         else if (sdPct >= 75) sdColor = lv_color_hex(0xF2C35E);
@@ -7943,16 +8991,16 @@ void lvglRefreshInfoPanel()
     const uint32_t sramUsed = (heapTotal >= freeHeap) ? (heapTotal - freeHeap) : 0U;
     const uint8_t sramPct = (heapTotal > 0) ? static_cast<uint8_t>((static_cast<uint64_t>(sramUsed) * 100ULL) / heapTotal) : 0U;
     if (lv_obj_t *sramValue = lvglInfoCardValueLabel(lvglInfoSramCard)) {
-        lv_label_set_text_fmt(sramValue, "%u%%", static_cast<unsigned int>(sramPct));
+        lvglLabelSetTextIfChanged(sramValue, String(sramPct) + "%");
     }
     if (lv_obj_t *sramSub = lvglInfoCardSubLabel(lvglInfoSramCard)) {
-        lv_label_set_text_fmt(sramSub, "Used %lu / %lu KB  |  Free %lu KB",
-                              static_cast<unsigned long>(sramUsed / 1024U),
-                              static_cast<unsigned long>(heapTotal / 1024U),
-                              static_cast<unsigned long>(freeHeap / 1024U));
+        lvglLabelSetTextIfChanged(sramSub,
+                                  "Used " + String(static_cast<unsigned long>(sramUsed / 1024U)) +
+                                  " / " + String(static_cast<unsigned long>(heapTotal / 1024U)) +
+                                  " KB  |  Free " + String(static_cast<unsigned long>(freeHeap / 1024U)) + " KB");
     }
     if (lv_obj_t *sramBar = lvglInfoCardBar(lvglInfoSramCard)) {
-        lv_bar_set_value(sramBar, static_cast<int32_t>(sramPct), LV_ANIM_ON);
+        lvglBarSetValueIfChanged(sramBar, static_cast<int32_t>(sramPct), LV_ANIM_ON);
         lv_color_t sramColor = lv_color_hex(0x4FC3F7);
         if (sramPct >= 85) sramColor = lv_color_hex(0xD95C5C);
         else if (sramPct >= 65) sramColor = lv_color_hex(0xF2C35E);
@@ -7967,28 +9015,27 @@ void lvglRefreshInfoPanel()
     if (lv_obj_t *psramValue = lvglInfoCardValueLabel(lvglInfoPsramCard)) {
         if (psramTotal > 0) {
             if (psramPctTenths < 100U) {
-                lv_label_set_text_fmt(psramValue,
-                                      "%u.%u%%",
-                                      static_cast<unsigned int>(psramPctTenths / 10U),
-                                      static_cast<unsigned int>(psramPctTenths % 10U));
+                lvglLabelSetTextIfChanged(psramValue,
+                                          String(static_cast<unsigned int>(psramPctTenths / 10U)) + "." +
+                                          String(static_cast<unsigned int>(psramPctTenths % 10U)) + "%");
             } else {
-                lv_label_set_text_fmt(psramValue, "%u%%", static_cast<unsigned int>(psramPct));
+                lvglLabelSetTextIfChanged(psramValue, String(static_cast<unsigned int>(psramPct)) + "%");
             }
         }
-        else lv_label_set_text(psramValue, "--");
+        else lvglLabelSetTextIfChanged(psramValue, "--");
     }
     if (lv_obj_t *psramSub = lvglInfoCardSubLabel(lvglInfoPsramCard)) {
         if (psramTotal > 0) {
-            lv_label_set_text_fmt(psramSub, "Used %lu / %lu KB  |  Free %lu KB",
-                                  static_cast<unsigned long>(psramUsed / 1024U),
-                                  static_cast<unsigned long>(psramTotal / 1024U),
-                                  static_cast<unsigned long>(psramFree / 1024U));
+            lvglLabelSetTextIfChanged(psramSub,
+                                      "Used " + String(static_cast<unsigned long>(psramUsed / 1024U)) +
+                                      " / " + String(static_cast<unsigned long>(psramTotal / 1024U)) +
+                                      " KB  |  Free " + String(static_cast<unsigned long>(psramFree / 1024U)) + " KB");
         } else {
-            lv_label_set_text(psramSub, "Not available on this board");
+            lvglLabelSetTextIfChanged(psramSub, "Not available on this board");
         }
     }
     if (lv_obj_t *psramBar = lvglInfoCardBar(lvglInfoPsramCard)) {
-        lv_bar_set_value(psramBar, static_cast<int32_t>(psramTotal > 0 ? psramPct : 0U), LV_ANIM_ON);
+        lvglBarSetValueIfChanged(psramBar, static_cast<int32_t>(psramTotal > 0 ? psramPct : 0U), LV_ANIM_ON);
         lv_color_t psramColor = lv_color_hex(0x9B7CF2);
         if (psramPct >= 85) psramColor = lv_color_hex(0xD95C5C);
         else if (psramPct >= 65) psramColor = lv_color_hex(0xF2C35E);
@@ -8100,20 +9147,21 @@ void lvglRefreshWifiList()
         lv_obj_set_size(btn, w, h);
         lv_obj_set_style_radius(btn, 8, 0);
         lv_obj_set_style_border_width(btn, 0, 0);
-        lv_obj_set_style_bg_color(btn, col, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_color(btn, col, LV_PART_MAIN | LV_STATE_PRESSED);
         lv_obj_add_event_cb(btn, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
+        lv_obj_add_event_cb(btn, lvglFilteredClickFlashEvent, LV_EVENT_CLICKED, nullptr);
         lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, ud);
         lv_obj_t *lbl = lv_label_create(btn);
         if (lbl) {
             lv_label_set_text(lbl, txt);
             lv_obj_center(lbl);
         }
+        lvglRegisterStyledButton(btn, col, true);
         return btn;
     };
 
     lv_obj_t *staCard = makeCard("WiFi Config");
     if (staCard) {
+        lvglRegisterReorderableItem(staCard, "ord_wifi", "sta");
         lv_obj_t *info = lv_label_create(staCard);
         lv_obj_set_width(info, lv_pct(100));
         lv_label_set_long_mode(info, LV_LABEL_LONG_WRAP);
@@ -8135,23 +9183,27 @@ void lvglRefreshWifiList()
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
         if (wifiConnectedSafe() || bootStaConnectInProgress || wifiForgetPendingUi) {
-            makeBtn(row, "Disconnect", 82, 28, lv_color_hex(0x2F6D86), lvglWifiDisconnectEvent);
+            makeBtn(row, lvglSymbolText(LV_SYMBOL_CLOSE, "Disconnect").c_str(), 102, 28, lv_color_hex(0x2F6D86), lvglWifiDisconnectEvent);
         }
         if (!desiredStaSsid.isEmpty() || pendingSaveCreds || wifiForgetPendingUi) {
-            makeBtn(row, "Forget", 64, 28, lv_color_hex(0x8A3A3A), lvglWifiForgetEvent);
+            makeBtn(row, lvglSymbolText(LV_SYMBOL_TRASH, "Forget").c_str(), 82, 28, lv_color_hex(0x8A3A3A), lvglWifiForgetEvent);
         }
 
         lvglWifiWebServerBtn = makeBtn(
             staCard,
-            webServerEnabled ? "Web Server: ON" : "Web Server: OFF",
-            132,
+            lvglSymbolText(LV_SYMBOL_DIRECTORY, webServerEnabled ? "Web Server: ON" : "Web Server: OFF").c_str(),
+            164,
             30,
             webServerEnabled ? lv_color_hex(0x357A38) : lv_color_hex(0x6B3A3A),
             lvglWifiWebServerToggleEvent
         );
+        if (lvglWifiWebServerBtn) {
+            lvglApplyWifiWebServerButtonStyle();
+        }
     }
 
-    makeBtn(lvglWifiList, "Scan", 92, 30, lv_color_hex(0x2F6D86), lvglWifiRescanEvent);
+    lv_obj_t *scanBtn = makeBtn(lvglWifiList, lvglSymbolText(LV_SYMBOL_REFRESH, "Scan").c_str(), 108, 30, lv_color_hex(0x2F6D86), lvglWifiRescanEvent);
+    if (scanBtn) lvglRegisterReorderableItem(scanBtn, "ord_wifi", "scan");
 
     if (wifiScanInProgress) {
         lvglWifiScanLabel = lv_label_create(lvglWifiList);
@@ -8160,30 +9212,38 @@ void lvglRefreshWifiList()
             lv_obj_set_width(lvglWifiScanLabel, lv_pct(100));
             lv_obj_set_style_text_align(lvglWifiScanLabel, LV_TEXT_ALIGN_CENTER, 0);
             lv_obj_set_style_text_color(lvglWifiScanLabel, lv_color_hex(0xC8CED6), 0);
+            lvglRegisterReorderableItem(lvglWifiScanLabel, "ord_wifi", "scaning");
         }
     } else if (wifiCount > 0) {
         lv_obj_t *sec = lv_label_create(lvglWifiList);
         lv_label_set_text(sec, "Discovered Networks");
         lv_obj_set_style_text_color(sec, lv_color_hex(0xE5ECF3), 0);
+        lvglRegisterReorderableItem(sec, "ord_wifi", "hdr");
         for (int i = 0; i < wifiCount; i++) {
             char line[96];
             snprintf(line, sizeof(line), "%s (%ddBm) [%s]", wifiEntries[i].ssid.c_str(), static_cast<int>(wifiEntries[i].rssi), authName(wifiEntries[i].auth));
-            lvglCreateMenuButton(
+            lv_obj_t *networkBtn = lvglCreateMenuButton(
                 lvglWifiList,
-                line,
+                lvglSymbolText(LV_SYMBOL_WIFI, line).c_str(),
                 (wifiEntries[i].auth == WIFI_AUTH_OPEN) ? lv_color_hex(0x357A38) : lv_color_hex(0x375A7A),
                 lvglWifiEntryEvent,
                 reinterpret_cast<void *>(static_cast<intptr_t>(i))
             );
+            if (networkBtn) {
+                const String orderKey = lvglOrderTokenFromText("n", wifiEntries[i].ssid + "|" + String(static_cast<int>(wifiEntries[i].auth)));
+                lvglRegisterReorderableItem(networkBtn, "ord_wifi", orderKey.c_str());
+            }
         }
     } else {
         lv_obj_t *lbl = lv_label_create(lvglWifiList);
         lv_label_set_text(lbl, "No scan started yet. Tap Scan.");
         lv_obj_set_style_text_color(lbl, lv_color_hex(0xC8CED6), 0);
+        lvglRegisterReorderableItem(lbl, "ord_wifi", "empty");
     }
 
     lv_obj_t *apCard = makeCard("AP Config");
     if (apCard) {
+        lvglRegisterReorderableItem(apCard, "ord_wifi", "ap");
         lv_obj_t *hint = lv_label_create(apCard);
         lv_obj_set_width(hint, lv_pct(100));
         lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
@@ -8221,16 +9281,17 @@ void lvglRefreshWifiList()
         lv_obj_set_size(lvglWifiApPassShowBtn, 34, 34);
         lv_obj_set_style_radius(lvglWifiApPassShowBtn, 8, 0);
         lv_obj_set_style_border_width(lvglWifiApPassShowBtn, 0, 0);
-        lv_obj_set_style_bg_color(lvglWifiApPassShowBtn, lv_color_hex(0x3F4A57), LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_color(lvglWifiApPassShowBtn, lv_color_hex(0x526274), LV_PART_MAIN | LV_STATE_PRESSED);
-        lv_obj_set_style_shadow_width(lvglWifiApPassShowBtn, 0, 0);
+        lv_obj_add_event_cb(lvglWifiApPassShowBtn, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
+        lv_obj_add_event_cb(lvglWifiApPassShowBtn, lvglFilteredClickFlashEvent, LV_EVENT_CLICKED, nullptr);
         lv_obj_add_event_cb(lvglWifiApPassShowBtn, lvglWifiApShowToggleEvent, LV_EVENT_CLICKED, nullptr);
         lvglWifiApPassShowBtnLabel = lv_label_create(lvglWifiApPassShowBtn);
         lv_label_set_text(lvglWifiApPassShowBtnLabel, LV_SYMBOL_EYE_CLOSE);
         lv_obj_center(lvglWifiApPassShowBtnLabel);
+        lvglRegisterStyledButton(lvglWifiApPassShowBtn, lv_color_hex(0x3F4A57), true);
 
-        makeBtn(apCard, "Save AP Config", 120, 30, lv_color_hex(0x3A7A3A), lvglWifiApSaveEvent);
+        makeBtn(apCard, lvglSymbolText(LV_SYMBOL_SAVE, "Save AP Config").c_str(), 144, 30, lv_color_hex(0x3A7A3A), lvglWifiApSaveEvent);
     }
+    lvglApplySavedOrder(lvglWifiList, "ord_wifi");
 }
 
 void lvglQueueMediaRefresh()
@@ -8269,29 +9330,39 @@ void lvglRefreshMediaList()
     loadMediaEntries();
 
     if (mediaOffset > 0) {
-        lvglCreateMenuButton(lvglMediaList, "<< Prev page", lv_color_hex(0x3F4A57), lvglMediaEntryEvent, reinterpret_cast<void *>(static_cast<intptr_t>(MEDIA_ENTRY_PREV_PAGE)));
+        lv_obj_t *btn = lvglCreateMenuButton(lvglMediaList, lvglSymbolText(LV_SYMBOL_PREV, "Prev page").c_str(), lv_color_hex(0x3F4A57), lvglMediaEntryEvent, reinterpret_cast<void *>(static_cast<intptr_t>(MEDIA_ENTRY_PREV_PAGE)));
+        if (btn) lvglRegisterReorderableItem(btn, "ord_media", "pg_prev");
     }
     if (mediaCurrentDir != "/") {
-        lvglCreateMenuButton(lvglMediaList, ".. (parent)", lv_color_hex(0x4E5D6C), lvglMediaEntryEvent, reinterpret_cast<void *>(static_cast<intptr_t>(MEDIA_ENTRY_PARENT)));
+        lv_obj_t *btn = lvglCreateMenuButton(lvglMediaList, lvglSymbolText(LV_SYMBOL_DIRECTORY, "Parent").c_str(), lv_color_hex(0x4E5D6C), lvglMediaEntryEvent, reinterpret_cast<void *>(static_cast<intptr_t>(MEDIA_ENTRY_PARENT)));
+        if (btn) lvglRegisterReorderableItem(btn, "ord_media", "parent");
     }
     for (int i = 0; i < mediaCount; i++) {
-        String label = mediaBuildListLabel(mediaEntries[i].name, mediaEntries[i].isDir, mediaEntries[i].size);
-        lvglCreateMenuButton(
+        String label = lvglSymbolText(mediaEntries[i].isDir ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_FILE,
+                                      mediaBuildListLabel(mediaEntries[i].name, mediaEntries[i].isDir, mediaEntries[i].size));
+        lv_obj_t *entryBtn = lvglCreateMenuButton(
             lvglMediaList,
             label.c_str(),
             mediaEntries[i].isDir ? lv_color_hex(0x2E7D9A) : lv_color_hex(0x355C3D),
             lvglMediaEntryEvent,
             reinterpret_cast<void *>(static_cast<intptr_t>(i))
         );
+        if (entryBtn) {
+            const String orderKey = lvglOrderTokenFromText("m", mediaEntries[i].path);
+            lvglRegisterReorderableItem(entryBtn, "ord_media", orderKey.c_str());
+        }
     }
     if (mediaHasMore) {
-        lvglCreateMenuButton(lvglMediaList, "Next page >>", lv_color_hex(0x3F4A57), lvglMediaEntryEvent, reinterpret_cast<void *>(static_cast<intptr_t>(MEDIA_ENTRY_NEXT_PAGE)));
+        lv_obj_t *btn = lvglCreateMenuButton(lvglMediaList, lvglSymbolText(LV_SYMBOL_NEXT, "Next page").c_str(), lv_color_hex(0x3F4A57), lvglMediaEntryEvent, reinterpret_cast<void *>(static_cast<intptr_t>(MEDIA_ENTRY_NEXT_PAGE)));
+        if (btn) lvglRegisterReorderableItem(btn, "ord_media", "pg_next");
     }
     if (mediaCount == 0) {
         lv_obj_t *lbl = lv_label_create(lvglMediaList);
         lv_label_set_text(lbl, "No media entries");
         lv_obj_set_style_text_color(lbl, lv_color_hex(0xC8CED6), 0);
+        lvglRegisterReorderableItem(lbl, "ord_media", "empty");
     }
+    lvglApplySavedOrder(lvglMediaList, "ord_media");
 }
 
 void lvglStatusPush(const String &line)
@@ -9129,13 +10200,13 @@ void lvglOpenWifiPasswordDialog(const String &ssid)
         lv_obj_set_size(lvglWifiPwdShowBtn, 34, 34);
         lv_obj_set_style_radius(lvglWifiPwdShowBtn, 8, 0);
         lv_obj_set_style_border_width(lvglWifiPwdShowBtn, 0, 0);
-        lv_obj_set_style_bg_color(lvglWifiPwdShowBtn, lv_color_hex(0x3F4A57), LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_color(lvglWifiPwdShowBtn, lv_color_hex(0x526274), LV_PART_MAIN | LV_STATE_PRESSED);
-        lv_obj_set_style_shadow_width(lvglWifiPwdShowBtn, 0, 0);
+        lv_obj_add_event_cb(lvglWifiPwdShowBtn, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
+        lv_obj_add_event_cb(lvglWifiPwdShowBtn, lvglFilteredClickFlashEvent, LV_EVENT_CLICKED, nullptr);
         lv_obj_add_event_cb(lvglWifiPwdShowBtn, lvglWifiPwdShowToggleEvent, LV_EVENT_CLICKED, nullptr);
         lvglWifiPwdShowBtnLabel = lv_label_create(lvglWifiPwdShowBtn);
         lv_label_set_text(lvglWifiPwdShowBtnLabel, LV_SYMBOL_EYE_OPEN);
         lv_obj_center(lvglWifiPwdShowBtnLabel);
+        lvglRegisterStyledButton(lvglWifiPwdShowBtn, lv_color_hex(0x3F4A57), true);
 
         lvglWifiPwdStatusLabel = lv_label_create(lvglWifiPwdModal);
         lv_obj_set_width(lvglWifiPwdStatusLabel, lv_pct(100));
@@ -9157,15 +10228,15 @@ void lvglOpenWifiPasswordDialog(const String &ssid)
             lv_obj_set_size(btn, 84, 30);
             lv_obj_set_style_radius(btn, 8, 0);
             lv_obj_set_style_border_width(btn, 0, 0);
-            lv_obj_set_style_bg_color(btn, color, LV_PART_MAIN | LV_STATE_DEFAULT);
-            lv_obj_set_style_bg_color(btn, color, LV_PART_MAIN | LV_STATE_PRESSED);
             lv_obj_add_event_cb(btn, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
+            lv_obj_add_event_cb(btn, lvglFilteredClickFlashEvent, LV_EVENT_CLICKED, nullptr);
             lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, nullptr);
             lv_obj_t *lbl = lv_label_create(btn);
             if (lbl) {
                 lv_label_set_text(lbl, txt);
                 lv_obj_center(lbl);
             }
+            lvglRegisterStyledButton(btn, color, true);
         };
         makeActionBtn("Cancel", lv_color_hex(0x4E5D6C), lvglWifiPwdCancelEvent);
         makeActionBtn("Save", lv_color_hex(0x357A38), lvglWifiPwdConnectEvent);
@@ -9429,15 +10500,15 @@ void lvglRefreshMqttControlsUi()
         lv_obj_set_size(b, w, h);
         lv_obj_set_style_radius(b, 8, 0);
         lv_obj_set_style_border_width(b, 0, 0);
-        lv_obj_set_style_bg_color(b, col, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_color(b, col, LV_PART_MAIN | LV_STATE_PRESSED);
         lv_obj_add_event_cb(b, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
+        lv_obj_add_event_cb(b, lvglFilteredClickFlashEvent, LV_EVENT_CLICKED, nullptr);
         lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, ud);
         lv_obj_t *l = lv_label_create(b);
         if (l) {
             lv_label_set_text(l, txt);
             lv_obj_center(l);
         }
+        lvglRegisterStyledButton(b, col, true);
         return b;
     };
 
@@ -9451,6 +10522,7 @@ void lvglRefreshMqttControlsUi()
     lv_obj_set_style_pad_row(editCard, 6, 0);
     lv_obj_set_flex_flow(editCard, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(editCard, LV_OBJ_FLAG_SCROLLABLE);
+    lvglRegisterReorderableItem(editCard, "ord_mctl", "edit");
 
     lv_obj_t *countRow = lv_obj_create(editCard);
     lv_obj_set_size(countRow, lv_pct(100), 34);
@@ -9501,19 +10573,25 @@ void lvglRefreshMqttControlsUi()
     lv_obj_set_style_border_width(editActRow, 0, 0);
     lv_obj_set_style_pad_column(editActRow, 6, 0);
     lv_obj_set_flex_flow(editActRow, LV_FLEX_FLOW_ROW_WRAP);
-    makeSmallBtnLocal(editActRow, "Apply Btn", 72, 30, lv_color_hex(0x6D4B9A), lvglMqttApplyBtnEvent);
+    makeSmallBtnLocal(editActRow, lvglSymbolText(LV_SYMBOL_OK, "Apply Btn").c_str(), 94, 30, lv_color_hex(0x6D4B9A), lvglMqttApplyBtnEvent);
 
     for (int i = 0; i < mqttButtonCount; i++) {
-        String lbl = mqttButtonNames[i];
+        String lbl = lvglSymbolText(LV_SYMBOL_LIST, mqttButtonNames[i]);
         if (mqttButtonCritical[i]) lbl += " (!)";
-        lvglCreateMenuButton(
+        lv_obj_t *btn = lvglCreateMenuButton(
             lvglMqttCtrlList,
             lbl.c_str(),
             mqttButtonCritical[i] ? lv_color_hex(0x9A5A2E) : lv_color_hex(0x2D6D8E),
             lvglMqttControlPressEvent,
             reinterpret_cast<void *>(static_cast<intptr_t>(i))
         );
+        if (btn) {
+            char key[16];
+            snprintf(key, sizeof(key), "btn_%02d", i);
+            lvglRegisterReorderableItem(btn, "ord_mctl", key);
+        }
     }
+    lvglApplySavedOrder(lvglMqttCtrlList, "ord_mctl");
 }
 
 void lvglScreenshotEvent(lv_event_t *e)
@@ -10283,6 +11361,7 @@ void lvglOpenStyleScreenEvent(lv_event_t *e)
 
 void lvglStyleScreensaverToggleEvent(lv_event_t *e)
 {
+    if (lvglStyleUiSyncing) return;
     lv_obj_t *target = e ? lv_event_get_target(e) : nullptr;
     screensaverEnabled = target && lv_obj_has_state(target, LV_STATE_CHECKED);
     uiPrefs.begin("ui", false);
@@ -10292,9 +11371,22 @@ void lvglStyleScreensaverToggleEvent(lv_event_t *e)
     lvglRefreshStyleUi();
 }
 
+void lvglStyleButtonFlatEvent(lv_event_t *e)
+{
+    (void)e;
+    lvglSetButtonStyleMode(UI_BUTTON_STYLE_FLAT, true);
+}
+
+void lvglStyleButton3dEvent(lv_event_t *e)
+{
+    (void)e;
+    lvglSetButtonStyleMode(UI_BUTTON_STYLE_3D, true);
+}
+
 void lvglStyleTimeoutEvent(lv_event_t *e)
 {
     (void)e;
+    if (lvglStyleUiSyncing) return;
     if (!lvglStyleTimeoutSlider) return;
     const unsigned long stepValue = static_cast<unsigned long>(lv_slider_get_value(lvglStyleTimeoutSlider));
     displayIdleTimeoutMs = clampIdleTimeoutMs(stepValue * LCD_IDLE_TIMEOUT_STEP_MS);
@@ -10343,25 +11435,44 @@ void lvglOtaUpdateEvent(lv_event_t *e)
 
 void lvglRefreshStyleUi()
 {
+    if (lvglStyleUiSyncing) return;
+    lvglStyleUiSyncing = true;
+
     if (lvglStyleScreensaverSw) {
-        if (screensaverEnabled) lv_obj_add_state(lvglStyleScreensaverSw, LV_STATE_CHECKED);
-        else lv_obj_clear_state(lvglStyleScreensaverSw, LV_STATE_CHECKED);
-        lv_obj_set_style_bg_color(lvglStyleScreensaverSw, lv_color_hex(0x48515C), LV_PART_MAIN);
-        lv_obj_set_style_bg_color(lvglStyleScreensaverSw, lv_color_hex(0x3A8F4B), LV_PART_INDICATOR | LV_STATE_CHECKED);
-        lv_obj_set_style_bg_color(lvglStyleScreensaverSw, lv_color_hex(0xDCE7F2), LV_PART_KNOB);
+        const bool checked = lv_obj_has_state(lvglStyleScreensaverSw, LV_STATE_CHECKED);
+        if (screensaverEnabled != checked) {
+            if (screensaverEnabled) lv_obj_add_state(lvglStyleScreensaverSw, LV_STATE_CHECKED);
+            else lv_obj_clear_state(lvglStyleScreensaverSw, LV_STATE_CHECKED);
+        }
     }
     if (lvglStyleTimeoutSlider) {
         const int32_t sliderValue = static_cast<int32_t>(clampIdleTimeoutMs(displayIdleTimeoutMs) / LCD_IDLE_TIMEOUT_STEP_MS);
         if (lv_slider_get_value(lvglStyleTimeoutSlider) != sliderValue) {
             lv_slider_set_value(lvglStyleTimeoutSlider, sliderValue, LV_ANIM_OFF);
         }
-        lv_obj_set_style_bg_color(lvglStyleTimeoutSlider, lv_color_hex(0x2A3340), LV_PART_MAIN);
-        lv_obj_set_style_bg_color(lvglStyleTimeoutSlider, lv_color_hex(0x4FC3F7), LV_PART_INDICATOR);
-        lv_obj_set_style_bg_color(lvglStyleTimeoutSlider, lv_color_hex(0xE5ECF3), LV_PART_KNOB);
     }
     if (lvglStyleTimeoutValueLabel) {
-        lv_label_set_text(lvglStyleTimeoutValueLabel, formatIdleTimeoutLabel(displayIdleTimeoutMs).c_str());
+        lvglLabelSetTextIfChanged(lvglStyleTimeoutValueLabel, formatIdleTimeoutLabel(displayIdleTimeoutMs));
     }
+    if (lvglStyleButtonFlatBtn && lvglStyleButtonFlatBtnLabel) {
+        lvglLabelSetTextIfChanged(lvglStyleButtonFlatBtnLabel, uiButtonStyleMode == UI_BUTTON_STYLE_FLAT ? "Selected" : "Select");
+        lvglApplyPersistentToggleButtonStyle(lvglStyleButtonFlatBtn,
+                                             lvglStyleButtonFlatBtnLabel,
+                                             uiButtonStyleMode == UI_BUTTON_STYLE_FLAT,
+                                             lv_color_hex(uiButtonStyleFlatSelectorColor),
+                                             lv_color_hex(uiButtonStyleFlatSelectorColor),
+                                             true);
+    }
+    if (lvglStyleButton3dBtn && lvglStyleButton3dBtnLabel) {
+        lvglLabelSetTextIfChanged(lvglStyleButton3dBtnLabel, uiButtonStyleMode == UI_BUTTON_STYLE_3D ? "Selected" : "Select");
+        lvglApplyPersistentToggleButtonStyle(lvglStyleButton3dBtn,
+                                             lvglStyleButton3dBtnLabel,
+                                             uiButtonStyleMode == UI_BUTTON_STYLE_3D,
+                                             lv_color_hex(uiButtonStyle3dSelectorColor),
+                                             lv_color_hex(uiButtonStyle3dSelectorColor),
+                                             true);
+    }
+    lvglStyleUiSyncing = false;
 }
 
 void lvglAirplaneToggleEvent(lv_event_t *e)
@@ -10421,7 +11532,10 @@ void lvglSaveDeviceNameEvent(lv_event_t *e)
 
 void lvglRefreshConfigUi()
 {
-    if (lvglAirplaneBtnLabel) lv_label_set_text(lvglAirplaneBtnLabel, airplaneModeEnabled ? "Airplane: ON" : "Airplane: OFF");
+    if (lvglAirplaneBtnLabel) lvglLabelSetTextIfChanged(lvglAirplaneBtnLabel, lvglSymbolText(LV_SYMBOL_POWER, airplaneModeEnabled ? "Airplane: ON" : "Airplane: OFF"));
+    lvglApplyAirplaneButtonStyle();
+    if (lvglApModeBtnLabel) lvglLabelSetTextIfChanged(lvglApModeBtnLabel, lvglSymbolText(LV_SYMBOL_WIFI, wifiSessionApMode ? "AP Mode: ON" : "AP Mode: OFF"));
+    lvglApplyApModeButtonStyle();
     if (lvglConfigDeviceNameTa) {
         String current = lv_textarea_get_text(lvglConfigDeviceNameTa);
         if (current != deviceShortNameValue()) lv_textarea_set_text(lvglConfigDeviceNameTa, deviceShortNameValue().c_str());
@@ -10429,45 +11543,25 @@ void lvglRefreshConfigUi()
     if (lvglBrightnessSlider && lv_slider_get_value(lvglBrightnessSlider) != displayBrightnessPercent) {
         lv_slider_set_value(lvglBrightnessSlider, displayBrightnessPercent, LV_ANIM_OFF);
     }
-    if (lvglBrightnessValueLabel) lv_label_set_text_fmt(lvglBrightnessValueLabel, "%u%%", static_cast<unsigned int>(displayBrightnessPercent));
-    if (lvglBrightnessSlider) {
-        const lv_color_t normalCol = lv_color_hex(0x52B788);
-        const lv_color_t highCol = lv_color_hex(0xC94B4B);
-        lv_obj_set_style_bg_color(lvglBrightnessSlider, lv_color_hex(0x2A3340), LV_PART_MAIN);
-        lv_obj_set_style_bg_color(lvglBrightnessSlider, normalCol, LV_PART_INDICATOR);
-        lv_obj_set_style_bg_grad_color(lvglBrightnessSlider, highCol, LV_PART_INDICATOR);
-        lv_obj_set_style_bg_grad_dir(lvglBrightnessSlider, LV_GRAD_DIR_HOR, LV_PART_INDICATOR);
-        lv_obj_set_style_bg_main_stop(lvglBrightnessSlider, 204, LV_PART_INDICATOR);
-        lv_obj_set_style_bg_grad_stop(lvglBrightnessSlider, 255, LV_PART_INDICATOR);
-        lv_obj_set_style_bg_color(lvglBrightnessSlider, lv_color_hex(0xE5ECF3), LV_PART_KNOB);
-    }
+    if (lvglBrightnessValueLabel) lvglLabelSetTextIfChanged(lvglBrightnessValueLabel, String(displayBrightnessPercent) + "%");
     if (lvglRgbLedSlider && lv_slider_get_value(lvglRgbLedSlider) != rgbLedPercent) {
         lv_slider_set_value(lvglRgbLedSlider, rgbLedPercent, LV_ANIM_OFF);
-    }
-    if (lvglRgbLedSlider) {
-        lv_obj_set_style_bg_color(lvglRgbLedSlider, lv_color_hex(0x2A3340), LV_PART_MAIN);
-        lv_obj_set_style_bg_color(lvglRgbLedSlider, lv_color_hex(0x7C4DFF), LV_PART_INDICATOR);
-        lv_obj_set_style_bg_grad_color(lvglRgbLedSlider, lv_color_hex(0xFF6B6B), LV_PART_INDICATOR);
-        lv_obj_set_style_bg_grad_dir(lvglRgbLedSlider, LV_GRAD_DIR_HOR, LV_PART_INDICATOR);
-        lv_obj_set_style_bg_main_stop(lvglRgbLedSlider, 96, LV_PART_INDICATOR);
-        lv_obj_set_style_bg_grad_stop(lvglRgbLedSlider, 255, LV_PART_INDICATOR);
-        lv_obj_set_style_bg_color(lvglRgbLedSlider, lv_color_hex(0xE5ECF3), LV_PART_KNOB);
     }
 }
 
 void lvglRefreshOtaUi()
 {
-    if (lvglOtaCurrentLabel) lv_label_set_text(lvglOtaCurrentLabel, FW_VERSION);
+    if (lvglOtaCurrentLabel) lvglLabelSetTextIfChanged(lvglOtaCurrentLabel, FW_VERSION);
     if (lvglOtaLatestLabel) {
-        if (!OTA_FIRMWARE_FLASH_SUPPORTED) lv_label_set_text(lvglOtaLatestLabel, "Unavailable on this board");
-        else if (otaLatestVersion[0] != '\0') lv_label_set_text(lvglOtaLatestLabel, otaLatestVersion);
-        else lv_label_set_text(lvglOtaLatestLabel, otaUiState == OTA_UI_CHECKING ? "Checking..." : "Unknown");
+        if (!OTA_FIRMWARE_FLASH_SUPPORTED) lvglLabelSetTextIfChanged(lvglOtaLatestLabel, "Unavailable on this board");
+        else if (otaLatestVersion[0] != '\0') lvglLabelSetTextIfChanged(lvglOtaLatestLabel, otaLatestVersion);
+        else lvglLabelSetTextIfChanged(lvglOtaLatestLabel, otaUiState == OTA_UI_CHECKING ? "Checking..." : "Unknown");
     }
     if (lvglOtaStatusLabel) {
-        if (!OTA_FIRMWARE_FLASH_SUPPORTED) lv_label_set_text(lvglOtaStatusLabel, "Firmware image is too large for dual-slot OTA on the 4 MB layout.");
-        else if (otaStatusText.length()) lv_label_set_text(lvglOtaStatusLabel, otaStatusText.c_str());
-        else if (otaUpdateAvailable) lv_label_set_text(lvglOtaStatusLabel, "Update available");
-        else lv_label_set_text(lvglOtaStatusLabel, "Idle");
+        if (!OTA_FIRMWARE_FLASH_SUPPORTED) lvglLabelSetTextIfChanged(lvglOtaStatusLabel, "Firmware image is too large for dual-slot OTA on the 4 MB layout.");
+        else if (otaStatusText.length()) lvglLabelSetTextIfChanged(lvglOtaStatusLabel, otaStatusText);
+        else if (otaUpdateAvailable) lvglLabelSetTextIfChanged(lvglOtaStatusLabel, "Update available");
+        else lvglLabelSetTextIfChanged(lvglOtaStatusLabel, "Idle");
     }
     const bool showProgress = otaUiState == OTA_UI_DOWNLOADING || otaUiState == OTA_UI_FINALIZING || otaUiState == OTA_UI_DONE;
     if (lvglOtaProgressBar) {
@@ -10490,10 +11584,11 @@ void lvglRefreshOtaUi()
             lv_obj_add_flag(lvglOtaUpdateBtn, LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_clear_flag(lvglOtaUpdateBtn, LV_OBJ_FLAG_HIDDEN);
-            lv_label_set_text(lvglOtaUpdateBtnLabel, otaUpdateAvailable ? "Update" : "Check Now");
+            lvglLabelSetTextIfChanged(lvglOtaUpdateBtnLabel,
+                                      lvglSymbolText(otaUpdateAvailable ? LV_SYMBOL_UPLOAD : LV_SYMBOL_REFRESH,
+                                                     otaUpdateAvailable ? "Update" : "Check Now"));
             const lv_color_t btnCol = otaUpdateAvailable ? lv_color_hex(0x3A8F4B) : lv_color_hex(0x2E6F95);
-            lv_obj_set_style_bg_color(lvglOtaUpdateBtn, btnCol, LV_PART_MAIN | LV_STATE_DEFAULT);
-            lv_obj_set_style_bg_color(lvglOtaUpdateBtn, btnCol, LV_PART_MAIN | LV_STATE_PRESSED);
+            lvglRegisterStyledButton(lvglOtaUpdateBtn, btnCol, false);
         }
     }
 }
@@ -11644,12 +12739,7 @@ void lvglRefreshHc12Ui()
     lv_obj_t *setBtnLabel = setBtn ? lv_obj_get_child(setBtn, 0) : nullptr;
     if (setBtnLabel) lv_label_set_text(setBtnLabel, setAsserted ? "SET: ON" : "SET: OFF");
     if (setBtn) {
-        lv_obj_set_style_bg_color(setBtn,
-                                  setAsserted ? lv_color_hex(0xC06C2B) : lv_color_hex(0x7A5C2E),
-                                  LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_color(setBtn,
-                                  setAsserted ? lv_color_hex(0xD27E38) : lv_color_hex(0x8C6A34),
-                                  LV_PART_MAIN | LV_STATE_PRESSED);
+        lvglRegisterStyledButton(setBtn, setAsserted ? lv_color_hex(0xC06C2B) : lv_color_hex(0x7A5C2E), true);
     }
     lv_obj_t *terminalTa = hc12TerminalObj();
     if (terminalTa) {
@@ -12724,13 +13814,15 @@ static void checkersRefreshPeerPopup()
         lv_obj_set_height(btn, 34);
         lv_obj_set_style_radius(btn, 10, 0);
         lv_obj_set_style_border_width(btn, 0, 0);
-        lv_obj_set_style_bg_color(btn, lv_color_hex(0x2F6D86), 0);
         lv_obj_add_event_cb(btn, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
         lv_obj_add_event_cb(btn, lvglFilteredClickFlashEvent, LV_EVENT_CLICKED, nullptr);
         lv_obj_add_event_cb(btn, lvglCheckersPeerSelectEvent, LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(i)));
         lv_obj_t *lbl = lv_label_create(btn);
         lv_label_set_text(lbl, p2pPeers[i].name.isEmpty() ? "Peer" : p2pPeers[i].name.c_str());
         lv_obj_center(lbl);
+        lvglRegisterStyledButton(btn, lv_color_hex(0x2F6D86), true);
+        const String orderKey = lvglOrderTokenFromText("p", p2pPeers[i].pubKeyHex);
+        lvglRegisterReorderableItem(btn, "ord_ckp", orderKey.c_str());
     }
 
     if (!havePeers) {
@@ -12739,7 +13831,9 @@ static void checkersRefreshPeerPopup()
         lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
         lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
         lv_label_set_text(lbl, "No paired contacts.\nOpen Chat Peers first and pair another device.");
+        lvglRegisterReorderableItem(lbl, "ord_ckp", "empty");
     }
+    lvglApplySavedOrder(lvglCheckersPeerPopupList, "ord_ckp");
 }
 
 static void checkersRefreshVariantPopup()
@@ -12771,9 +13865,6 @@ static void checkersRefreshVariantPopup()
         lv_obj_set_height(btn, 28);
         lv_obj_set_style_radius(btn, 10, 0);
         lv_obj_set_style_border_width(btn, 0, 0);
-        lv_obj_set_style_bg_color(btn,
-                                  variants[i] == checkersVariant ? lv_color_hex(0x3A7A3A) : lv_color_hex(0x2F4658),
-                                  0);
         lv_obj_add_event_cb(btn, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
         lv_obj_add_event_cb(btn, lvglFilteredClickFlashEvent, LV_EVENT_CLICKED, nullptr);
         lv_obj_add_event_cb(btn,
@@ -12784,7 +13875,12 @@ static void checkersRefreshVariantPopup()
         if (!lbl) continue;
         lv_label_set_text(lbl, checkersVariantName(variants[i]));
         lv_obj_center(lbl);
+        lvglRegisterStyledButton(btn, variants[i] == checkersVariant ? lv_color_hex(0x3A7A3A) : lv_color_hex(0x2F4658), true);
+        char orderKey[16];
+        snprintf(orderKey, sizeof(orderKey), "v%d", static_cast<int>(variants[i]));
+        lvglRegisterReorderableItem(btn, "ord_ckv", orderKey);
     }
+    lvglApplySavedOrder(lvglCheckersVariantPopupList, "ord_ckv");
 }
 
 void lvglRefreshCheckersBoard()
@@ -13911,6 +15007,7 @@ void appendUiSettings(JsonDocument &doc)
     doc["DeviceName"] = uiPrefs.getString("dev_name", deviceShortNameValue());
     doc["WsRebootOnDisconnect"] = uiPrefs.getBool("ws_reboot", wsRebootOnDisconnectEnabled) ? 1 : 0;
     doc["AirplaneMode"] = uiPrefs.getBool("airplane", airplaneModeEnabled) ? 1 : 0;
+    doc["ButtonStyle"] = uiPrefs.getUChar("btn_style", static_cast<uint8_t>(uiButtonStyleMode));
     doc["TelemetryMaxKB"] = uiPrefs.getUInt("tele_kb", telemetryMaxKB);
     doc["IndicatorsVisible"] = uiPrefs.getBool("ind_v", true) ? 1 : 0;
     doc["ImuVisible"] = uiPrefs.getBool("imu_v", true) ? 1 : 0;
@@ -13938,7 +15035,7 @@ void appendUiSettings(JsonDocument &doc)
 
 void loadUiRuntimeConfig()
 {
-    uiPrefs.begin("ui", true);
+    uiPrefs.begin("ui", false);
     recordTelemetryEnabled = uiPrefs.getBool("record_tel", false);
     systemSoundsEnabled = uiPrefs.getBool("sys_snd", true);
     mediaVolumePercent = uiPrefs.getUChar("sys_vol", mediaVolumePercent);
@@ -13949,6 +15046,18 @@ void loadUiRuntimeConfig()
     wsRebootOnDisconnectEnabled = uiPrefs.getBool("ws_reboot", false);
     webServerEnabled = uiPrefs.getBool("web_srv", true);
     airplaneModeEnabled = uiPrefs.getBool("airplane", false);
+    const uint8_t rawButtonStyle = uiPrefs.getUChar("btn_style", static_cast<uint8_t>(UI_BUTTON_STYLE_3D));
+    uiButtonStyleMode = rawButtonStyle == static_cast<uint8_t>(UI_BUTTON_STYLE_FLAT) ? UI_BUTTON_STYLE_FLAT : UI_BUTTON_STYLE_3D;
+    uiButtonStyleFlatSelectorColor = uiPrefs.getUInt("btn_flat_c", 0);
+    uiButtonStyle3dSelectorColor = uiPrefs.getUInt("btn_3d_c", 0);
+    if (uiButtonStyleFlatSelectorColor == 0) {
+        uiButtonStyleFlatSelectorColor = lvglRandomStyleAccent(0x2E6F95);
+        uiPrefs.putUInt("btn_flat_c", uiButtonStyleFlatSelectorColor);
+    }
+    if (uiButtonStyle3dSelectorColor == 0) {
+        uiButtonStyle3dSelectorColor = lvglRandomStyleAccent(uiButtonStyleFlatSelectorColor);
+        uiPrefs.putUInt("btn_3d_c", uiButtonStyle3dSelectorColor);
+    }
     telemetryMaxKB = uiPrefs.getUInt("tele_kb", 512);
     serialLogWsMinIntervalMs = uiPrefs.getUInt("ser_rate", SERIAL_LOG_RATE_MS_DEFAULT);
     serialLogKeepLines = static_cast<size_t>(uiPrefs.getUInt("ser_keep", SERIAL_LOG_RING_SIZE));
@@ -14141,6 +15250,14 @@ bool handleUiSettingMessage(const char *msg)
         uiPrefs.end();
         applyAirplaneMode(airplaneModeEnabled, "ws_setting");
         return true;
+    }
+    else if (strcmp(key, "ButtonStyle") == 0 && parseIntMessageValue(value, parsed)) {
+        uiButtonStyleMode = parsed == static_cast<int>(UI_BUTTON_STYLE_FLAT) ? UI_BUTTON_STYLE_FLAT : UI_BUTTON_STYLE_3D;
+        uiPrefs.putUChar("btn_style", static_cast<uint8_t>(uiButtonStyleMode));
+        if (lvglReady) {
+            lvglRefreshAllButtonStyles();
+            lvglRefreshStyleUi();
+        }
     }
     else if (strcmp(key, "TelemetryMaxKB") == 0 && parseIntMessageValue(value, parsed)) {
         telemetryMaxKB = static_cast<uint32_t>(max(32, min(8192, parsed)));
@@ -14515,9 +15632,27 @@ void ensureApOnline(const char *reason)
     const IPAddress ip = WiFi.softAPIP();
     beginDnsForAp(ip);
     uiStatusLine = "AP ready: " + ip.toString();
+    if (lvglReady) {
+        lvglRefreshConfigUi();
+        lvglRefreshAllButtonStyles();
+    }
     Serial.printf("[WIFI] AP enabled reason=%s ip=%s\n",
                   reason ? reason : "-",
                   ip.toString().c_str());
+}
+
+void forceSessionApMode(const char *reason)
+{
+    wifiSessionApMode = true;
+    wifiForgetPendingUi = false;
+    pendingSaveCreds = false;
+    pendingSaveSsid = "";
+    pendingSavePass = "";
+    bootStaConnectInProgress = false;
+    bootStaConnectStartedMs = 0;
+    staLastConnectAttemptMs = 0;
+    WiFi.disconnect(false, false);
+    ensureApOnline(reason ? reason : "session_ap_mode");
 }
 
 void disableApWhenStaConnected(const char *reason)
@@ -14527,12 +15662,16 @@ void disableApWhenStaConnected(const char *reason)
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_STA);
     apModeActive = false;
+    if (lvglReady) {
+        lvglRefreshConfigUi();
+        lvglRefreshAllButtonStyles();
+    }
     Serial.printf("[WIFI] AP disabled reason=%s\n", reason ? reason : "-");
 }
 
 static void beginStaConnectAttempt(const char *reason)
 {
-    if (networkSuspendedForAudio || airplaneModeEnabled || !wifiHasStaTarget()) return;
+    if (networkSuspendedForAudio || airplaneModeEnabled || wifiSessionApMode || !wifiHasStaTarget()) return;
     const String ssid = wifiDesiredStaSsid();
     const String pass = wifiDesiredStaPass();
     const wifi_mode_t mode = apModeActive ? WIFI_AP_STA : WIFI_STA;
@@ -14977,6 +16116,7 @@ void startWifiConnect(const String &ssid, const String &pass)
         lvglSyncStatusLine();
         return;
     }
+    wifiSessionApMode = false;
     clearWifiScanResults();
     pendingSaveSsid = ssid;
     pendingSavePass = pass;
@@ -17650,7 +18790,7 @@ void wifiConnectionService()
         bootStaConnectInProgress = false;
         wifiForgetPendingUi = false;
         ensureApOnline("sta_disconnected");
-        uiStatusLine = "WiFi disconnected";
+        uiStatusLine = wifiSessionApMode ? "AP mode enabled" : "WiFi disconnected";
         if (lvglWifiPwdConnectPending) {
             lvglWifiPwdConnectPending = false;
             if (lvglWifiPwdStatusLabel) {
@@ -17668,6 +18808,10 @@ void wifiConnectionService()
     }
 
     if (wifiConnectedSafe()) return;
+    if (wifiSessionApMode) {
+        if (!apModeActive) ensureApOnline("session_ap_mode");
+        return;
+    }
     if (!wifiHasStaTarget()) {
         if (!apModeActive) ensureApOnline("no_sta_target");
         return;
@@ -17790,6 +18934,7 @@ void setupWifiAndServer()
     WiFi.setSleep(false);
     WiFi.mode(WIFI_STA);
     apModeActive = false;
+    wifiSessionApMode = false;
     stopDnsForAp();
     ensureWebServerRuntime();
 
