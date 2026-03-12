@@ -235,7 +235,7 @@ static constexpr uint16_t LIGHT_RAW_CAL_MAX = 600;
 static constexpr bool LIGHT_LOG_RAW_TO_SERIAL = false;
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.2.8";
+static constexpr const char *FW_VERSION = "0.2.9";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -2797,7 +2797,8 @@ static bool lvglTouchOwnsHorizontalGesture()
             return true;
         }
         if (lv_obj_has_flag(cur, LV_OBJ_FLAG_SCROLLABLE)) {
-            return true;
+            const lv_dir_t scrollDir = lv_obj_get_scroll_dir(cur);
+            if ((scrollDir & LV_DIR_HOR) != 0) return true;
         }
     }
     return false;
@@ -3800,8 +3801,6 @@ static void lvglReorderItemEvent(lv_event_t *e)
 
     const lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_PRESSED) {
-        lvglResetGestureTracking();
-        lvglReorderOwnsHorizontalGesture = true;
         lvglReorderDrag.obj = obj;
         lvglReorderDrag.parent = entry->parent;
         lvglReorderDrag.pressedAtMs = millis();
@@ -3827,6 +3826,7 @@ static void lvglReorderItemEvent(lv_event_t *e)
             lvglReorderDrag.fingerOffsetY = static_cast<lv_coord_t>(pt.y - ((startArea.y1 + startArea.y2) / 2));
             lvglReorderDrag.active = true;
             lvglGestureBlocked = true;
+            lvglReorderOwnsHorizontalGesture = true;
             lvglResetGestureTracking();
             if (!lv_obj_has_flag(entry->parent, LV_OBJ_FLAG_OVERFLOW_VISIBLE)) {
                 lv_obj_add_flag(entry->parent, LV_OBJ_FLAG_OVERFLOW_VISIBLE);

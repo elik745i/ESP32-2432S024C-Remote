@@ -2,7 +2,7 @@
 
 Firmware for Sunton-style ESP32 touch display boards with an LVGL touch UI, Wi-Fi/AP management, SD-backed recovery tools, MQTT controls, and encrypted device-to-device chat.
 
-Current firmware version: **`0.2.8`**
+Current firmware version: **`0.2.9`**
 
 Supported boards:
 - `ESP32-2432S024C` (`240x320`, `ILI9341`, `CST820`)
@@ -36,7 +36,7 @@ Supported boards:
 - `Snake 3D` is enabled on the `ESP32-S3-3248S035-N16R8` target with a software-rendered chase camera prototype
 - `Info` screen with battery, Wi-Fi, light, CPU, SRAM, PSRAM, and SD usage indicators
 - S3 build uses PSRAM-first allocation for LVGL and major UI/work buffers to reduce internal SRAM pressure
-- Swipe-back and scroll gestures are filtered to avoid triggering button clicks while navigating lists and menus
+- Swipe-back and scroll gestures are filtered to avoid triggering button clicks while navigating lists and menus, including dense vertical button lists
 - Screensaver now renders the exact `esp32-eyes` eye geometry adapted to each supported display resolution
 
 ## Supported Hardware
