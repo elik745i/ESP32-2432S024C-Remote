@@ -853,6 +853,7 @@ static bool lvglSwipeHorizontalLocked = false;
 static lv_obj_t *lvglSwipeVisualScreen = nullptr;
 static lv_obj_t *lvglSwipePreviewImg = nullptr;
 static lv_img_dsc_t *lvglSwipePreviewSnapshot = nullptr;
+static bool lvglSwipePreviewUsesSnapshot = false;
 static int16_t lvglSwipeVisualOffsetX = 0;
 static bool lvglSwipeVisualActive = false;
 static bool lvglSwipeVisualAnimating = false;
@@ -2858,12 +2859,16 @@ static void lvglReleaseSwipeBackPreview()
     lvglSwipePreviewImg = nullptr;
     if (lvglSwipePreviewSnapshot) lv_snapshot_free(lvglSwipePreviewSnapshot);
     lvglSwipePreviewSnapshot = nullptr;
+    lvglSwipePreviewUsesSnapshot = false;
 }
 
 static bool lvglEnsureSwipeBackPreviewMounted()
 {
     if (lvglKeyboardVisible()) return false;
-    if (lvglSwipePreviewImg && lv_obj_is_valid(lvglSwipePreviewImg) && lvglSwipePreviewSnapshot) return true;
+    if (lvglSwipePreviewImg && lv_obj_is_valid(lvglSwipePreviewImg) &&
+        (lvglSwipePreviewUsesSnapshot ? (lvglSwipePreviewSnapshot != nullptr) : true)) {
+        return true;
+    }
     UiScreen targetUi = UI_HOME;
     if (!lvglGetSwipeBackPreviewTarget(uiScreen, targetUi)) return false;
 
@@ -2871,19 +2876,37 @@ static bool lvglEnsureSwipeBackPreviewMounted()
     lv_obj_t *targetScreen = lvglScreenForUi(targetUi);
     if (!targetScreen || !lv_obj_is_valid(targetScreen) || lv_scr_act() == targetScreen) return false;
 
-    lv_obj_update_layout(targetScreen);
     lvglReleaseSwipeBackPreview();
-    lvglSwipePreviewSnapshot = lv_snapshot_take(targetScreen, LV_IMG_CF_TRUE_COLOR);
-    if (!lvglSwipePreviewSnapshot) return false;
-
-    lvglSwipePreviewImg = lv_img_create(lv_layer_top());
-    if (!lvglSwipePreviewImg) {
+    if (boardHasUsablePsram()) {
+        lv_obj_update_layout(targetScreen);
+        lvglSwipePreviewSnapshot = lv_snapshot_take(targetScreen, LV_IMG_CF_TRUE_COLOR);
+        if (lvglSwipePreviewSnapshot) {
+            lvglSwipePreviewImg = lv_img_create(lv_layer_top());
+            if (!lvglSwipePreviewImg) {
+                lvglReleaseSwipeBackPreview();
+                return false;
+            }
+            lvglSwipePreviewUsesSnapshot = true;
+            lv_obj_clear_flag(lvglSwipePreviewImg, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_add_flag(lvglSwipePreviewImg, LV_OBJ_FLAG_IGNORE_LAYOUT);
+            lv_img_set_src(lvglSwipePreviewImg, lvglSwipePreviewSnapshot);
+            lv_obj_set_pos(lvglSwipePreviewImg, static_cast<lv_coord_t>(lvglSwipeVisualOffsetX - DISPLAY_WIDTH), 0);
+            lv_obj_move_background(lvglSwipePreviewImg);
+            return true;
+        }
         lvglReleaseSwipeBackPreview();
-        return false;
     }
+
+    lvglSwipePreviewImg = lv_obj_create(lv_layer_top());
+    if (!lvglSwipePreviewImg) return false;
     lv_obj_clear_flag(lvglSwipePreviewImg, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(lvglSwipePreviewImg, LV_OBJ_FLAG_IGNORE_LAYOUT);
-    lv_img_set_src(lvglSwipePreviewImg, lvglSwipePreviewSnapshot);
+    lv_obj_remove_style_all(lvglSwipePreviewImg);
+    lv_obj_set_size(lvglSwipePreviewImg, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+    lv_obj_set_style_bg_color(lvglSwipePreviewImg, lv_color_hex(0x111922), 0);
+    lv_obj_set_style_bg_grad_color(lvglSwipePreviewImg, lv_color_hex(0x243A52), 0);
+    lv_obj_set_style_bg_grad_dir(lvglSwipePreviewImg, LV_GRAD_DIR_VER, 0);
+    lv_obj_set_style_bg_opa(lvglSwipePreviewImg, LV_OPA_COVER, 0);
     lv_obj_set_pos(lvglSwipePreviewImg, static_cast<lv_coord_t>(lvglSwipeVisualOffsetX - DISPLAY_WIDTH), 0);
     lv_obj_move_background(lvglSwipePreviewImg);
     return true;
