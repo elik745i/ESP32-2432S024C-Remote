@@ -8,9 +8,12 @@ This release refines the new swipe-back interaction, hardens it across all suppo
 - The previous screen is rendered under the active screen during swipe-back for a true interactive back gesture.
 - Releasing the swipe now completes the back navigation once about 30% of the previous screen is visible, even on slower drags.
 - Reorder drag and swipe-back now arbitrate by touch intent so horizontal swipes stay navigation gestures while long-press still enables menu reordering.
+- Added a new flat black button theme for users who prefer a darker, lower-contrast control style.
+- The top bar center can now show either the device name or internet-synced time, with a remembered GMT offset selector.
 - `Config` now includes a persisted `Volume` slider alongside brightness so speaker output can be adjusted without opening the media screen.
 - Speaker output now uses an exponential volume curve, which gives finer control at the low end while keeping full output at 100%.
 - Incoming chat messages now play a short notification beep on the speaker output when media playback is idle.
+- Home and config menu entries now use embedded custom icons instead of LVGL text symbols for a cleaner menu layout.
 
 ### Performance and Stability
 

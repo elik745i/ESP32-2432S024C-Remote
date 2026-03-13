@@ -33,6 +33,16 @@
 #include <sodium.h>
 
 #include "generated/img_airplane_mode_icon.h"
+#include "generated/img_chat_small_icon.h"
+#include "generated/img_config_small_icon.h"
+#include "generated/img_games_small_icon.h"
+#include "generated/img_info_small_icon.h"
+#include "generated/img_ap_small_icon.h"
+#include "generated/img_music_small_icon.h"
+#include "generated/img_mqtt_small_icon.h"
+#include "generated/img_ota_small_icon.h"
+#include "generated/img_radio_small_icon.h"
+#include "generated/img_styles_small_icon.h"
 #include "generated/recovery_browser_asset.h"
 
 enum TouchControllerType : uint8_t {
@@ -43,7 +53,19 @@ enum TouchControllerType : uint8_t {
 enum UiButtonStyleMode : uint8_t {
     UI_BUTTON_STYLE_FLAT = 0,
     UI_BUTTON_STYLE_3D = 1,
+    UI_BUTTON_STYLE_BLACK = 2,
 };
+
+enum TopBarCenterMode : uint8_t {
+    TOP_BAR_CENTER_NAME = 0,
+    TOP_BAR_CENTER_TIME = 1,
+};
+
+static constexpr uint32_t UI_BUTTON_BLACK_BODY_HEX = 0x1A1A1A;
+static constexpr uint32_t UI_BUTTON_BLACK_PRESSED_HEX = 0x131313;
+static constexpr uint32_t UI_BUTTON_BLACK_FLASH_HEX = 0x2B2B2B;
+static constexpr uint32_t UI_BUTTON_BLACK_BORDER_HEX = 0x343434;
+static constexpr uint32_t UI_BUTTON_BLACK_BORDER_ACTIVE_HEX = 0x666666;
 
 static constexpr int DISPLAY_WIDTH = TFT_WIDTH;
 static constexpr int DISPLAY_HEIGHT = TFT_HEIGHT;
@@ -257,6 +279,13 @@ static constexpr size_t SERIAL_LOG_RING_SIZE = 200;
 static constexpr size_t SERIAL_LOG_LINE_MAX = 192;
 static constexpr uint32_t SERIAL_LOG_RATE_MS_DEFAULT = 40;
 static constexpr uint32_t WS_TELEMETRY_MIN_FREE_HEAP = 50000U;
+static constexpr int8_t TOP_BAR_GMT_MIN = -12;
+static constexpr int8_t TOP_BAR_GMT_MAX = 14;
+static constexpr unsigned long NTP_SYNC_RETRY_MS = 15UL * 60UL * 1000UL;
+static constexpr unsigned long NTP_SYNC_REFRESH_MS = 6UL * 60UL * 60UL * 1000UL;
+static constexpr const char *NTP_SERVER_1 = "pool.ntp.org";
+static constexpr const char *NTP_SERVER_2 = "time.nist.gov";
+static constexpr const char *NTP_SERVER_3 = "time.google.com";
 
 static constexpr int HC12_UART_NUM = 1;
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
@@ -541,6 +570,10 @@ void lvglApplyAirplaneButtonStyle();
 void lvglApplyApModeButtonStyle();
 void lvglApplyChatDiscoveryButtonStyle();
 void lvglApplyWifiWebServerButtonStyle();
+static String topBarCenterText();
+static bool internetTimeValid();
+static void syncInternetTimeIfNeeded(bool force = false);
+static String buildGmtOffsetDropdownOptions();
 void lvglHc12ToggleSetEvent(lv_event_t *e);
 void lvglHc12SendEvent(lv_event_t *e);
 void lvglSaveDeviceNameEvent(lv_event_t *e);
@@ -782,6 +815,13 @@ static lv_obj_t *lvglStyleButtonFlatBtn = nullptr;
 static lv_obj_t *lvglStyleButtonFlatBtnLabel = nullptr;
 static lv_obj_t *lvglStyleButton3dBtn = nullptr;
 static lv_obj_t *lvglStyleButton3dBtnLabel = nullptr;
+static lv_obj_t *lvglStyleButtonBlackBtn = nullptr;
+static lv_obj_t *lvglStyleButtonBlackBtnLabel = nullptr;
+static lv_obj_t *lvglStyleTimezoneDd = nullptr;
+static lv_obj_t *lvglStyleTopCenterNameBtn = nullptr;
+static lv_obj_t *lvglStyleTopCenterNameBtnLabel = nullptr;
+static lv_obj_t *lvglStyleTopCenterTimeBtn = nullptr;
+static lv_obj_t *lvglStyleTopCenterTimeBtnLabel = nullptr;
 static lv_obj_t *lvglStyleTimeoutSlider = nullptr;
 static lv_obj_t *lvglStyleTimeoutValueLabel = nullptr;
 static bool lvglStyleUiSyncing = false;
@@ -903,6 +943,9 @@ struct LvglTopIndicatorState {
 };
 static LvglTopIndicatorState lvglLastTopIndicatorState = {};
 static bool lvglTopIndicatorStateValid = false;
+TopBarCenterMode topBarCenterMode = TOP_BAR_CENTER_NAME;
+int8_t topBarTimezoneGmtOffset = 0;
+unsigned long topBarTimeSyncLastAttemptMs = 0;
 
 bool sdLock(TickType_t timeout = pdMS_TO_TICKS(3000))
 {
@@ -3520,8 +3563,7 @@ void lvglTopIndicatorsDrawEvent(lv_event_t *e)
     lvglDrawRectSolid(drawCtx, battX + 36, topY + 8, 6, 8, batteryCharging ? battCol : lv_color_hex(0x8A97A4));
     if (battFillW > 0) lvglDrawRectSolid(drawCtx, battX + 3, topY + 5, battFillW, 14, battCol);
 
-    String topName = deviceShortNameValue();
-    if (topName.length() > 8) topName.remove(8);
+    String topName = topBarCenterText();
     const lv_font_t *topNameFont = lv_obj_get_style_text_font(obj, LV_PART_MAIN);
     if (!topNameFont) topNameFont = lv_theme_get_font_small(obj);
     const lv_coord_t topNameLineH = topNameFont ? static_cast<lv_coord_t>(lv_font_get_line_height(topNameFont)) : 16;
@@ -3681,8 +3723,7 @@ void lvglRefreshTopIndicators()
         else if (rssi >= -75) next.wifiBars = 2;
         else next.wifiBars = 1;
     }
-    String topName = deviceShortNameValue();
-    if (topName.length() > 8) topName.remove(8);
+    String topName = topBarCenterText();
     snprintf(next.topName, sizeof(next.topName), "%s", topName.c_str());
 
     if (lvglTopIndicatorStateValid && memcmp(&lvglLastTopIndicatorState, &next, sizeof(next)) == 0) return;
@@ -4236,12 +4277,83 @@ static const LvglStyledButtonEntry *lvglFindStyledButtonEntryConst(const lv_obj_
     return nullptr;
 }
 
+static inline bool lvglBlackButtonThemeActive()
+{
+    return uiButtonStyleMode == UI_BUTTON_STYLE_BLACK;
+}
+
+static bool internetTimeValid()
+{
+    return time(nullptr) > 1700000000;
+}
+
+static void syncInternetTimeIfNeeded(bool force)
+{
+    if (airplaneModeEnabled || !wifiConnectedSafe()) return;
+    const unsigned long nowMs = millis();
+    const unsigned long minInterval = internetTimeValid() ? NTP_SYNC_REFRESH_MS : NTP_SYNC_RETRY_MS;
+    if (!force && static_cast<unsigned long>(nowMs - topBarTimeSyncLastAttemptMs) < minInterval) return;
+    configTime(0, 0, NTP_SERVER_1, NTP_SERVER_2, NTP_SERVER_3);
+    topBarTimeSyncLastAttemptMs = nowMs;
+}
+
+static String buildGmtOffsetDropdownOptions()
+{
+    String options;
+    for (int offset = TOP_BAR_GMT_MIN; offset <= TOP_BAR_GMT_MAX; ++offset) {
+        if (!options.isEmpty()) options += '\n';
+        options += "GMT";
+        if (offset >= 0) options += '+';
+        options += String(offset);
+    }
+    return options;
+}
+
+static String topBarCenterText()
+{
+    if (topBarCenterMode == TOP_BAR_CENTER_TIME) {
+        if (!internetTimeValid()) return deviceShortNameValue();
+        const time_t now = time(nullptr) + (static_cast<long>(topBarTimezoneGmtOffset) * 3600L);
+        struct tm tmNow = {};
+        gmtime_r(&now, &tmNow);
+        char buf[9];
+        snprintf(buf, sizeof(buf), "%02d:%02d", tmNow.tm_hour, tmNow.tm_min);
+        return String(buf);
+    }
+
+    String topName = deviceShortNameValue();
+    if (topName.length() > 8) topName.remove(8);
+    return topName;
+}
+
 static void lvglApplyMomentaryButtonStyle(lv_obj_t *btn, lv_obj_t *label, lv_color_t bodyCol, bool compact)
 {
     if (!btn) return;
 
-    const lv_color_t flashColor = lv_color_mix(lv_color_white(), bodyCol, UI_BUTTON_CLICK_FLASH_MIX);
-    if (uiButtonStyleMode == UI_BUTTON_STYLE_FLAT) {
+    if (lvglBlackButtonThemeActive()) {
+        const lv_color_t blackBody = lv_color_hex(UI_BUTTON_BLACK_BODY_HEX);
+        const lv_color_t pressedCol = lv_color_hex(UI_BUTTON_BLACK_PRESSED_HEX);
+        const lv_color_t flashColor = lv_color_hex(UI_BUTTON_BLACK_FLASH_HEX);
+        lv_obj_set_style_bg_color(btn, blackBody, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_grad_color(btn, blackBody, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(btn, pressedCol, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_grad_color(btn, pressedCol, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_color(btn, flashColor, LV_PART_MAIN | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_grad_color(btn, flashColor, LV_PART_MAIN | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_color(btn, flashColor, LV_PART_MAIN | LV_STATE_CHECKED | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_grad_color(btn, flashColor, LV_PART_MAIN | LV_STATE_CHECKED | LV_STATE_PRESSED);
+        lv_obj_set_style_border_width(btn, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_color(btn, lv_color_hex(UI_BUTTON_BLACK_BORDER_HEX), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_opa(btn, static_cast<lv_opa_t>(84), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_width(btn, 1, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_border_color(btn, lv_color_hex(UI_BUTTON_BLACK_BORDER_ACTIVE_HEX), LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_shadow_width(btn, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_width(btn, 0, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_translate_y(btn, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_translate_y(btn, 0, LV_PART_MAIN | LV_STATE_PRESSED);
+    } else {
+        const lv_color_t flashColor = lv_color_mix(lv_color_white(), bodyCol, UI_BUTTON_CLICK_FLASH_MIX);
+        if (uiButtonStyleMode == UI_BUTTON_STYLE_FLAT) {
         const lv_color_t pressedCol = lv_color_mix(lv_color_black(), bodyCol, compact ? 32 : 44);
         lv_obj_set_style_bg_color(btn, bodyCol, LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_bg_grad_color(btn, bodyCol, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -4294,6 +4406,7 @@ static void lvglApplyMomentaryButtonStyle(lv_obj_t *btn, lv_obj_t *label, lv_col
         lv_obj_set_style_shadow_opa(btn, compact ? LV_OPA_10 : LV_OPA_20, LV_PART_MAIN | LV_STATE_PRESSED);
         lv_obj_set_style_translate_y(btn, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_translate_y(btn, 1, LV_PART_MAIN | LV_STATE_PRESSED);
+    }
     }
 
     if (label) {
@@ -4348,6 +4461,19 @@ lv_obj_t *lvglCreateMenuButton(lv_obj_t *parent, const char *txt, lv_color_t col
     return btn;
 }
 
+static void lvglAttachMenuButtonImage(lv_obj_t *btn, const lv_img_dsc_t *imgSrc, lv_coord_t xOffset = 8, lv_coord_t labelShiftX = 10)
+{
+    if (!btn || !imgSrc) return;
+    lv_obj_t *img = lv_img_create(btn);
+    if (!img) return;
+    lv_img_set_src(img, imgSrc);
+    lv_obj_clear_flag(img, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(img, LV_ALIGN_LEFT_MID, xOffset, 0);
+
+    lv_obj_t *label = lv_obj_get_child(btn, 0);
+    if (label) lv_obj_align(label, LV_ALIGN_CENTER, labelShiftX, 0);
+}
+
 static void lvglApplyPersistentToggleButtonStyle(lv_obj_t *btn,
                                                  lv_obj_t *label,
                                                  bool enabled,
@@ -4359,7 +4485,29 @@ static void lvglApplyPersistentToggleButtonStyle(lv_obj_t *btn,
 
     const lv_color_t bodyCol = enabled ? lvglActiveToggleGreen(compact) : offBodyCol;
     const lv_color_t flashColor = lv_color_mix(lv_color_white(), bodyCol, UI_BUTTON_CLICK_FLASH_MIX);
-    if (uiButtonStyleMode == UI_BUTTON_STYLE_FLAT) {
+    if (lvglBlackButtonThemeActive()) {
+        const lv_color_t blackBody = lv_color_hex(UI_BUTTON_BLACK_BODY_HEX);
+        const lv_color_t pressedCol = lv_color_hex(UI_BUTTON_BLACK_PRESSED_HEX);
+        const lv_color_t flashCol = lv_color_hex(UI_BUTTON_BLACK_FLASH_HEX);
+        const lv_color_t borderCol = lv_color_hex(enabled ? UI_BUTTON_BLACK_BORDER_ACTIVE_HEX : UI_BUTTON_BLACK_BORDER_HEX);
+        lv_obj_set_style_bg_color(btn, blackBody, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_grad_color(btn, blackBody, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(btn, pressedCol, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_grad_color(btn, pressedCol, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_color(btn, flashCol, LV_PART_MAIN | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_grad_color(btn, flashCol, LV_PART_MAIN | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_color(btn, flashCol, LV_PART_MAIN | LV_STATE_CHECKED | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_grad_color(btn, flashCol, LV_PART_MAIN | LV_STATE_CHECKED | LV_STATE_PRESSED);
+        lv_obj_set_style_border_width(btn, enabled ? 2 : 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_color(btn, borderCol, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_opa(btn, enabled ? static_cast<lv_opa_t>(120) : static_cast<lv_opa_t>(84), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_width(btn, enabled ? 2 : 1, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_border_color(btn, borderCol, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_shadow_width(btn, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_shadow_width(btn, 0, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_translate_y(btn, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_translate_y(btn, 0, LV_PART_MAIN | LV_STATE_PRESSED);
+    } else if (uiButtonStyleMode == UI_BUTTON_STYLE_FLAT) {
         const lv_color_t pressedCol = lv_color_mix(lv_color_black(), bodyCol, compact ? 40 : 56);
         const lv_color_t borderCol = enabled
                                          ? lv_color_mix(lv_color_white(), bodyCol, compact ? 108 : 132)
@@ -4575,11 +4723,43 @@ void lvglRefreshAllButtonStyles()
                                              lv_color_hex(uiButtonStyle3dSelectorColor),
                                              true);
     }
+    if (lvglStyleButtonBlackBtn) {
+        lvglApplyPersistentToggleButtonStyle(lvglStyleButtonBlackBtn,
+                                             lvglStyleButtonBlackBtnLabel,
+                                             uiButtonStyleMode == UI_BUTTON_STYLE_BLACK,
+                                             lv_color_hex(UI_BUTTON_BLACK_BODY_HEX),
+                                             lv_color_hex(UI_BUTTON_BLACK_BODY_HEX),
+                                             true);
+    }
+    if (lvglStyleTimezoneDd) {
+        const uint16_t selected = static_cast<uint16_t>(topBarTimezoneGmtOffset - TOP_BAR_GMT_MIN);
+        if (lv_dropdown_get_selected(lvglStyleTimezoneDd) != selected) {
+            lv_dropdown_set_selected(lvglStyleTimezoneDd, selected);
+        }
+    }
+    if (lvglStyleTopCenterNameBtn) {
+        lvglApplyPersistentToggleButtonStyle(lvglStyleTopCenterNameBtn,
+                                             lvglStyleTopCenterNameBtnLabel,
+                                             topBarCenterMode == TOP_BAR_CENTER_NAME,
+                                             lv_color_hex(0x3F4A57),
+                                             lv_color_hex(0x3F4A57),
+                                             true);
+    }
+    if (lvglStyleTopCenterTimeBtn) {
+        lvglApplyPersistentToggleButtonStyle(lvglStyleTopCenterTimeBtn,
+                                             lvglStyleTopCenterTimeBtnLabel,
+                                             topBarCenterMode == TOP_BAR_CENTER_TIME,
+                                             lv_color_hex(0x3F4A57),
+                                             lv_color_hex(0x3F4A57),
+                                             true);
+    }
 }
 
 void lvglSetButtonStyleMode(UiButtonStyleMode mode, bool persist)
 {
-    if (mode != UI_BUTTON_STYLE_FLAT && mode != UI_BUTTON_STYLE_3D) mode = UI_BUTTON_STYLE_3D;
+    if (mode != UI_BUTTON_STYLE_FLAT && mode != UI_BUTTON_STYLE_3D && mode != UI_BUTTON_STYLE_BLACK) {
+        mode = UI_BUTTON_STYLE_3D;
+    }
     uiButtonStyleMode = mode;
     if (persist) {
         uiPrefs.begin("ui", false);
@@ -5710,6 +5890,10 @@ void lvglOpenStyleScreenEvent(lv_event_t *e);
 void lvglStyleScreensaverToggleEvent(lv_event_t *e);
 void lvglStyleButtonFlatEvent(lv_event_t *e);
 void lvglStyleButton3dEvent(lv_event_t *e);
+void lvglStyleButtonBlackEvent(lv_event_t *e);
+void lvglStyleTimezoneEvent(lv_event_t *e);
+void lvglStyleTopCenterNameEvent(lv_event_t *e);
+void lvglStyleTopCenterTimeEvent(lv_event_t *e);
 void lvglStyleTimeoutEvent(lv_event_t *e);
 void lvglRefreshStyleUi();
 void lvglGestureBlockEvent(lv_event_t *e);
@@ -5918,19 +6102,26 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_flex_flow(homeWrap, LV_FLEX_FLOW_COLUMN);
             lv_obj_set_scrollbar_mode(homeWrap, LV_SCROLLBAR_MODE_OFF);
             lvglStatusLabel = nullptr;
-            lv_obj_t *homeChatBtn = lvglCreateMenuButton(homeWrap, lvglSymbolText(LV_SYMBOL_LIST, "Chat").c_str(), lv_color_hex(0x7A4F2F), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CHAT)));
-            lv_obj_t *homeMediaBtn = lvglCreateMenuButton(homeWrap, lvglSymbolText(LV_SYMBOL_PLAY, "Media").c_str(), lv_color_hex(0x376B93), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_MEDIA)));
-            lv_obj_t *homeInfoBtn = lvglCreateMenuButton(homeWrap, lvglSymbolText(LV_SYMBOL_LIST, "Info").c_str(), lv_color_hex(0x7750A0), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_INFO)));
-            lv_obj_t *homeGamesBtn = lvglCreateMenuButton(homeWrap, lvglSymbolText(LV_SYMBOL_PLAY, "Games").c_str(), lv_color_hex(0x2B7D7D), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_GAMES)));
-            lv_obj_t *homeConfigBtn = lvglCreateMenuButton(homeWrap, lvglSymbolText(LV_SYMBOL_SETTINGS, "Config").c_str(), lv_color_hex(0x925A73), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CONFIG)));
-            lvglAirplaneBtn = lvglCreateMenuButton(homeWrap, lvglSymbolText(LV_SYMBOL_POWER, "Airplane: OFF").c_str(), lv_color_hex(0x8A5A25), lvglAirplaneToggleEvent, nullptr);
+            lv_obj_t *homeChatBtn = lvglCreateMenuButton(homeWrap, "Chat", lv_color_hex(0x7A4F2F), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CHAT)));
+            lvglAttachMenuButtonImage(homeChatBtn, &img_chat_small_icon);
+            lv_obj_t *homeMediaBtn = lvglCreateMenuButton(homeWrap, "Media", lv_color_hex(0x376B93), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_MEDIA)));
+            lvglAttachMenuButtonImage(homeMediaBtn, &img_music_small_icon, 8, 12);
+            lv_obj_t *homeInfoBtn = lvglCreateMenuButton(homeWrap, "Info", lv_color_hex(0x7750A0), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_INFO)));
+            lvglAttachMenuButtonImage(homeInfoBtn, &img_info_small_icon);
+            lv_obj_t *homeGamesBtn = lvglCreateMenuButton(homeWrap, "Games", lv_color_hex(0x2B7D7D), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_GAMES)));
+            lvglAttachMenuButtonImage(homeGamesBtn, &img_games_small_icon);
+            lv_obj_t *homeConfigBtn = lvglCreateMenuButton(homeWrap, "Config", lv_color_hex(0x925A73), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CONFIG)));
+            lvglAttachMenuButtonImage(homeConfigBtn, &img_config_small_icon);
+            lvglAirplaneBtn = lvglCreateMenuButton(homeWrap, "Airplane: OFF", lv_color_hex(0x8A5A25), lvglAirplaneToggleEvent, nullptr);
             if (lvglAirplaneBtn) {
                 lvglAirplaneBtnLabel = lv_obj_get_child(lvglAirplaneBtn, 0);
+                lvglAttachMenuButtonImage(lvglAirplaneBtn, &img_airplane_mode_icon);
                 lvglApplyAirplaneButtonStyle();
             }
-            lvglApModeBtn = lvglCreateMenuButton(homeWrap, lvglSymbolText(LV_SYMBOL_WIFI, "AP Mode: OFF").c_str(), lv_color_hex(0xA66A2A), lvglApModeEvent, nullptr);
+            lvglApModeBtn = lvglCreateMenuButton(homeWrap, "AP Mode: OFF", lv_color_hex(0xA66A2A), lvglApModeEvent, nullptr);
             if (lvglApModeBtn) {
                 lvglApModeBtnLabel = lv_obj_get_child(lvglApModeBtn, 0);
+                lvglAttachMenuButtonImage(lvglApModeBtn, &img_ap_small_icon);
                 lvglApplyApModeButtonStyle();
             }
             lvglRegisterReorderableItem(homeChatBtn, "ord_home", "chat");
@@ -6324,12 +6515,16 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_flex_flow(lvglConfigWrap, LV_FLEX_FLOW_COLUMN);
             lv_obj_set_scrollbar_mode(lvglConfigWrap, LV_SCROLLBAR_MODE_OFF);
             lv_obj_t *cfgWifiBtn = lvglCreateMenuButton(lvglConfigWrap, lvglSymbolText(LV_SYMBOL_WIFI, "WiFi Config").c_str(), lv_color_hex(0x3A8F4B), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_WIFI_LIST)));
-            lv_obj_t *cfgHc12Btn = lvglCreateMenuButton(lvglConfigWrap, lvglSymbolText(LV_SYMBOL_SETTINGS, "HC12 Config").c_str(), lv_color_hex(0x7A5C2E), lvglOpenHc12ScreenEvent, nullptr);
-            lv_obj_t *cfgStyleBtn = lvglCreateMenuButton(lvglConfigWrap, lvglSymbolText(LV_SYMBOL_SETTINGS, "Style").c_str(), lv_color_hex(0x2D6D8E), lvglOpenStyleScreenEvent, nullptr);
-            lv_obj_t *cfgMqttBtn = lvglCreateMenuButton(lvglConfigWrap, lvglSymbolText(LV_SYMBOL_LIST, "MQTT Config").c_str(), lv_color_hex(0x6D4B9A), lvglOpenMqttCfgEvent, nullptr);
+            lv_obj_t *cfgHc12Btn = lvglCreateMenuButton(lvglConfigWrap, "HC12 Config", lv_color_hex(0x7A5C2E), lvglOpenHc12ScreenEvent, nullptr);
+            lvglAttachMenuButtonImage(cfgHc12Btn, &img_radio_small_icon, 8, 12);
+            lv_obj_t *cfgStyleBtn = lvglCreateMenuButton(lvglConfigWrap, "Style", lv_color_hex(0x2D6D8E), lvglOpenStyleScreenEvent, nullptr);
+            lvglAttachMenuButtonImage(cfgStyleBtn, &img_styles_small_icon, 8, 12);
+            lv_obj_t *cfgMqttBtn = lvglCreateMenuButton(lvglConfigWrap, "MQTT Config", lv_color_hex(0x6D4B9A), lvglOpenMqttCfgEvent, nullptr);
+            lvglAttachMenuButtonImage(cfgMqttBtn, &img_mqtt_small_icon, 8, 12);
             lv_obj_t *cfgMqttCtlBtn = lvglCreateMenuButton(lvglConfigWrap, lvglSymbolText(LV_SYMBOL_LIST, "MQTT Controls").c_str(), lv_color_hex(0x2D6D8E), lvglOpenMqttCtrlEvent, nullptr);
             lv_obj_t *cfgShotBtn = lvglCreateMenuButton(lvglConfigWrap, lvglSymbolText(LV_SYMBOL_IMAGE, "Screenshot").c_str(), lv_color_hex(0x6B5B2A), lvglScreenshotEvent, nullptr);
-            lv_obj_t *cfgOtaBtn = lvglCreateMenuButton(lvglConfigWrap, lvglSymbolText(LV_SYMBOL_UPLOAD, "OTA Updates").c_str(), lv_color_hex(0x2E6F95), lvglOpenOtaScreenEvent, nullptr);
+            lv_obj_t *cfgOtaBtn = lvglCreateMenuButton(lvglConfigWrap, "OTA Updates", lv_color_hex(0x2E6F95), lvglOpenOtaScreenEvent, nullptr);
+            lvglAttachMenuButtonImage(cfgOtaBtn, &img_ota_small_icon, 8, 12);
 
             lv_obj_t *nameWrap = lv_obj_create(lvglConfigWrap);
             lv_obj_set_size(nameWrap, lv_pct(100), LV_SIZE_CONTENT);
@@ -6483,6 +6678,13 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglStyleButtonFlatBtnLabel = nullptr;
             lvglStyleButton3dBtn = nullptr;
             lvglStyleButton3dBtnLabel = nullptr;
+            lvglStyleButtonBlackBtn = nullptr;
+            lvglStyleButtonBlackBtnLabel = nullptr;
+            lvglStyleTimezoneDd = nullptr;
+            lvglStyleTopCenterNameBtn = nullptr;
+            lvglStyleTopCenterNameBtnLabel = nullptr;
+            lvglStyleTopCenterTimeBtn = nullptr;
+            lvglStyleTopCenterTimeBtnLabel = nullptr;
             lv_obj_t *wrap = lv_obj_create(lvglScrStyle);
             lv_obj_set_size(wrap, lv_pct(100), UI_CONTENT_H);
             lv_obj_align(wrap, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
@@ -6528,12 +6730,13 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_label_set_text(buttonStyleHdr, "Button Style");
             lv_obj_set_style_text_color(buttonStyleHdr, lv_color_hex(0xE5ECF3), 0);
 
-            auto makeStyleRow = [&](const char *title,
+            auto makeStyleRow = [&](lv_obj_t *parentWrap,
+                                    const char *title,
                                     lv_color_t accent,
                                     lv_obj_t **btnOut,
                                     lv_obj_t **labelOut,
                                     lv_event_cb_t cb) {
-                lv_obj_t *row = lv_obj_create(buttonStyleWrap);
+                lv_obj_t *row = lv_obj_create(parentWrap);
                 lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
                 lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
                 lv_obj_set_style_border_width(row, 0, 0);
@@ -6562,16 +6765,78 @@ void lvglEnsureScreenBuilt(UiScreen screen)
                 *labelOut = lbl;
             };
 
-            makeStyleRow("Flat Buttons",
+            makeStyleRow(buttonStyleWrap,
+                         "Flat Buttons",
                          lv_color_hex(uiButtonStyleFlatSelectorColor),
                          &lvglStyleButtonFlatBtn,
                          &lvglStyleButtonFlatBtnLabel,
                          lvglStyleButtonFlatEvent);
-            makeStyleRow("3D Buttons",
+            makeStyleRow(buttonStyleWrap,
+                         "3D Buttons",
                          lv_color_hex(uiButtonStyle3dSelectorColor),
                          &lvglStyleButton3dBtn,
                          &lvglStyleButton3dBtnLabel,
                          lvglStyleButton3dEvent);
+            makeStyleRow(buttonStyleWrap,
+                         "Black Buttons",
+                         lv_color_hex(UI_BUTTON_BLACK_BODY_HEX),
+                         &lvglStyleButtonBlackBtn,
+                         &lvglStyleButtonBlackBtnLabel,
+                         lvglStyleButtonBlackEvent);
+
+            lv_obj_t *tzWrap = lv_obj_create(wrap);
+            lv_obj_set_size(tzWrap, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_color(tzWrap, lv_color_hex(0x18222D), 0);
+            lv_obj_set_style_border_width(tzWrap, 0, 0);
+            lv_obj_set_style_radius(tzWrap, 12, 0);
+            lv_obj_set_style_pad_all(tzWrap, 10, 0);
+            lv_obj_set_style_pad_row(tzWrap, 8, 0);
+            lv_obj_set_flex_flow(tzWrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_clear_flag(tzWrap, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *tzHdr = lv_label_create(tzWrap);
+            lv_label_set_text(tzHdr, "Timezone");
+            lv_obj_set_style_text_color(tzHdr, lv_color_hex(0xE5ECF3), 0);
+
+            lvglStyleTimezoneDd = lv_dropdown_create(tzWrap);
+            lv_obj_set_width(lvglStyleTimezoneDd, lv_pct(100));
+            lv_dropdown_set_options(lvglStyleTimezoneDd, buildGmtOffsetDropdownOptions().c_str());
+            lv_obj_set_style_bg_color(lvglStyleTimezoneDd, lv_color_hex(0x111922), 0);
+            lv_obj_set_style_text_color(lvglStyleTimezoneDd, lv_color_hex(0xE5ECF3), 0);
+            lv_obj_set_style_border_color(lvglStyleTimezoneDd, lv_color_hex(0x2F4658), 0);
+            lv_obj_set_style_border_width(lvglStyleTimezoneDd, 1, 0);
+            lv_obj_set_style_radius(lvglStyleTimezoneDd, 8, 0);
+            lv_obj_add_event_cb(lvglStyleTimezoneDd, lvglStyleTimezoneEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+            lv_obj_add_event_cb(lvglStyleTimezoneDd, lvglGestureBlockEvent, LV_EVENT_PRESSED, nullptr);
+            lv_obj_add_event_cb(lvglStyleTimezoneDd, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
+            lv_obj_add_event_cb(lvglStyleTimezoneDd, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
+
+            lv_obj_t *topCenterWrap = lv_obj_create(wrap);
+            lv_obj_set_size(topCenterWrap, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_color(topCenterWrap, lv_color_hex(0x18222D), 0);
+            lv_obj_set_style_border_width(topCenterWrap, 0, 0);
+            lv_obj_set_style_radius(topCenterWrap, 12, 0);
+            lv_obj_set_style_pad_all(topCenterWrap, 10, 0);
+            lv_obj_set_style_pad_row(topCenterWrap, 8, 0);
+            lv_obj_set_flex_flow(topCenterWrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_clear_flag(topCenterWrap, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *topCenterHdr = lv_label_create(topCenterWrap);
+            lv_label_set_text(topCenterHdr, "Top Bar Center");
+            lv_obj_set_style_text_color(topCenterHdr, lv_color_hex(0xE5ECF3), 0);
+
+            makeStyleRow(topCenterWrap,
+                         "Show Device Name",
+                         lv_color_hex(0x3F4A57),
+                         &lvglStyleTopCenterNameBtn,
+                         &lvglStyleTopCenterNameBtnLabel,
+                         lvglStyleTopCenterNameEvent);
+            makeStyleRow(topCenterWrap,
+                         "Show Time",
+                         lv_color_hex(0x3F4A57),
+                         &lvglStyleTopCenterTimeBtn,
+                         &lvglStyleTopCenterTimeBtnLabel,
+                         lvglStyleTopCenterTimeEvent);
 
             lv_obj_t *timeWrap = lv_obj_create(wrap);
             lv_obj_set_size(timeWrap, lv_pct(100), LV_SIZE_CONTENT);
@@ -11699,6 +11964,52 @@ void lvglStyleButton3dEvent(lv_event_t *e)
     lvglSetButtonStyleMode(UI_BUTTON_STYLE_3D, true);
 }
 
+void lvglStyleButtonBlackEvent(lv_event_t *e)
+{
+    (void)e;
+    lvglSetButtonStyleMode(UI_BUTTON_STYLE_BLACK, true);
+}
+
+void lvglStyleTimezoneEvent(lv_event_t *e)
+{
+    (void)e;
+    if (!lvglStyleTimezoneDd) return;
+    const int selected = static_cast<int>(lv_dropdown_get_selected(lvglStyleTimezoneDd));
+    topBarTimezoneGmtOffset = static_cast<int8_t>(constrain(TOP_BAR_GMT_MIN + selected, TOP_BAR_GMT_MIN, TOP_BAR_GMT_MAX));
+    uiPrefs.begin("ui", false);
+    uiPrefs.putInt("tz_gmt", static_cast<int>(topBarTimezoneGmtOffset));
+    uiPrefs.end();
+    syncInternetTimeIfNeeded(true);
+    lvglTopIndicatorStateValid = false;
+    lvglRefreshTopIndicators();
+    lvglRefreshStyleUi();
+}
+
+void lvglStyleTopCenterNameEvent(lv_event_t *e)
+{
+    (void)e;
+    topBarCenterMode = TOP_BAR_CENTER_NAME;
+    uiPrefs.begin("ui", false);
+    uiPrefs.putUChar("top_mid", static_cast<uint8_t>(topBarCenterMode));
+    uiPrefs.end();
+    lvglTopIndicatorStateValid = false;
+    lvglRefreshTopIndicators();
+    lvglRefreshStyleUi();
+}
+
+void lvglStyleTopCenterTimeEvent(lv_event_t *e)
+{
+    (void)e;
+    topBarCenterMode = TOP_BAR_CENTER_TIME;
+    uiPrefs.begin("ui", false);
+    uiPrefs.putUChar("top_mid", static_cast<uint8_t>(topBarCenterMode));
+    uiPrefs.end();
+    syncInternetTimeIfNeeded(true);
+    lvglTopIndicatorStateValid = false;
+    lvglRefreshTopIndicators();
+    lvglRefreshStyleUi();
+}
+
 void lvglStyleTimeoutEvent(lv_event_t *e)
 {
     (void)e;
@@ -11788,6 +12099,33 @@ void lvglRefreshStyleUi()
                                              lv_color_hex(uiButtonStyle3dSelectorColor),
                                              true);
     }
+    if (lvglStyleButtonBlackBtn && lvglStyleButtonBlackBtnLabel) {
+        lvglLabelSetTextIfChanged(lvglStyleButtonBlackBtnLabel, uiButtonStyleMode == UI_BUTTON_STYLE_BLACK ? "Selected" : "Select");
+        lvglApplyPersistentToggleButtonStyle(lvglStyleButtonBlackBtn,
+                                             lvglStyleButtonBlackBtnLabel,
+                                             uiButtonStyleMode == UI_BUTTON_STYLE_BLACK,
+                                             lv_color_hex(UI_BUTTON_BLACK_BODY_HEX),
+                                             lv_color_hex(UI_BUTTON_BLACK_BODY_HEX),
+                                             true);
+    }
+    if (lvglStyleTopCenterNameBtn && lvglStyleTopCenterNameBtnLabel) {
+        lvglLabelSetTextIfChanged(lvglStyleTopCenterNameBtnLabel, topBarCenterMode == TOP_BAR_CENTER_NAME ? "Selected" : "Select");
+        lvglApplyPersistentToggleButtonStyle(lvglStyleTopCenterNameBtn,
+                                             lvglStyleTopCenterNameBtnLabel,
+                                             topBarCenterMode == TOP_BAR_CENTER_NAME,
+                                             lv_color_hex(0x3F4A57),
+                                             lv_color_hex(0x3F4A57),
+                                             true);
+    }
+    if (lvglStyleTopCenterTimeBtn && lvglStyleTopCenterTimeBtnLabel) {
+        lvglLabelSetTextIfChanged(lvglStyleTopCenterTimeBtnLabel, topBarCenterMode == TOP_BAR_CENTER_TIME ? "Selected" : "Select");
+        lvglApplyPersistentToggleButtonStyle(lvglStyleTopCenterTimeBtn,
+                                             lvglStyleTopCenterTimeBtnLabel,
+                                             topBarCenterMode == TOP_BAR_CENTER_TIME,
+                                             lv_color_hex(0x3F4A57),
+                                             lv_color_hex(0x3F4A57),
+                                             true);
+    }
     lvglStyleUiSyncing = false;
 }
 
@@ -11861,9 +12199,9 @@ void lvglSaveDeviceNameEvent(lv_event_t *e)
 
 void lvglRefreshConfigUi()
 {
-    if (lvglAirplaneBtnLabel) lvglLabelSetTextIfChanged(lvglAirplaneBtnLabel, lvglSymbolText(LV_SYMBOL_POWER, airplaneModeEnabled ? "Airplane: ON" : "Airplane: OFF"));
+    if (lvglAirplaneBtnLabel) lvglLabelSetTextIfChanged(lvglAirplaneBtnLabel, airplaneModeEnabled ? "Airplane: ON" : "Airplane: OFF");
     lvglApplyAirplaneButtonStyle();
-    if (lvglApModeBtnLabel) lvglLabelSetTextIfChanged(lvglApModeBtnLabel, lvglSymbolText(LV_SYMBOL_WIFI, wifiSessionApMode ? "AP Mode: ON" : "AP Mode: OFF"));
+    if (lvglApModeBtnLabel) lvglLabelSetTextIfChanged(lvglApModeBtnLabel, wifiSessionApMode ? "AP Mode: ON" : "AP Mode: OFF");
     lvglApplyApModeButtonStyle();
     if (lvglConfigDeviceNameTa) {
         String current = lv_textarea_get_text(lvglConfigDeviceNameTa);
@@ -15448,6 +15786,8 @@ void appendUiSettings(JsonDocument &doc)
     doc["WsRebootOnDisconnect"] = uiPrefs.getBool("ws_reboot", wsRebootOnDisconnectEnabled) ? 1 : 0;
     doc["AirplaneMode"] = uiPrefs.getBool("airplane", airplaneModeEnabled) ? 1 : 0;
     doc["ButtonStyle"] = uiPrefs.getUChar("btn_style", static_cast<uint8_t>(uiButtonStyleMode));
+    doc["TopBarCenter"] = uiPrefs.getUChar("top_mid", static_cast<uint8_t>(topBarCenterMode));
+    doc["TopBarTimezone"] = uiPrefs.getInt("tz_gmt", static_cast<int>(topBarTimezoneGmtOffset));
     doc["TelemetryMaxKB"] = uiPrefs.getUInt("tele_kb", telemetryMaxKB);
     doc["IndicatorsVisible"] = uiPrefs.getBool("ind_v", true) ? 1 : 0;
     doc["ImuVisible"] = uiPrefs.getBool("imu_v", true) ? 1 : 0;
@@ -15487,7 +15827,13 @@ void loadUiRuntimeConfig()
     webServerEnabled = uiPrefs.getBool("web_srv", true);
     airplaneModeEnabled = uiPrefs.getBool("airplane", false);
     const uint8_t rawButtonStyle = uiPrefs.getUChar("btn_style", static_cast<uint8_t>(UI_BUTTON_STYLE_3D));
-    uiButtonStyleMode = rawButtonStyle == static_cast<uint8_t>(UI_BUTTON_STYLE_FLAT) ? UI_BUTTON_STYLE_FLAT : UI_BUTTON_STYLE_3D;
+    if (rawButtonStyle == static_cast<uint8_t>(UI_BUTTON_STYLE_FLAT)) uiButtonStyleMode = UI_BUTTON_STYLE_FLAT;
+    else if (rawButtonStyle == static_cast<uint8_t>(UI_BUTTON_STYLE_BLACK)) uiButtonStyleMode = UI_BUTTON_STYLE_BLACK;
+    else uiButtonStyleMode = UI_BUTTON_STYLE_3D;
+    topBarCenterMode = uiPrefs.getUChar("top_mid", static_cast<uint8_t>(TOP_BAR_CENTER_NAME)) == static_cast<uint8_t>(TOP_BAR_CENTER_TIME)
+                           ? TOP_BAR_CENTER_TIME
+                           : TOP_BAR_CENTER_NAME;
+    topBarTimezoneGmtOffset = static_cast<int8_t>(constrain(uiPrefs.getInt("tz_gmt", 0), static_cast<int>(TOP_BAR_GMT_MIN), static_cast<int>(TOP_BAR_GMT_MAX)));
     uiButtonStyleFlatSelectorColor = uiPrefs.getUInt("btn_flat_c", 0);
     uiButtonStyle3dSelectorColor = uiPrefs.getUInt("btn_3d_c", 0);
     if (uiButtonStyleFlatSelectorColor == 0) {
@@ -15681,6 +16027,8 @@ bool handleUiSettingMessage(const char *msg)
         deviceShortName = sanitizeDeviceShortName(String(value));
         if (deviceShortName.isEmpty()) deviceShortName = DEVICE_SHORT_NAME;
         uiPrefs.putString("dev_name", deviceShortName);
+        lvglTopIndicatorStateValid = false;
+        if (lvglReady) lvglRefreshTopIndicators();
         lvglRefreshConfigUi();
     }
     else if (strcmp(key, "WsRebootOnDisconnect") == 0) {
@@ -15694,10 +16042,32 @@ bool handleUiSettingMessage(const char *msg)
         return true;
     }
     else if (strcmp(key, "ButtonStyle") == 0 && parseIntMessageValue(value, parsed)) {
-        uiButtonStyleMode = parsed == static_cast<int>(UI_BUTTON_STYLE_FLAT) ? UI_BUTTON_STYLE_FLAT : UI_BUTTON_STYLE_3D;
+        if (parsed == static_cast<int>(UI_BUTTON_STYLE_FLAT)) uiButtonStyleMode = UI_BUTTON_STYLE_FLAT;
+        else if (parsed == static_cast<int>(UI_BUTTON_STYLE_BLACK)) uiButtonStyleMode = UI_BUTTON_STYLE_BLACK;
+        else uiButtonStyleMode = UI_BUTTON_STYLE_3D;
         uiPrefs.putUChar("btn_style", static_cast<uint8_t>(uiButtonStyleMode));
         if (lvglReady) {
             lvglRefreshAllButtonStyles();
+            lvglRefreshStyleUi();
+        }
+    }
+    else if (strcmp(key, "TopBarCenter") == 0 && parseIntMessageValue(value, parsed)) {
+        topBarCenterMode = parsed == static_cast<int>(TOP_BAR_CENTER_TIME) ? TOP_BAR_CENTER_TIME : TOP_BAR_CENTER_NAME;
+        uiPrefs.putUChar("top_mid", static_cast<uint8_t>(topBarCenterMode));
+        if (topBarCenterMode == TOP_BAR_CENTER_TIME) syncInternetTimeIfNeeded(true);
+        lvglTopIndicatorStateValid = false;
+        if (lvglReady) {
+            lvglRefreshTopIndicators();
+            lvglRefreshStyleUi();
+        }
+    }
+    else if (strcmp(key, "TopBarTimezone") == 0 && parseIntMessageValue(value, parsed)) {
+        topBarTimezoneGmtOffset = static_cast<int8_t>(constrain(parsed, static_cast<int>(TOP_BAR_GMT_MIN), static_cast<int>(TOP_BAR_GMT_MAX)));
+        uiPrefs.putInt("tz_gmt", static_cast<int>(topBarTimezoneGmtOffset));
+        if (topBarCenterMode == TOP_BAR_CENTER_TIME) syncInternetTimeIfNeeded(true);
+        lvglTopIndicatorStateValid = false;
+        if (lvglReady) {
+            lvglRefreshTopIndicators();
             lvglRefreshStyleUi();
         }
     }
@@ -19215,6 +19585,9 @@ void wifiConnectionService()
             pendingSavePass = "";
         }
         uiStatusLine = "Connected: " + ssid;
+        syncInternetTimeIfNeeded(true);
+        lvglTopIndicatorStateValid = false;
+        if (lvglReady) lvglRefreshTopIndicators();
         if (lvglWifiPwdConnectPending && ssid == lvglWifiPendingSsid) {
             lvglWifiPwdConnectPending = false;
             if (lvglWifiPwdStatusLabel) lv_label_set_text(lvglWifiPwdStatusLabel, "Connected");
@@ -19636,6 +20009,8 @@ void loop()
     }
 
     if (displayAwake && isDown) lastUserActivityMs = millis();
+
+    if (topBarCenterMode == TOP_BAR_CENTER_TIME) syncInternetTimeIfNeeded(false);
 
     snakeTick();
     tetrisTick();
