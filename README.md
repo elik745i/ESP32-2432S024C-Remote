@@ -43,6 +43,10 @@ Supported boards:
 
 ### `ESP32-2432S024C`
 
+![ESP32-2432S024C](3D_Models/render1.jpeg)
+![ESP32-2432S024C Menu 1](documents/ESP32_2432S024C_Menu1.jpeg)
+![ESP32-2432S024C Menu 2](documents/ESP32_2432S024C_Menu2.jpeg)
+
 Display:
 - Driver: `ILI9341`
 - Resolution: `240x320`
