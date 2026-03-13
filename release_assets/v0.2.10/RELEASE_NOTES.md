@@ -1,6 +1,6 @@
 ## v0.2.10
 
-This release refines the new swipe-back interaction and fixes the gesture conflicts discovered after `v0.2.9`.
+This release refines the new swipe-back interaction, hardens it across all supported boards, and adds a few small UX updates around notifications and audio control.
 
 ### UI and Navigation
 
@@ -8,11 +8,14 @@ This release refines the new swipe-back interaction and fixes the gesture confli
 - The previous screen is rendered under the active screen during swipe-back for a true interactive back gesture.
 - Releasing the swipe now completes the back navigation once about 30% of the previous screen is visible, even on slower drags.
 - Reorder drag and swipe-back now arbitrate by touch intent so horizontal swipes stay navigation gestures while long-press still enables menu reordering.
+- `Config` now includes a persisted `Volume` slider alongside brightness so speaker output can be adjusted without opening the media screen.
+- Incoming chat messages now play a short notification beep on the speaker output when media playback is idle.
 
 ### Performance and Stability
 
 - Replaced the temporary LVGL `prev_scr` preview approach that could freeze pointer handling during interactive swipe-back.
 - Enabled LVGL snapshot support for swipe previews and routed those preview buffers through the existing PSRAM-first LVGL allocator on the `ESP32-S3-3248S035-N16R8` build to avoid extra SRAM pressure.
+- Non-PSRAM boards now skip the full snapshot preview and use a lightweight fallback underlay during swipe-back so gesture-back no longer hangs or exposes a white background.
 
 ### Firmware Binaries
 

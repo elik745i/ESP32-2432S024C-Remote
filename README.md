@@ -18,8 +18,8 @@ Supported boards:
 - Reorderable menus and submenu items with press-and-hold drag, persisted order, and raised/pressed button themes
 - LVGL touch/UI hot paths trimmed to reduce callback and off-screen refresh overhead
 - Discovery-gated device pairing with accept/reject confirmation on the target device
-- Saved backlight brightness and RGB LED intensity controls in `Config`
-- Brightness and RGB slider values are persisted in `Preferences`
+- Saved backlight brightness, speaker volume, and RGB LED intensity controls in `Config`
+- Brightness, volume, and RGB slider values are persisted in `Preferences`
 - `WiFi Config` screen with current network info, manual scan, saved-network actions, and editable AP SSID/password
 - `HC12 Config` submenu with live channel, baud, mode, power, default-reset, dedicated `Info`, and `Serial Terminal` pages for the HC-12 radio module
 - `OTA Updates` screen with boot-time and periodic update checks, update-available indicator/popup, progress bar, and post-update confirmation
@@ -29,6 +29,7 @@ Supported boards:
 - Encrypted peer-to-peer LAN chat over UDP
 - Encrypted global chat relay over MQTT
 - On-device peer discovery, pairing, unpair, enable/disable, unread markers, and conversation actions
+- Incoming chat messages can trigger a simple speaker notification beep on supported board audio outputs
 - Built-in `Snake`, `Tetris`, `Checkers`, and PSRAM-only `Snake 3D` games with a shared touch control layout
 - `Checkers` supports both local play against the ESP32 and contact-invite multiplayer started from chat
 - `Checkers` includes American, International, Russian, Pool, and Canadian/Sri Lankan rulesets

@@ -154,6 +154,14 @@ static constexpr int I2S_SPK_PIN = 26;
 static constexpr uint8_t AUDIO_I2S_PORT = I2S_NUM_0;
 static constexpr uint8_t AUDIO_VOLUME_TARGET = 21;
 static constexpr bool AUDIO_FORCE_MONO_INTERNAL_DAC = true;
+static constexpr uint8_t CHAT_NOTIFY_LEDC_CHANNEL = 7;
+static constexpr uint16_t CHAT_NOTIFY_FREQ_PRIMARY = 1760;
+static constexpr uint16_t CHAT_NOTIFY_FREQ_SECONDARY = 1320;
+static constexpr unsigned long CHAT_NOTIFY_BEEP1_MS = 70UL;
+static constexpr unsigned long CHAT_NOTIFY_GAP_MS = 55UL;
+static constexpr unsigned long CHAT_NOTIFY_BEEP2_MS = 95UL;
+static constexpr unsigned long CHAT_NOTIFY_REPEAT_GAP_MS = 140UL;
+static constexpr uint8_t CHAT_NOTIFY_QUEUE_MAX = 3;
 #if !defined(BOARD_ESP32S3_3248S035_N16R8)
 // ESP32-audioI2S uses LEFT_EN (value 2) for DAC2 on GPIO26.
 // Keep TOUCH_RST on GPIO25 untouched (DAC1 / RIGHT_EN must stay disabled).
@@ -407,6 +415,8 @@ bool audioStartFile(const String &path);
 void audioStopPlayback(bool smooth);
 void audioSetVolumeImmediate(uint8_t v);
 bool audioEnsureBackendReady(const char *reason);
+void chatQueueIncomingMessageBeep();
+void chatMessageBeepService();
 bool mediaPathIsFlac(const String &path);
 bool audioFlacSupportedNow(uint32_t *freeHeapOut = nullptr, uint32_t *largestOut = nullptr);
 wl_status_t wifiStatusSafe();
@@ -784,6 +794,8 @@ static lv_obj_t *lvglOtaProgressLabel = nullptr;
 static lv_obj_t *lvglConfigDeviceNameTa = nullptr;
 static lv_obj_t *lvglBrightnessSlider = nullptr;
 static lv_obj_t *lvglBrightnessValueLabel = nullptr;
+static lv_obj_t *lvglVolumeSlider = nullptr;
+static lv_obj_t *lvglVolumeValueLabel = nullptr;
 static lv_obj_t *lvglRgbLedSlider = nullptr;
 static lv_obj_t *lvglKb = nullptr;
 static lv_obj_t *lvglSnakeScoreLabel = nullptr;
@@ -1741,6 +1753,10 @@ uint8_t audioVolumeCurrent = 0;
 bool audioBackendReady = false;
 unsigned long audioLastInitAttemptMs = 0;
 String audioLastError;
+bool chatMessageBeepPinAttached = false;
+uint8_t chatMessageBeepPhase = 0;
+uint8_t chatMessageBeepQueue = 0;
+unsigned long chatMessageBeepDeadlineMs = 0;
 
 Preferences wifiPrefs;
 Preferences batteryPrefs;
@@ -3246,6 +3262,15 @@ static void lvglApplyConfigScreenControlStyles()
         lv_obj_set_style_bg_main_stop(lvglBrightnessSlider, 204, LV_PART_INDICATOR);
         lv_obj_set_style_bg_grad_stop(lvglBrightnessSlider, 255, LV_PART_INDICATOR);
         lv_obj_set_style_bg_color(lvglBrightnessSlider, lv_color_hex(0xE5ECF3), LV_PART_KNOB);
+    }
+    if (lvglVolumeSlider) {
+        lv_obj_set_style_bg_color(lvglVolumeSlider, lv_color_hex(0x2A3340), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(lvglVolumeSlider, lv_color_hex(0x4FC3F7), LV_PART_INDICATOR);
+        lv_obj_set_style_bg_grad_color(lvglVolumeSlider, lv_color_hex(0x80ED99), LV_PART_INDICATOR);
+        lv_obj_set_style_bg_grad_dir(lvglVolumeSlider, LV_GRAD_DIR_HOR, LV_PART_INDICATOR);
+        lv_obj_set_style_bg_main_stop(lvglVolumeSlider, 96, LV_PART_INDICATOR);
+        lv_obj_set_style_bg_grad_stop(lvglVolumeSlider, 255, LV_PART_INDICATOR);
+        lv_obj_set_style_bg_color(lvglVolumeSlider, lv_color_hex(0xE5ECF3), LV_PART_KNOB);
     }
     if (lvglRgbLedSlider) {
         lv_obj_set_style_bg_color(lvglRgbLedSlider, lv_color_hex(0x2A3340), LV_PART_MAIN);
@@ -5695,6 +5720,7 @@ void lvglShowChatAirplanePrompt();
 bool lvglChatPromptIfAirplaneBlocked();
 void lvglScreenshotEvent(lv_event_t *e);
 void lvglBrightnessEvent(lv_event_t *e);
+void lvglConfigVolumeEvent(lv_event_t *e);
 void lvglRgbLedEvent(lv_event_t *e);
 void lvglTextAreaFocusEvent(lv_event_t *e);
 static void hc12InitIfNeeded();
@@ -6370,6 +6396,38 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_slider_set_range(lvglBrightnessSlider, 5, 100);
             lv_obj_add_event_cb(lvglBrightnessSlider, lvglBrightnessEvent, LV_EVENT_VALUE_CHANGED, nullptr);
 
+            lv_obj_t *volWrap = lv_obj_create(lvglConfigWrap);
+            lv_obj_set_size(volWrap, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_color(volWrap, lv_color_hex(0x18222D), 0);
+            lv_obj_set_style_border_width(volWrap, 0, 0);
+            lv_obj_set_style_radius(volWrap, 12, 0);
+            lv_obj_set_style_pad_all(volWrap, 10, 0);
+            lv_obj_set_style_pad_row(volWrap, 6, 0);
+            lv_obj_set_flex_flow(volWrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_clear_flag(volWrap, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *volHdr = lv_obj_create(volWrap);
+            lv_obj_set_size(volHdr, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(volHdr, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(volHdr, 0, 0);
+            lv_obj_set_style_pad_all(volHdr, 0, 0);
+            lv_obj_set_style_pad_column(volHdr, 8, 0);
+            lv_obj_set_flex_flow(volHdr, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(volHdr, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *volLbl = lv_label_create(volHdr);
+            lv_label_set_text(volLbl, "Volume");
+            lv_obj_set_style_text_color(volLbl, lv_color_hex(0xE5ECF3), 0);
+            lv_obj_set_flex_grow(volLbl, 1);
+
+            lvglVolumeValueLabel = lv_label_create(volHdr);
+            lv_obj_set_style_text_color(lvglVolumeValueLabel, lv_color_hex(0xB7C4D1), 0);
+
+            lvglVolumeSlider = lv_slider_create(volWrap);
+            lv_obj_set_width(lvglVolumeSlider, lv_pct(100));
+            lv_slider_set_range(lvglVolumeSlider, 0, 100);
+            lv_obj_add_event_cb(lvglVolumeSlider, lvglConfigVolumeEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+
             lv_obj_t *rgbWrap = lv_obj_create(lvglConfigWrap);
             lv_obj_set_size(rgbWrap, lv_pct(100), LV_SIZE_CONTENT);
             lv_obj_set_style_bg_color(rgbWrap, lv_color_hex(0x18222D), 0);
@@ -6412,6 +6470,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglRegisterReorderableItem(cfgOtaBtn, "ord_cfg", "ota");
             lvglRegisterReorderableItem(nameWrap, "ord_cfg", "name");
             lvglRegisterReorderableItem(brightWrap, "ord_cfg", "bright");
+            lvglRegisterReorderableItem(volWrap, "ord_cfg", "vol");
             lvglRegisterReorderableItem(rgbWrap, "ord_cfg", "rgb");
             lvglApplySavedOrder(lvglConfigWrap, "ord_cfg");
             lvglRefreshConfigUi();
@@ -7870,8 +7929,12 @@ void lvglMediaVolumeEvent(lv_event_t *e)
     if (v < 0) v = 0;
     if (v > 100) v = 100;
     mediaVolumePercent = static_cast<uint8_t>(v);
+    uiPrefs.begin("ui", false);
+    uiPrefs.putUChar("sys_vol", mediaVolumePercent);
+    uiPrefs.end();
     if (audioBackendReady && audio) audioSetVolumeImmediate(audioVolumeLevelFromPercent(mediaVolumePercent));
     lvglRefreshMediaPlayerUi();
+    lvglRefreshConfigUi();
 }
 
 void lvglMediaVolumeStepEvent(lv_event_t *e)
@@ -7882,8 +7945,12 @@ void lvglMediaVolumeStepEvent(lv_event_t *e)
     if (v > 100) v = 100;
     mediaVolumePercent = static_cast<uint8_t>(v);
     if (lvglMediaVolSlider) lv_slider_set_value(lvglMediaVolSlider, static_cast<int32_t>(mediaVolumePercent), LV_ANIM_OFF);
+    uiPrefs.begin("ui", false);
+    uiPrefs.putUChar("sys_vol", mediaVolumePercent);
+    uiPrefs.end();
     if (audioBackendReady && audio) audioSetVolumeImmediate(audioVolumeLevelFromPercent(mediaVolumePercent));
     lvglRefreshMediaPlayerUi();
+    lvglRefreshConfigUi();
 }
 
 void lvglRefreshMediaPlayerUi()
@@ -9075,6 +9142,7 @@ void p2pService()
                                                 }
                                             } else if (messageId.isEmpty() || !chatHasLoggedMessageId(p2pPeers[peerIdx].pubKeyHex, messageId)) {
                                                 chatStoreMessage(p2pPeers[peerIdx].pubKeyHex, author, text, false, CHAT_TRANSPORT_WIFI, messageId);
+                                                chatQueueIncomingMessageBeep();
                                                 uiStatusLine = "Chat received from " + author;
                                                 if (lvglReady) {
                                                     lvglSyncStatusLine();
@@ -10228,6 +10296,7 @@ static void hc12HandleIncomingRadioLine(const String &line)
             }
         } else if (messageId.isEmpty() || !chatHasLoggedMessageId(senderPubHex, messageId)) {
             chatStoreMessage(senderPubHex, author, text, false, CHAT_TRANSPORT_HC12, messageId);
+            chatQueueIncomingMessageBeep();
             uiStatusLine = "Radio chat from " + author;
             if (lvglReady) {
                 lvglSyncStatusLine();
@@ -11739,6 +11808,19 @@ void lvglBrightnessEvent(lv_event_t *e)
     lvglRefreshConfigUi();
 }
 
+void lvglConfigVolumeEvent(lv_event_t *e)
+{
+    (void)e;
+    if (!lvglVolumeSlider) return;
+    mediaVolumePercent = static_cast<uint8_t>(lv_slider_get_value(lvglVolumeSlider));
+    uiPrefs.begin("ui", false);
+    uiPrefs.putUChar("sys_vol", mediaVolumePercent);
+    uiPrefs.end();
+    if (audioBackendReady && audio) audioSetVolumeImmediate(audioVolumeLevelFromPercent(mediaVolumePercent));
+    lvglRefreshMediaPlayerUi();
+    lvglRefreshConfigUi();
+}
+
 void lvglRgbLedEvent(lv_event_t *e)
 {
     (void)e;
@@ -11790,6 +11872,10 @@ void lvglRefreshConfigUi()
         lv_slider_set_value(lvglBrightnessSlider, displayBrightnessPercent, LV_ANIM_OFF);
     }
     if (lvglBrightnessValueLabel) lvglLabelSetTextIfChanged(lvglBrightnessValueLabel, String(displayBrightnessPercent) + "%");
+    if (lvglVolumeSlider && lv_slider_get_value(lvglVolumeSlider) != mediaVolumePercent) {
+        lv_slider_set_value(lvglVolumeSlider, mediaVolumePercent, LV_ANIM_OFF);
+    }
+    if (lvglVolumeValueLabel) lvglLabelSetTextIfChanged(lvglVolumeValueLabel, String(mediaVolumePercent) + "%");
     if (lvglRgbLedSlider && lv_slider_get_value(lvglRgbLedSlider) != rgbLedPercent) {
         lv_slider_set_value(lvglRgbLedSlider, rgbLedPercent, LV_ANIM_OFF);
     }
@@ -14630,6 +14716,91 @@ void rgbRefreshByMediaState()
     }
 }
 
+static inline bool chatMessageBeepCanPlay()
+{
+    return !mediaIsPlaying && !mediaPaused;
+}
+
+static void chatMessageBeepStop(bool clearQueue)
+{
+    ledcWriteTone(CHAT_NOTIFY_LEDC_CHANNEL, 0);
+    ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, 0);
+    if (chatMessageBeepPinAttached) {
+        ledcDetachPin(I2S_SPK_PIN);
+        pinMode(I2S_SPK_PIN, OUTPUT);
+        digitalWrite(I2S_SPK_PIN, LOW);
+        chatMessageBeepPinAttached = false;
+    }
+    chatMessageBeepPhase = 0;
+    chatMessageBeepDeadlineMs = 0;
+    if (clearQueue) chatMessageBeepQueue = 0;
+}
+
+static bool chatMessageBeepEnsurePinAttached()
+{
+    if (chatMessageBeepPinAttached) return true;
+    ledcSetup(CHAT_NOTIFY_LEDC_CHANNEL, CHAT_NOTIFY_FREQ_PRIMARY, 10);
+    ledcAttachPin(I2S_SPK_PIN, CHAT_NOTIFY_LEDC_CHANNEL);
+    chatMessageBeepPinAttached = true;
+    return true;
+}
+
+static inline uint32_t chatMessageBeepDuty()
+{
+    return static_cast<uint32_t>((static_cast<uint32_t>(mediaVolumePercent) * 1023U) / 100U);
+}
+
+void chatQueueIncomingMessageBeep()
+{
+    if (!chatMessageBeepCanPlay()) return;
+    if (chatMessageBeepQueue < CHAT_NOTIFY_QUEUE_MAX) chatMessageBeepQueue++;
+}
+
+void chatMessageBeepService()
+{
+    if (!chatMessageBeepCanPlay()) {
+        if (chatMessageBeepPhase != 0 || chatMessageBeepPinAttached) chatMessageBeepStop(true);
+        return;
+    }
+
+    const unsigned long now = millis();
+    if (chatMessageBeepPhase == 0) {
+        if (chatMessageBeepQueue == 0) return;
+        if (chatMessageBeepDeadlineMs != 0 && static_cast<long>(now - chatMessageBeepDeadlineMs) < 0) return;
+        if (!chatMessageBeepEnsurePinAttached()) return;
+        ledcWriteTone(CHAT_NOTIFY_LEDC_CHANNEL, CHAT_NOTIFY_FREQ_PRIMARY);
+        ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, chatMessageBeepDuty());
+        chatMessageBeepPhase = 1;
+        chatMessageBeepDeadlineMs = now + CHAT_NOTIFY_BEEP1_MS;
+        return;
+    }
+
+    if (static_cast<long>(now - chatMessageBeepDeadlineMs) < 0) return;
+
+    switch (chatMessageBeepPhase) {
+        case 1:
+            ledcWriteTone(CHAT_NOTIFY_LEDC_CHANNEL, 0);
+            ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, 0);
+            chatMessageBeepPhase = 2;
+            chatMessageBeepDeadlineMs = now + CHAT_NOTIFY_GAP_MS;
+            break;
+        case 2:
+            ledcWriteTone(CHAT_NOTIFY_LEDC_CHANNEL, CHAT_NOTIFY_FREQ_SECONDARY);
+            ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, chatMessageBeepDuty());
+            chatMessageBeepPhase = 3;
+            chatMessageBeepDeadlineMs = now + CHAT_NOTIFY_BEEP2_MS;
+            break;
+        case 3:
+            if (chatMessageBeepQueue > 0) chatMessageBeepQueue--;
+            chatMessageBeepStop(false);
+            chatMessageBeepDeadlineMs = now + CHAT_NOTIFY_REPEAT_GAP_MS;
+            break;
+        default:
+            chatMessageBeepStop(true);
+            break;
+    }
+}
+
 bool audioEnsureBackendReady(const char *reason)
 {
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
@@ -15336,7 +15507,7 @@ void loadUiRuntimeConfig()
     }
     otaUpdatePromptPending = otaUpdateAvailable;
     otaPostUpdatePopupPending = otaPendingPopupVersion[0] != '\0' && otaNormalizedVersion(String(otaPendingPopupVersion)) == otaNormalizedVersion(String(FW_VERSION));
-    audioSetVolumeImmediate(mediaVolumePercent);
+    audioSetVolumeImmediate(audioVolumeLevelFromPercent(mediaVolumePercent));
 }
 
 static void otaStorePopupVersion(const String &version)
@@ -15487,7 +15658,9 @@ bool handleUiSettingMessage(const char *msg)
     else if (strcmp(key, "SystemVolume") == 0 && parseIntMessageValue(value, parsed)) {
         mediaVolumePercent = static_cast<uint8_t>(max(0, min(100, parsed)));
         uiPrefs.putUChar("sys_vol", mediaVolumePercent);
-        audioSetVolumeImmediate(mediaVolumePercent);
+        audioSetVolumeImmediate(audioVolumeLevelFromPercent(mediaVolumePercent));
+        lvglRefreshMediaPlayerUi();
+        lvglRefreshConfigUi();
     }
     else if (strcmp(key, "DisplayBrightness") == 0 && parseIntMessageValue(value, parsed)) {
         displayBrightnessPercent = static_cast<uint8_t>(max(5, min(100, parsed)));
@@ -16117,6 +16290,7 @@ bool mqttConnectNow()
             }
         } else if (messageId.isEmpty() || !chatHasLoggedMessageId(senderPubHex, messageId)) {
             chatStoreMessage(senderPubHex, author, text, false, CHAT_TRANSPORT_MQTT, messageId);
+            chatQueueIncomingMessageBeep();
             uiStatusLine = "Global chat from " + author;
             if (lvglReady) {
                 lvglSyncStatusLine();
@@ -19405,6 +19579,7 @@ void loop()
     bool wasRunning = mediaIsPlaying || mediaPaused;
     // Keep decoder fed continuously; sparse servicing causes audible clicks.
     audioService();
+    chatMessageBeepService();
     const bool decoderRunning = audioBackendReady && audio && audio->isRunning();
     if (wasRunning && !decoderRunning && mediaIsPlaying && !mediaPaused) {
         mediaIsPlaying = false;
