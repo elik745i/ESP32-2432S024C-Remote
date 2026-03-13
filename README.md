@@ -2,7 +2,7 @@
 
 Firmware for Sunton-style ESP32 touch display boards with an LVGL touch UI, Wi-Fi/AP management, SD-backed recovery tools, MQTT controls, and encrypted device-to-device chat.
 
-Current firmware version: **`0.2.10`**
+Current firmware version: **`0.2.11`**
 
 Supported boards:
 - `ESP32-2432S024C` (`240x320`, `ILI9341`, `CST820`)
@@ -16,6 +16,8 @@ Supported boards:
 - Multi-board firmware with board-specific display and touch support selected at build time
 - LVGL touch UI with live swipe-back navigation, delayed click feedback, and global double-tap sleep
 - Reorderable menus and submenu items with press-and-hold drag, persisted order, and raised/pressed button themes
+- `Config` now includes a persisted `Language` screen with English, Russian, Chinese, French, Turkish, Italian, German, Japanese, and Korean UI selection
+- Build output now includes an auto-generated multilingual LVGL font subset so non-Latin menu text renders correctly on-device
 - `Style` menu now includes a persisted `3D Icons` switch that toggles between custom embedded menu icons and LVGL built-in symbols
 - LVGL touch/UI hot paths trimmed to reduce callback and off-screen refresh overhead
 - Discovery-gated device pairing with accept/reject confirmation on the target device
@@ -237,6 +239,14 @@ Optional HC-12 UART on the `ESP32-S3` build:
 | HC-12 `RXD` | 4 |
 | HC-12 `TXD` | 5 |
 | HC-12 `SET` | 3 |
+
+## Recent Project Photos
+
+![ESP32-S3 N16R8 board photo](documents/N16R8.jpg)
+![LoRa module photo](documents/LoRa.jpg)
+![Recovery browser photo](documents/Recovery.jpg)
+![Baseus MagSafe module photo](documents/baseus%20magsafe.jpg)
+![Case photo](documents/case.jpg)
 
 Optional HC-12 UART on `ESP32-3248S035` and `ESP32-2432S024C`:
 

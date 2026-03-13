@@ -270,7 +270,7 @@ static constexpr uint16_t LIGHT_RAW_CAL_MAX = 600;
 static constexpr bool LIGHT_LOG_RAW_TO_SERIAL = false;
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.2.10";
+static constexpr const char *FW_VERSION = "0.2.11";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -715,6 +715,7 @@ static lv_obj_t *lvglScrInfo = nullptr;
 static lv_obj_t *lvglScrGames = nullptr;
 static lv_obj_t *lvglScrConfig = nullptr;
 static lv_obj_t *lvglScrStyle = nullptr;
+static lv_obj_t *lvglScrLanguage = nullptr;
 static lv_obj_t *lvglScrOta = nullptr;
 static lv_obj_t *lvglScrScreensaver = nullptr;
 static lv_obj_t *lvglScrHc12 = nullptr;
@@ -826,6 +827,7 @@ static lv_obj_t *lvglConfigStyleBtn = nullptr;
 static lv_obj_t *lvglConfigMqttBtn = nullptr;
 static lv_obj_t *lvglConfigMqttControlsBtn = nullptr;
 static lv_obj_t *lvglConfigScreenshotBtn = nullptr;
+static lv_obj_t *lvglConfigLanguageBtn = nullptr;
 static lv_obj_t *lvglConfigOtaBtn = nullptr;
 static lv_obj_t *lvglConfigWrap = nullptr;
 static lv_obj_t *lvglStyleScreensaverSw = nullptr;
@@ -852,6 +854,13 @@ static lv_obj_t *lvglOtaUpdateBtnLabel = nullptr;
 static lv_obj_t *lvglOtaProgressBar = nullptr;
 static lv_obj_t *lvglOtaProgressLabel = nullptr;
 static lv_obj_t *lvglConfigDeviceNameTa = nullptr;
+static lv_obj_t *lvglLanguageDropdown = nullptr;
+static lv_obj_t *lvglLanguageInfoLabel = nullptr;
+static lv_obj_t *lvglConfigDeviceNameHeader = nullptr;
+static lv_obj_t *lvglConfigBrightnessHeader = nullptr;
+static lv_obj_t *lvglConfigVolumeHeader = nullptr;
+static lv_obj_t *lvglConfigRgbHeader = nullptr;
+static lv_obj_t *lvglConfigDeviceNameSaveBtnLabel = nullptr;
 static lv_obj_t *lvglBrightnessSlider = nullptr;
 static lv_obj_t *lvglBrightnessValueLabel = nullptr;
 static lv_obj_t *lvglVolumeSlider = nullptr;
@@ -1212,6 +1221,7 @@ enum UiScreen : uint8_t {
     UI_GAMES,
     UI_CONFIG,
     UI_CONFIG_STYLE,
+    UI_CONFIG_LANGUAGE,
     UI_CONFIG_OTA,
     UI_SCREENSAVER,
     UI_CONFIG_HC12,
@@ -1225,9 +1235,59 @@ enum UiScreen : uint8_t {
     UI_GAME_SNAKE3D
 };
 
+enum UiLanguage : uint8_t {
+    UI_LANG_ENGLISH = 0,
+    UI_LANG_RUSSIAN,
+    UI_LANG_CHINESE,
+    UI_LANG_FRENCH,
+    UI_LANG_TURKISH,
+    UI_LANG_ITALIAN,
+    UI_LANG_GERMAN,
+    UI_LANG_JAPANESE,
+    UI_LANG_KOREAN,
+    UI_LANG_COUNT
+};
+
+enum UiTextId : uint8_t {
+    TXT_CHAT = 0,
+    TXT_CHAT_PEERS,
+    TXT_MEDIA,
+    TXT_INFO,
+    TXT_GAMES,
+    TXT_CONFIG,
+    TXT_AIRPLANE_ON,
+    TXT_AIRPLANE_OFF,
+    TXT_AP_MODE_ON,
+    TXT_AP_MODE_OFF,
+    TXT_WIFI_CONFIG,
+    TXT_HC12_CONFIG,
+    TXT_STYLE,
+    TXT_MQTT_CONFIG,
+    TXT_MQTT_CONTROLS,
+    TXT_SCREENSHOT,
+    TXT_LANGUAGE,
+    TXT_OTA_UPDATES,
+    TXT_DEVICE_NAME,
+    TXT_SAVE,
+    TXT_BRIGHTNESS,
+    TXT_VOLUME,
+    TXT_RGB_LED,
+    TXT_SELECT_DISPLAY_LANGUAGE,
+    TXT_LANGUAGE_SAVED,
+    TXT_HC12_TERMINAL,
+    TXT_HC12_INFO,
+    TXT_CHECKERS,
+    TXT_SNAKE_3D,
+    TXT_SCREEN
+};
+
 UiScreen uiScreen = UI_HOME;
 UiScreen screensaverReturnScreen = UI_HOME;
 String uiStatusLine = "Ready";
+UiLanguage uiLanguage = UI_LANG_ENGLISH;
+
+static const char *tr(UiTextId id);
+static String buildLanguageDropdownOptions();
 
 void lvglEnsureScreenBuilt(UiScreen screen);
 lv_obj_t *lvglScreenForUi(UiScreen screen);
@@ -2898,6 +2958,7 @@ static bool lvglGetSwipeBackPreviewTarget(UiScreen current, UiScreen &target)
             return true;
         case UI_WIFI_LIST:
         case UI_CONFIG_STYLE:
+        case UI_CONFIG_LANGUAGE:
         case UI_CONFIG_OTA:
         case UI_CONFIG_HC12:
         case UI_CONFIG_MQTT_CONFIG:
@@ -3788,21 +3849,22 @@ lv_obj_t *lvglCreateScreenBase(const char *title, bool backToHome = false)
 static const char *uiScreenName(UiScreen screen)
 {
     switch (screen) {
-        case UI_CHAT: return "Chat";
-        case UI_CHAT_PEERS: return "Chat Peers";
-        case UI_MEDIA: return "Media";
-        case UI_INFO: return "Info";
-        case UI_CONFIG: return "Config";
-        case UI_CONFIG_STYLE: return "Style";
-        case UI_CONFIG_OTA: return "OTA Updates";
-        case UI_CONFIG_HC12: return "HC12 Config";
-        case UI_CONFIG_HC12_TERMINAL: return "HC12 Terminal";
-        case UI_CONFIG_HC12_INFO: return "HC12 Info";
-        case UI_CONFIG_MQTT_CONFIG: return "MQTT Config";
-        case UI_CONFIG_MQTT_CONTROLS: return "MQTT Controls";
-        case UI_GAME_CHECKERS: return "Checkers";
-        case UI_GAME_SNAKE3D: return "Snake 3D";
-        default: return "Screen";
+        case UI_CHAT: return tr(TXT_CHAT);
+        case UI_CHAT_PEERS: return tr(TXT_CHAT_PEERS);
+        case UI_MEDIA: return tr(TXT_MEDIA);
+        case UI_INFO: return tr(TXT_INFO);
+        case UI_CONFIG: return tr(TXT_CONFIG);
+        case UI_CONFIG_STYLE: return tr(TXT_STYLE);
+        case UI_CONFIG_LANGUAGE: return tr(TXT_LANGUAGE);
+        case UI_CONFIG_OTA: return tr(TXT_OTA_UPDATES);
+        case UI_CONFIG_HC12: return tr(TXT_HC12_CONFIG);
+        case UI_CONFIG_HC12_TERMINAL: return tr(TXT_HC12_TERMINAL);
+        case UI_CONFIG_HC12_INFO: return tr(TXT_HC12_INFO);
+        case UI_CONFIG_MQTT_CONFIG: return tr(TXT_MQTT_CONFIG);
+        case UI_CONFIG_MQTT_CONTROLS: return tr(TXT_MQTT_CONTROLS);
+        case UI_GAME_CHECKERS: return tr(TXT_CHECKERS);
+        case UI_GAME_SNAKE3D: return tr(TXT_SNAKE_3D);
+        default: return tr(TXT_SCREEN);
     }
 }
 
@@ -3823,6 +3885,7 @@ static bool lvglCanBuildScreen(UiScreen screen)
         case UI_INFO:
         case UI_CONFIG:
         case UI_CONFIG_STYLE:
+        case UI_CONFIG_LANGUAGE:
         case UI_CONFIG_OTA:
         case UI_CONFIG_HC12:
         case UI_CONFIG_HC12_TERMINAL:
@@ -4334,6 +4397,345 @@ static String buildGmtOffsetDropdownOptions()
     return options;
 }
 
+static const char *uiLanguageOptionName(UiLanguage lang)
+{
+    switch (lang) {
+        case UI_LANG_RUSSIAN: return "Russian";
+        case UI_LANG_CHINESE: return "Chinese";
+        case UI_LANG_FRENCH: return "French";
+        case UI_LANG_TURKISH: return "Turkish";
+        case UI_LANG_ITALIAN: return "Italian";
+        case UI_LANG_GERMAN: return "German";
+        case UI_LANG_JAPANESE: return "Japanese";
+        case UI_LANG_KOREAN: return "Korean";
+        case UI_LANG_ENGLISH:
+        default: return "English";
+    }
+}
+
+static String buildLanguageDropdownOptions()
+{
+    String options;
+    for (uint8_t i = 0; i < static_cast<uint8_t>(UI_LANG_COUNT); ++i) {
+        if (!options.isEmpty()) options += '\n';
+        options += uiLanguageOptionName(static_cast<UiLanguage>(i));
+    }
+    return options;
+}
+
+static const char *tr(UiTextId id)
+{
+    switch (uiLanguage) {
+        case UI_LANG_RUSSIAN:
+            switch (id) {
+                case TXT_CHAT: return "Чат";
+                case TXT_CHAT_PEERS: return "Контакты чата";
+                case TXT_MEDIA: return "Медиа";
+                case TXT_INFO: return "Инфо";
+                case TXT_GAMES: return "Игры";
+                case TXT_CONFIG: return "Настройки";
+                case TXT_AIRPLANE_ON: return "Авиарежим: ВКЛ";
+                case TXT_AIRPLANE_OFF: return "Авиарежим: ВЫКЛ";
+                case TXT_AP_MODE_ON: return "AP режим: ВКЛ";
+                case TXT_AP_MODE_OFF: return "AP режим: ВЫКЛ";
+                case TXT_WIFI_CONFIG: return "WiFi";
+                case TXT_HC12_CONFIG: return "HC12";
+                case TXT_STYLE: return "Стиль";
+                case TXT_MQTT_CONFIG: return "MQTT";
+                case TXT_MQTT_CONTROLS: return "MQTT кнопки";
+                case TXT_SCREENSHOT: return "Скриншот";
+                case TXT_LANGUAGE: return "Язык";
+                case TXT_OTA_UPDATES: return "OTA обновления";
+                case TXT_DEVICE_NAME: return "Имя устройства";
+                case TXT_SAVE: return "Сохранить";
+                case TXT_BRIGHTNESS: return "Яркость";
+                case TXT_VOLUME: return "Громкость";
+                case TXT_RGB_LED: return "RGB LED";
+                case TXT_SELECT_DISPLAY_LANGUAGE: return "Выберите язык экрана";
+                case TXT_LANGUAGE_SAVED: return "Язык сохранен";
+                case TXT_HC12_TERMINAL: return "Терминал HC12";
+                case TXT_HC12_INFO: return "Инфо HC12";
+                case TXT_CHECKERS: return "Шашки";
+                case TXT_SNAKE_3D: return "Змейка 3D";
+                case TXT_SCREEN:
+                default: return "Экран";
+            }
+        case UI_LANG_CHINESE:
+            switch (id) {
+                case TXT_CHAT: return "聊天";
+                case TXT_CHAT_PEERS: return "聊天联系人";
+                case TXT_MEDIA: return "媒体";
+                case TXT_INFO: return "信息";
+                case TXT_GAMES: return "游戏";
+                case TXT_CONFIG: return "设置";
+                case TXT_AIRPLANE_ON: return "飞行模式: 开";
+                case TXT_AIRPLANE_OFF: return "飞行模式: 关";
+                case TXT_AP_MODE_ON: return "AP模式: 开";
+                case TXT_AP_MODE_OFF: return "AP模式: 关";
+                case TXT_WIFI_CONFIG: return "WiFi设置";
+                case TXT_HC12_CONFIG: return "HC12设置";
+                case TXT_STYLE: return "样式";
+                case TXT_MQTT_CONFIG: return "MQTT设置";
+                case TXT_MQTT_CONTROLS: return "MQTT控制";
+                case TXT_SCREENSHOT: return "截图";
+                case TXT_LANGUAGE: return "语言";
+                case TXT_OTA_UPDATES: return "OTA更新";
+                case TXT_DEVICE_NAME: return "设备名称";
+                case TXT_SAVE: return "保存";
+                case TXT_BRIGHTNESS: return "亮度";
+                case TXT_VOLUME: return "音量";
+                case TXT_RGB_LED: return "RGB 灯";
+                case TXT_SELECT_DISPLAY_LANGUAGE: return "选择显示语言";
+                case TXT_LANGUAGE_SAVED: return "语言已保存";
+                case TXT_HC12_TERMINAL: return "HC12终端";
+                case TXT_HC12_INFO: return "HC12信息";
+                case TXT_CHECKERS: return "跳棋";
+                case TXT_SNAKE_3D: return "3D贪吃蛇";
+                case TXT_SCREEN:
+                default: return "界面";
+            }
+        case UI_LANG_FRENCH:
+            switch (id) {
+                case TXT_CHAT: return "Chat";
+                case TXT_CHAT_PEERS: return "Contacts chat";
+                case TXT_MEDIA: return "Media";
+                case TXT_INFO: return "Infos";
+                case TXT_GAMES: return "Jeux";
+                case TXT_CONFIG: return "Config";
+                case TXT_AIRPLANE_ON: return "Mode avion: ON";
+                case TXT_AIRPLANE_OFF: return "Mode avion: OFF";
+                case TXT_AP_MODE_ON: return "Mode AP: ON";
+                case TXT_AP_MODE_OFF: return "Mode AP: OFF";
+                case TXT_WIFI_CONFIG: return "Config WiFi";
+                case TXT_HC12_CONFIG: return "Config HC12";
+                case TXT_STYLE: return "Style";
+                case TXT_MQTT_CONFIG: return "Config MQTT";
+                case TXT_MQTT_CONTROLS: return "Commandes MQTT";
+                case TXT_SCREENSHOT: return "Capture";
+                case TXT_LANGUAGE: return "Langue";
+                case TXT_OTA_UPDATES: return "Mises a jour OTA";
+                case TXT_DEVICE_NAME: return "Nom appareil";
+                case TXT_SAVE: return "Enregistrer";
+                case TXT_BRIGHTNESS: return "Luminosite";
+                case TXT_VOLUME: return "Volume";
+                case TXT_RGB_LED: return "LED RGB";
+                case TXT_SELECT_DISPLAY_LANGUAGE: return "Choisir la langue";
+                case TXT_LANGUAGE_SAVED: return "Langue enregistree";
+                case TXT_HC12_TERMINAL: return "Terminal HC12";
+                case TXT_HC12_INFO: return "Infos HC12";
+                case TXT_CHECKERS: return "Dames";
+                case TXT_SNAKE_3D: return "Snake 3D";
+                case TXT_SCREEN:
+                default: return "Ecran";
+            }
+        case UI_LANG_TURKISH:
+            switch (id) {
+                case TXT_CHAT: return "Sohbet";
+                case TXT_CHAT_PEERS: return "Sohbet Kisileri";
+                case TXT_MEDIA: return "Medya";
+                case TXT_INFO: return "Bilgi";
+                case TXT_GAMES: return "Oyunlar";
+                case TXT_CONFIG: return "Ayarlar";
+                case TXT_AIRPLANE_ON: return "Ucak modu: Acik";
+                case TXT_AIRPLANE_OFF: return "Ucak modu: Kapali";
+                case TXT_AP_MODE_ON: return "AP modu: Acik";
+                case TXT_AP_MODE_OFF: return "AP modu: Kapali";
+                case TXT_WIFI_CONFIG: return "WiFi Ayari";
+                case TXT_HC12_CONFIG: return "HC12 Ayari";
+                case TXT_STYLE: return "Stil";
+                case TXT_MQTT_CONFIG: return "MQTT Ayari";
+                case TXT_MQTT_CONTROLS: return "MQTT Kontroller";
+                case TXT_SCREENSHOT: return "Ekran Goruntusu";
+                case TXT_LANGUAGE: return "Dil";
+                case TXT_OTA_UPDATES: return "OTA Guncelleme";
+                case TXT_DEVICE_NAME: return "Cihaz Adi";
+                case TXT_SAVE: return "Kaydet";
+                case TXT_BRIGHTNESS: return "Parlaklik";
+                case TXT_VOLUME: return "Ses";
+                case TXT_RGB_LED: return "RGB LED";
+                case TXT_SELECT_DISPLAY_LANGUAGE: return "Gosterim dilini sec";
+                case TXT_LANGUAGE_SAVED: return "Dil kaydedildi";
+                case TXT_HC12_TERMINAL: return "HC12 Terminal";
+                case TXT_HC12_INFO: return "HC12 Bilgi";
+                case TXT_CHECKERS: return "Dama";
+                case TXT_SNAKE_3D: return "Yilan 3D";
+                case TXT_SCREEN:
+                default: return "Ekran";
+            }
+        case UI_LANG_ITALIAN:
+            switch (id) {
+                case TXT_CHAT: return "Chat";
+                case TXT_CHAT_PEERS: return "Contatti chat";
+                case TXT_MEDIA: return "Media";
+                case TXT_INFO: return "Info";
+                case TXT_GAMES: return "Giochi";
+                case TXT_CONFIG: return "Config";
+                case TXT_AIRPLANE_ON: return "Modalita aereo: ON";
+                case TXT_AIRPLANE_OFF: return "Modalita aereo: OFF";
+                case TXT_AP_MODE_ON: return "Modalita AP: ON";
+                case TXT_AP_MODE_OFF: return "Modalita AP: OFF";
+                case TXT_WIFI_CONFIG: return "Config WiFi";
+                case TXT_HC12_CONFIG: return "Config HC12";
+                case TXT_STYLE: return "Stile";
+                case TXT_MQTT_CONFIG: return "Config MQTT";
+                case TXT_MQTT_CONTROLS: return "Controlli MQTT";
+                case TXT_SCREENSHOT: return "Screenshot";
+                case TXT_LANGUAGE: return "Lingua";
+                case TXT_OTA_UPDATES: return "Aggiornamenti OTA";
+                case TXT_DEVICE_NAME: return "Nome dispositivo";
+                case TXT_SAVE: return "Salva";
+                case TXT_BRIGHTNESS: return "Luminosita";
+                case TXT_VOLUME: return "Volume";
+                case TXT_RGB_LED: return "LED RGB";
+                case TXT_SELECT_DISPLAY_LANGUAGE: return "Seleziona lingua display";
+                case TXT_LANGUAGE_SAVED: return "Lingua salvata";
+                case TXT_HC12_TERMINAL: return "Terminale HC12";
+                case TXT_HC12_INFO: return "Info HC12";
+                case TXT_CHECKERS: return "Dama";
+                case TXT_SNAKE_3D: return "Snake 3D";
+                case TXT_SCREEN:
+                default: return "Schermo";
+            }
+        case UI_LANG_GERMAN:
+            switch (id) {
+                case TXT_CHAT: return "Chat";
+                case TXT_CHAT_PEERS: return "Chat Kontakte";
+                case TXT_MEDIA: return "Medien";
+                case TXT_INFO: return "Info";
+                case TXT_GAMES: return "Spiele";
+                case TXT_CONFIG: return "Konfig";
+                case TXT_AIRPLANE_ON: return "Flugmodus: EIN";
+                case TXT_AIRPLANE_OFF: return "Flugmodus: AUS";
+                case TXT_AP_MODE_ON: return "AP Modus: EIN";
+                case TXT_AP_MODE_OFF: return "AP Modus: AUS";
+                case TXT_WIFI_CONFIG: return "WLAN Konfig";
+                case TXT_HC12_CONFIG: return "HC12 Konfig";
+                case TXT_STYLE: return "Stil";
+                case TXT_MQTT_CONFIG: return "MQTT Konfig";
+                case TXT_MQTT_CONTROLS: return "MQTT Steuerung";
+                case TXT_SCREENSHOT: return "Screenshot";
+                case TXT_LANGUAGE: return "Sprache";
+                case TXT_OTA_UPDATES: return "OTA Updates";
+                case TXT_DEVICE_NAME: return "Geratename";
+                case TXT_SAVE: return "Speichern";
+                case TXT_BRIGHTNESS: return "Helligkeit";
+                case TXT_VOLUME: return "Lautstarke";
+                case TXT_RGB_LED: return "RGB LED";
+                case TXT_SELECT_DISPLAY_LANGUAGE: return "Displaysprache wahlen";
+                case TXT_LANGUAGE_SAVED: return "Sprache gespeichert";
+                case TXT_HC12_TERMINAL: return "HC12 Terminal";
+                case TXT_HC12_INFO: return "HC12 Info";
+                case TXT_CHECKERS: return "Dame";
+                case TXT_SNAKE_3D: return "Snake 3D";
+                case TXT_SCREEN:
+                default: return "Bildschirm";
+            }
+        case UI_LANG_JAPANESE:
+            switch (id) {
+                case TXT_CHAT: return "チャット";
+                case TXT_CHAT_PEERS: return "チャット相手";
+                case TXT_MEDIA: return "メディア";
+                case TXT_INFO: return "情報";
+                case TXT_GAMES: return "ゲーム";
+                case TXT_CONFIG: return "設定";
+                case TXT_AIRPLANE_ON: return "機内モード: ON";
+                case TXT_AIRPLANE_OFF: return "機内モード: OFF";
+                case TXT_AP_MODE_ON: return "APモード: ON";
+                case TXT_AP_MODE_OFF: return "APモード: OFF";
+                case TXT_WIFI_CONFIG: return "WiFi設定";
+                case TXT_HC12_CONFIG: return "HC12設定";
+                case TXT_STYLE: return "スタイル";
+                case TXT_MQTT_CONFIG: return "MQTT設定";
+                case TXT_MQTT_CONTROLS: return "MQTT操作";
+                case TXT_SCREENSHOT: return "スクリーンショット";
+                case TXT_LANGUAGE: return "言語";
+                case TXT_OTA_UPDATES: return "OTA更新";
+                case TXT_DEVICE_NAME: return "デバイス名";
+                case TXT_SAVE: return "保存";
+                case TXT_BRIGHTNESS: return "明るさ";
+                case TXT_VOLUME: return "音量";
+                case TXT_RGB_LED: return "RGB LED";
+                case TXT_SELECT_DISPLAY_LANGUAGE: return "表示言語を選択";
+                case TXT_LANGUAGE_SAVED: return "言語を保存しました";
+                case TXT_HC12_TERMINAL: return "HC12端末";
+                case TXT_HC12_INFO: return "HC12情報";
+                case TXT_CHECKERS: return "チェッカー";
+                case TXT_SNAKE_3D: return "スネーク3D";
+                case TXT_SCREEN:
+                default: return "画面";
+            }
+        case UI_LANG_KOREAN:
+            switch (id) {
+                case TXT_CHAT: return "채팅";
+                case TXT_CHAT_PEERS: return "채팅 연락처";
+                case TXT_MEDIA: return "미디어";
+                case TXT_INFO: return "정보";
+                case TXT_GAMES: return "게임";
+                case TXT_CONFIG: return "설정";
+                case TXT_AIRPLANE_ON: return "비행기 모드: 켬";
+                case TXT_AIRPLANE_OFF: return "비행기 모드: 끔";
+                case TXT_AP_MODE_ON: return "AP 모드: 켬";
+                case TXT_AP_MODE_OFF: return "AP 모드: 끔";
+                case TXT_WIFI_CONFIG: return "WiFi 설정";
+                case TXT_HC12_CONFIG: return "HC12 설정";
+                case TXT_STYLE: return "스타일";
+                case TXT_MQTT_CONFIG: return "MQTT 설정";
+                case TXT_MQTT_CONTROLS: return "MQTT 제어";
+                case TXT_SCREENSHOT: return "스크린샷";
+                case TXT_LANGUAGE: return "언어";
+                case TXT_OTA_UPDATES: return "OTA 업데이트";
+                case TXT_DEVICE_NAME: return "장치 이름";
+                case TXT_SAVE: return "저장";
+                case TXT_BRIGHTNESS: return "밝기";
+                case TXT_VOLUME: return "볼륨";
+                case TXT_RGB_LED: return "RGB LED";
+                case TXT_SELECT_DISPLAY_LANGUAGE: return "표시 언어 선택";
+                case TXT_LANGUAGE_SAVED: return "언어가 저장되었습니다";
+                case TXT_HC12_TERMINAL: return "HC12 터미널";
+                case TXT_HC12_INFO: return "HC12 정보";
+                case TXT_CHECKERS: return "체커";
+                case TXT_SNAKE_3D: return "스네이크 3D";
+                case TXT_SCREEN:
+                default: return "화면";
+            }
+        case UI_LANG_ENGLISH:
+        default:
+            switch (id) {
+                case TXT_CHAT: return "Chat";
+                case TXT_CHAT_PEERS: return "Chat Peers";
+                case TXT_MEDIA: return "Media";
+                case TXT_INFO: return "Info";
+                case TXT_GAMES: return "Games";
+                case TXT_CONFIG: return "Config";
+                case TXT_AIRPLANE_ON: return "Airplane: ON";
+                case TXT_AIRPLANE_OFF: return "Airplane: OFF";
+                case TXT_AP_MODE_ON: return "AP Mode: ON";
+                case TXT_AP_MODE_OFF: return "AP Mode: OFF";
+                case TXT_WIFI_CONFIG: return "WiFi Config";
+                case TXT_HC12_CONFIG: return "HC12 Config";
+                case TXT_STYLE: return "Style";
+                case TXT_MQTT_CONFIG: return "MQTT Config";
+                case TXT_MQTT_CONTROLS: return "MQTT Controls";
+                case TXT_SCREENSHOT: return "Screenshot";
+                case TXT_LANGUAGE: return "Language";
+                case TXT_OTA_UPDATES: return "OTA Updates";
+                case TXT_DEVICE_NAME: return "Device Name";
+                case TXT_SAVE: return "Save";
+                case TXT_BRIGHTNESS: return "Brightness";
+                case TXT_VOLUME: return "Volume";
+                case TXT_RGB_LED: return "RGB LED";
+                case TXT_SELECT_DISPLAY_LANGUAGE: return "Select display language";
+                case TXT_LANGUAGE_SAVED: return "Language saved";
+                case TXT_HC12_TERMINAL: return "HC12 Terminal";
+                case TXT_HC12_INFO: return "HC12 Info";
+                case TXT_CHECKERS: return "Checkers";
+                case TXT_SNAKE_3D: return "Snake 3D";
+                case TXT_SCREEN:
+                default: return "Screen";
+            }
+    }
+}
+
 static String topBarCenterText()
 {
     if (topBarCenterMode == TOP_BAR_CENTER_TIME) {
@@ -4379,30 +4781,31 @@ static void lvglSetMenuButtonIconMode(lv_obj_t *btn,
 
 static void lvglRefreshPrimaryMenuButtonIcons()
 {
-    lvglSetMenuButtonIconMode(lvglHomeChatBtn, "Chat", LV_SYMBOL_BELL, &img_chat_small_icon);
-    lvglSetMenuButtonIconMode(lvglHomeMediaBtn, "Media", LV_SYMBOL_AUDIO, &img_music_small_icon, 8, 12);
-    lvglSetMenuButtonIconMode(lvglHomeInfoBtn, "Info", LV_SYMBOL_WARNING, &img_info_small_icon);
-    lvglSetMenuButtonIconMode(lvglHomeGamesBtn, "Games", LV_SYMBOL_PLAY, &img_games_small_icon);
-    lvglSetMenuButtonIconMode(lvglHomeConfigBtn, "Config", LV_SYMBOL_SETTINGS, &img_config_small_icon);
+    lvglSetMenuButtonIconMode(lvglHomeChatBtn, tr(TXT_CHAT), LV_SYMBOL_BELL, &img_chat_small_icon);
+    lvglSetMenuButtonIconMode(lvglHomeMediaBtn, tr(TXT_MEDIA), LV_SYMBOL_AUDIO, &img_music_small_icon, 8, 12);
+    lvglSetMenuButtonIconMode(lvglHomeInfoBtn, tr(TXT_INFO), LV_SYMBOL_WARNING, &img_info_small_icon);
+    lvglSetMenuButtonIconMode(lvglHomeGamesBtn, tr(TXT_GAMES), LV_SYMBOL_PLAY, &img_games_small_icon);
+    lvglSetMenuButtonIconMode(lvglHomeConfigBtn, tr(TXT_CONFIG), LV_SYMBOL_SETTINGS, &img_config_small_icon);
 
     lvglSetMenuButtonIconMode(lvglAirplaneBtn,
-                              airplaneModeEnabled ? "Airplane: ON" : "Airplane: OFF",
+                              airplaneModeEnabled ? tr(TXT_AIRPLANE_ON) : tr(TXT_AIRPLANE_OFF),
                               LV_SYMBOL_CLOSE,
                               &img_airplane_mode_icon);
     lvglSetMenuButtonIconMode(lvglApModeBtn,
-                              wifiSessionApMode ? "AP Mode: ON" : "AP Mode: OFF",
+                              wifiSessionApMode ? tr(TXT_AP_MODE_ON) : tr(TXT_AP_MODE_OFF),
                               LV_SYMBOL_WIFI,
                               &img_ap_small_icon);
     lvglAirplaneBtnLabel = lvglAirplaneBtn ? lv_obj_get_child(lvglAirplaneBtn, 0) : nullptr;
     lvglApModeBtnLabel = lvglApModeBtn ? lv_obj_get_child(lvglApModeBtn, 0) : nullptr;
 
-    lvglSetMenuButtonIconMode(lvglConfigWifiBtn, "WiFi Config", LV_SYMBOL_WIFI, &img_wifi_small_icon, 8, 12);
-    lvglSetMenuButtonIconMode(lvglConfigHc12Btn, "HC12 Config", LV_SYMBOL_SETTINGS, &img_radio_small_icon, 8, 12);
-    lvglSetMenuButtonIconMode(lvglConfigStyleBtn, "Style", LV_SYMBOL_SETTINGS, &img_styles_small_icon, 8, 12);
-    lvglSetMenuButtonIconMode(lvglConfigMqttBtn, "MQTT Config", LV_SYMBOL_SETTINGS, &img_mqtt_conf_small_icon, 8, 12);
-    lvglSetMenuButtonIconMode(lvglConfigMqttControlsBtn, "MQTT Controls", LV_SYMBOL_LIST, &img_mqtt_controls_small_icon, 8, 12);
-    lvglSetMenuButtonIconMode(lvglConfigScreenshotBtn, "Screenshot", LV_SYMBOL_IMAGE, &img_screenshot_small_icon, 8, 12);
-    lvglSetMenuButtonIconMode(lvglConfigOtaBtn, "OTA Updates", LV_SYMBOL_UPLOAD, &img_ota_small_icon, 8, 12);
+    lvglSetMenuButtonIconMode(lvglConfigWifiBtn, tr(TXT_WIFI_CONFIG), LV_SYMBOL_WIFI, &img_wifi_small_icon, 8, 12);
+    lvglSetMenuButtonIconMode(lvglConfigHc12Btn, tr(TXT_HC12_CONFIG), LV_SYMBOL_SETTINGS, &img_radio_small_icon, 8, 12);
+    lvglSetMenuButtonIconMode(lvglConfigStyleBtn, tr(TXT_STYLE), LV_SYMBOL_SETTINGS, &img_styles_small_icon, 8, 12);
+    lvglSetMenuButtonIconMode(lvglConfigMqttBtn, tr(TXT_MQTT_CONFIG), LV_SYMBOL_SETTINGS, &img_mqtt_conf_small_icon, 8, 12);
+    lvglSetMenuButtonIconMode(lvglConfigMqttControlsBtn, tr(TXT_MQTT_CONTROLS), LV_SYMBOL_LIST, &img_mqtt_controls_small_icon, 8, 12);
+    lvglSetMenuButtonIconMode(lvglConfigScreenshotBtn, tr(TXT_SCREENSHOT), LV_SYMBOL_IMAGE, &img_screenshot_small_icon, 8, 12);
+    lvglSetMenuButtonIconMode(lvglConfigLanguageBtn, tr(TXT_LANGUAGE), LV_SYMBOL_EDIT, &img_styles_small_icon, 8, 12);
+    lvglSetMenuButtonIconMode(lvglConfigOtaBtn, tr(TXT_OTA_UPDATES), LV_SYMBOL_UPLOAD, &img_ota_small_icon, 8, 12);
 }
 
 static void lvglApplyMomentaryButtonStyle(lv_obj_t *btn, lv_obj_t *label, lv_color_t bodyCol, bool compact)
@@ -5966,16 +6369,20 @@ void lvglOpenMqttCtrlEvent(lv_event_t *e);
 void lvglOpenChatPeersEvent(lv_event_t *e);
 void lvglChatDiscoveryToggleEvent(lv_event_t *e);
 void lvglOpenStyleScreenEvent(lv_event_t *e);
+void lvglOpenLanguageScreenEvent(lv_event_t *e);
 void lvglStyleScreensaverToggleEvent(lv_event_t *e);
 void lvglStyleMenuIconsToggleEvent(lv_event_t *e);
 void lvglStyleButtonFlatEvent(lv_event_t *e);
 void lvglStyleButton3dEvent(lv_event_t *e);
 void lvglStyleButtonBlackEvent(lv_event_t *e);
 void lvglStyleTimezoneEvent(lv_event_t *e);
+void lvglLanguageDropdownEvent(lv_event_t *e);
 void lvglStyleTopCenterNameEvent(lv_event_t *e);
 void lvglStyleTopCenterTimeEvent(lv_event_t *e);
 void lvglStyleTimeoutEvent(lv_event_t *e);
 void lvglRefreshStyleUi();
+void lvglRefreshLanguageUi();
+void lvglRefreshLocalizedUi();
 void lvglGestureBlockEvent(lv_event_t *e);
 void screensaverSetActive(bool active);
 void screensaverService();
@@ -6097,6 +6504,7 @@ static bool uiScreenSupportsSwipeBack(UiScreen screen)
         case UI_GAMES:
         case UI_CONFIG:
         case UI_CONFIG_STYLE:
+        case UI_CONFIG_LANGUAGE:
         case UI_CONFIG_OTA:
         case UI_CONFIG_HC12:
         case UI_CONFIG_HC12_TERMINAL:
@@ -6125,6 +6533,7 @@ lv_obj_t *lvglScreenForUi(UiScreen screen)
         case UI_GAMES: return lvglScrGames;
         case UI_CONFIG: return lvglScrConfig;
         case UI_CONFIG_STYLE: return lvglScrStyle;
+        case UI_CONFIG_LANGUAGE: return lvglScrLanguage;
         case UI_CONFIG_OTA: return lvglScrOta;
         case UI_CONFIG_HC12: return lvglScrHc12;
         case UI_CONFIG_HC12_TERMINAL: return lvglScrHc12Terminal;
@@ -6182,17 +6591,17 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_flex_flow(homeWrap, LV_FLEX_FLOW_COLUMN);
             lv_obj_set_scrollbar_mode(homeWrap, LV_SCROLLBAR_MODE_OFF);
             lvglStatusLabel = nullptr;
-            lvglHomeChatBtn = lvglCreateMenuButton(homeWrap, "Chat", lv_color_hex(0x7A4F2F), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CHAT)));
-            lvglHomeMediaBtn = lvglCreateMenuButton(homeWrap, "Media", lv_color_hex(0x376B93), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_MEDIA)));
-            lvglHomeInfoBtn = lvglCreateMenuButton(homeWrap, "Info", lv_color_hex(0x7750A0), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_INFO)));
-            lvglHomeGamesBtn = lvglCreateMenuButton(homeWrap, "Games", lv_color_hex(0x2B7D7D), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_GAMES)));
-            lvglHomeConfigBtn = lvglCreateMenuButton(homeWrap, "Config", lv_color_hex(0x925A73), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CONFIG)));
-            lvglAirplaneBtn = lvglCreateMenuButton(homeWrap, "Airplane: OFF", lv_color_hex(0x8A5A25), lvglAirplaneToggleEvent, nullptr);
+            lvglHomeChatBtn = lvglCreateMenuButton(homeWrap, tr(TXT_CHAT), lv_color_hex(0x7A4F2F), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CHAT)));
+            lvglHomeMediaBtn = lvglCreateMenuButton(homeWrap, tr(TXT_MEDIA), lv_color_hex(0x376B93), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_MEDIA)));
+            lvglHomeInfoBtn = lvglCreateMenuButton(homeWrap, tr(TXT_INFO), lv_color_hex(0x7750A0), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_INFO)));
+            lvglHomeGamesBtn = lvglCreateMenuButton(homeWrap, tr(TXT_GAMES), lv_color_hex(0x2B7D7D), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_GAMES)));
+            lvglHomeConfigBtn = lvglCreateMenuButton(homeWrap, tr(TXT_CONFIG), lv_color_hex(0x925A73), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CONFIG)));
+            lvglAirplaneBtn = lvglCreateMenuButton(homeWrap, tr(TXT_AIRPLANE_OFF), lv_color_hex(0x8A5A25), lvglAirplaneToggleEvent, nullptr);
             if (lvglAirplaneBtn) {
                 lvglAirplaneBtnLabel = lv_obj_get_child(lvglAirplaneBtn, 0);
                 lvglApplyAirplaneButtonStyle();
             }
-            lvglApModeBtn = lvglCreateMenuButton(homeWrap, "AP Mode: OFF", lv_color_hex(0xA66A2A), lvglApModeEvent, nullptr);
+            lvglApModeBtn = lvglCreateMenuButton(homeWrap, tr(TXT_AP_MODE_OFF), lv_color_hex(0xA66A2A), lvglApModeEvent, nullptr);
             if (lvglApModeBtn) {
                 lvglApModeBtnLabel = lv_obj_get_child(lvglApModeBtn, 0);
                 lvglApplyApModeButtonStyle();
@@ -6578,7 +6987,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             break;
         }
         case UI_CONFIG: {
-            lvglScrConfig = lvglCreateScreenBase("Config", true);
+            lvglScrConfig = lvglCreateScreenBase(tr(TXT_CONFIG), true);
             lvglConfigWrap = lv_obj_create(lvglScrConfig);
             lv_obj_set_size(lvglConfigWrap, lv_pct(100), UI_CONTENT_H);
             lv_obj_align(lvglConfigWrap, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
@@ -6588,13 +6997,14 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_style_pad_row(lvglConfigWrap, 10, 0);
             lv_obj_set_flex_flow(lvglConfigWrap, LV_FLEX_FLOW_COLUMN);
             lv_obj_set_scrollbar_mode(lvglConfigWrap, LV_SCROLLBAR_MODE_OFF);
-            lvglConfigWifiBtn = lvglCreateMenuButton(lvglConfigWrap, "WiFi Config", lv_color_hex(0x3A8F4B), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_WIFI_LIST)));
-            lvglConfigHc12Btn = lvglCreateMenuButton(lvglConfigWrap, "HC12 Config", lv_color_hex(0x7A5C2E), lvglOpenHc12ScreenEvent, nullptr);
-            lvglConfigStyleBtn = lvglCreateMenuButton(lvglConfigWrap, "Style", lv_color_hex(0x2D6D8E), lvglOpenStyleScreenEvent, nullptr);
-            lvglConfigMqttBtn = lvglCreateMenuButton(lvglConfigWrap, "MQTT Config", lv_color_hex(0x6D4B9A), lvglOpenMqttCfgEvent, nullptr);
-            lvglConfigMqttControlsBtn = lvglCreateMenuButton(lvglConfigWrap, "MQTT Controls", lv_color_hex(0x2D6D8E), lvglOpenMqttCtrlEvent, nullptr);
-            lvglConfigScreenshotBtn = lvglCreateMenuButton(lvglConfigWrap, "Screenshot", lv_color_hex(0x6B5B2A), lvglScreenshotEvent, nullptr);
-            lvglConfigOtaBtn = lvglCreateMenuButton(lvglConfigWrap, "OTA Updates", lv_color_hex(0x2E6F95), lvglOpenOtaScreenEvent, nullptr);
+            lvglConfigWifiBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_WIFI_CONFIG), lv_color_hex(0x3A8F4B), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_WIFI_LIST)));
+            lvglConfigHc12Btn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_HC12_CONFIG), lv_color_hex(0x7A5C2E), lvglOpenHc12ScreenEvent, nullptr);
+            lvglConfigStyleBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_STYLE), lv_color_hex(0x2D6D8E), lvglOpenStyleScreenEvent, nullptr);
+            lvglConfigMqttBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_MQTT_CONFIG), lv_color_hex(0x6D4B9A), lvglOpenMqttCfgEvent, nullptr);
+            lvglConfigMqttControlsBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_MQTT_CONTROLS), lv_color_hex(0x2D6D8E), lvglOpenMqttCtrlEvent, nullptr);
+            lvglConfigScreenshotBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_SCREENSHOT), lv_color_hex(0x6B5B2A), lvglScreenshotEvent, nullptr);
+            lvglConfigLanguageBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_LANGUAGE), lv_color_hex(0x5A6FA8), lvglOpenLanguageScreenEvent, nullptr);
+            lvglConfigOtaBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_OTA_UPDATES), lv_color_hex(0x2E6F95), lvglOpenOtaScreenEvent, nullptr);
             lvglRefreshPrimaryMenuButtonIcons();
 
             lv_obj_t *nameWrap = lv_obj_create(lvglConfigWrap);
@@ -6607,9 +7017,9 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_flex_flow(nameWrap, LV_FLEX_FLOW_COLUMN);
             lv_obj_clear_flag(nameWrap, LV_OBJ_FLAG_SCROLLABLE);
 
-            lv_obj_t *nameHdr = lv_label_create(nameWrap);
-            lv_label_set_text(nameHdr, "Device Name");
-            lv_obj_set_style_text_color(nameHdr, lv_color_hex(0xE5ECF3), 0);
+            lvglConfigDeviceNameHeader = lv_label_create(nameWrap);
+            lv_label_set_text(lvglConfigDeviceNameHeader, tr(TXT_DEVICE_NAME));
+            lv_obj_set_style_text_color(lvglConfigDeviceNameHeader, lv_color_hex(0xE5ECF3), 0);
 
             lv_obj_t *nameRow = lv_obj_create(nameWrap);
             lv_obj_set_size(nameRow, lv_pct(100), LV_SIZE_CONTENT);
@@ -6629,7 +7039,8 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_textarea_set_max_length(lvglConfigDeviceNameTa, 24);
             lv_obj_add_event_cb(lvglConfigDeviceNameTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
 
-            makeSmallBtn(nameRow, "Save", 64, 38, lv_color_hex(0x3A7A3A), lvglSaveDeviceNameEvent, nullptr);
+            lv_obj_t *saveBtn = makeSmallBtn(nameRow, tr(TXT_SAVE), 64, 38, lv_color_hex(0x3A7A3A), lvglSaveDeviceNameEvent, nullptr);
+            lvglConfigDeviceNameSaveBtnLabel = saveBtn ? lv_obj_get_child(saveBtn, 0) : nullptr;
 
             lv_obj_t *brightWrap = lv_obj_create(lvglConfigWrap);
             lv_obj_set_size(brightWrap, lv_pct(100), LV_SIZE_CONTENT);
@@ -6650,10 +7061,10 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_flex_flow(brightHdr, LV_FLEX_FLOW_ROW);
             lv_obj_clear_flag(brightHdr, LV_OBJ_FLAG_SCROLLABLE);
 
-            lv_obj_t *brightLbl = lv_label_create(brightHdr);
-            lv_label_set_text(brightLbl, "Brightness");
-            lv_obj_set_style_text_color(brightLbl, lv_color_hex(0xE5ECF3), 0);
-            lv_obj_set_flex_grow(brightLbl, 1);
+            lvglConfigBrightnessHeader = lv_label_create(brightHdr);
+            lv_label_set_text(lvglConfigBrightnessHeader, tr(TXT_BRIGHTNESS));
+            lv_obj_set_style_text_color(lvglConfigBrightnessHeader, lv_color_hex(0xE5ECF3), 0);
+            lv_obj_set_flex_grow(lvglConfigBrightnessHeader, 1);
 
             lvglBrightnessValueLabel = lv_label_create(brightHdr);
             lv_obj_set_style_text_color(lvglBrightnessValueLabel, lv_color_hex(0xB7C4D1), 0);
@@ -6682,10 +7093,10 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_flex_flow(volHdr, LV_FLEX_FLOW_ROW);
             lv_obj_clear_flag(volHdr, LV_OBJ_FLAG_SCROLLABLE);
 
-            lv_obj_t *volLbl = lv_label_create(volHdr);
-            lv_label_set_text(volLbl, "Volume");
-            lv_obj_set_style_text_color(volLbl, lv_color_hex(0xE5ECF3), 0);
-            lv_obj_set_flex_grow(volLbl, 1);
+            lvglConfigVolumeHeader = lv_label_create(volHdr);
+            lv_label_set_text(lvglConfigVolumeHeader, tr(TXT_VOLUME));
+            lv_obj_set_style_text_color(lvglConfigVolumeHeader, lv_color_hex(0xE5ECF3), 0);
+            lv_obj_set_flex_grow(lvglConfigVolumeHeader, 1);
 
             lvglVolumeValueLabel = lv_label_create(volHdr);
             lv_obj_set_style_text_color(lvglVolumeValueLabel, lv_color_hex(0xB7C4D1), 0);
@@ -6714,10 +7125,10 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_flex_flow(rgbHdr, LV_FLEX_FLOW_ROW);
             lv_obj_clear_flag(rgbHdr, LV_OBJ_FLAG_SCROLLABLE);
 
-            lv_obj_t *rgbLbl = lv_label_create(rgbHdr);
-            lv_label_set_text(rgbLbl, "RGB LED");
-            lv_obj_set_style_text_color(rgbLbl, lv_color_hex(0xE5ECF3), 0);
-            lv_obj_set_flex_grow(rgbLbl, 1);
+            lvglConfigRgbHeader = lv_label_create(rgbHdr);
+            lv_label_set_text(lvglConfigRgbHeader, tr(TXT_RGB_LED));
+            lv_obj_set_style_text_color(lvglConfigRgbHeader, lv_color_hex(0xE5ECF3), 0);
+            lv_obj_set_flex_grow(lvglConfigRgbHeader, 1);
 
             lv_obj_t *rgbValueLabel = lv_label_create(rgbHdr);
             lv_obj_set_style_text_color(rgbValueLabel, lv_color_hex(0xB7C4D1), 0);
@@ -6734,6 +7145,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglRegisterReorderableItem(lvglConfigMqttBtn, "ord_cfg", "mqtt");
             lvglRegisterReorderableItem(lvglConfigMqttControlsBtn, "ord_cfg", "mctl");
             lvglRegisterReorderableItem(lvglConfigScreenshotBtn, "ord_cfg", "shot");
+            lvglRegisterReorderableItem(lvglConfigLanguageBtn, "ord_cfg", "lang");
             lvglRegisterReorderableItem(lvglConfigOtaBtn, "ord_cfg", "ota");
             lvglRegisterReorderableItem(nameWrap, "ord_cfg", "name");
             lvglRegisterReorderableItem(brightWrap, "ord_cfg", "bright");
@@ -6978,8 +7390,53 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglRefreshStyleUi();
             break;
         }
+        case UI_CONFIG_LANGUAGE: {
+            lvglScrLanguage = lvglCreateScreenBase(tr(TXT_LANGUAGE), false);
+            lvglLanguageDropdown = nullptr;
+            lvglLanguageInfoLabel = nullptr;
+
+            lv_obj_t *wrap = lv_obj_create(lvglScrLanguage);
+            lv_obj_set_size(wrap, lv_pct(100), UI_CONTENT_H);
+            lv_obj_align(wrap, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
+            lv_obj_set_style_bg_opa(wrap, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(wrap, 0, 0);
+            lv_obj_set_style_pad_all(wrap, 10, 0);
+            lv_obj_set_style_pad_row(wrap, 10, 0);
+            lv_obj_set_flex_flow(wrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_scrollbar_mode(wrap, LV_SCROLLBAR_MODE_OFF);
+
+            lv_obj_t *langCard = lv_obj_create(wrap);
+            lv_obj_set_size(langCard, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_color(langCard, lv_color_hex(0x18222D), 0);
+            lv_obj_set_style_border_width(langCard, 0, 0);
+            lv_obj_set_style_radius(langCard, 12, 0);
+            lv_obj_set_style_pad_all(langCard, 12, 0);
+            lv_obj_set_style_pad_row(langCard, 8, 0);
+            lv_obj_set_flex_flow(langCard, LV_FLEX_FLOW_COLUMN);
+            lv_obj_clear_flag(langCard, LV_OBJ_FLAG_SCROLLABLE);
+
+            lvglLanguageInfoLabel = lv_label_create(langCard);
+            lv_obj_set_width(lvglLanguageInfoLabel, lv_pct(100));
+            lv_label_set_long_mode(lvglLanguageInfoLabel, LV_LABEL_LONG_WRAP);
+            lv_obj_set_style_text_color(lvglLanguageInfoLabel, lv_color_hex(0xE5ECF3), 0);
+
+            lvglLanguageDropdown = lv_dropdown_create(langCard);
+            lv_obj_set_width(lvglLanguageDropdown, lv_pct(100));
+            lv_dropdown_set_options(lvglLanguageDropdown, buildLanguageDropdownOptions().c_str());
+            lv_obj_set_style_bg_color(lvglLanguageDropdown, lv_color_hex(0x111922), 0);
+            lv_obj_set_style_text_color(lvglLanguageDropdown, lv_color_hex(0xE5ECF3), 0);
+            lv_obj_set_style_border_color(lvglLanguageDropdown, lv_color_hex(0x2F4658), 0);
+            lv_obj_set_style_border_width(lvglLanguageDropdown, 1, 0);
+            lv_obj_set_style_radius(lvglLanguageDropdown, 8, 0);
+            lv_obj_add_event_cb(lvglLanguageDropdown, lvglLanguageDropdownEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+            lv_obj_add_event_cb(lvglLanguageDropdown, lvglGestureBlockEvent, LV_EVENT_PRESSED, nullptr);
+            lv_obj_add_event_cb(lvglLanguageDropdown, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
+            lv_obj_add_event_cb(lvglLanguageDropdown, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
+            lvglRefreshLanguageUi();
+            break;
+        }
         case UI_CONFIG_OTA: {
-            lvglScrOta = lvglCreateScreenBase("OTA Updates", false);
+            lvglScrOta = lvglCreateScreenBase(tr(TXT_OTA_UPDATES), false);
             lv_obj_t *wrap = lv_obj_create(lvglScrOta);
             lv_obj_set_size(wrap, lv_pct(100), UI_CONTENT_H);
             lv_obj_align(wrap, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
@@ -7907,6 +8364,8 @@ void lvglOpenScreen(UiScreen screen, lv_scr_load_anim_t anim)
         lvglRefreshConfigUi();
     } else if (screen == UI_CONFIG_STYLE) {
         lvglRefreshStyleUi();
+    } else if (screen == UI_CONFIG_LANGUAGE) {
+        lvglRefreshLanguageUi();
     } else if (screen == UI_CONFIG_OTA) {
         lvglRefreshOtaUi();
     } else if (screen == UI_CONFIG_HC12) {
@@ -7951,6 +8410,7 @@ void lvglNavigateBackBySwipe(lv_scr_load_anim_t anim)
             lvglOpenScreen(UI_CONFIG, anim);
             break;
         case UI_CONFIG_STYLE:
+        case UI_CONFIG_LANGUAGE:
             lvglOpenScreen(UI_CONFIG, anim);
             break;
         case UI_CONFIG_OTA:
@@ -12033,6 +12493,14 @@ void lvglOpenStyleScreenEvent(lv_event_t *e)
     lvglOpenScreen(UI_CONFIG_STYLE, LV_SCR_LOAD_ANIM_MOVE_LEFT);
 }
 
+void lvglOpenLanguageScreenEvent(lv_event_t *e)
+{
+    (void)e;
+    lvglEnsureScreenBuilt(UI_CONFIG_LANGUAGE);
+    lvglRefreshLanguageUi();
+    lvglOpenScreen(UI_CONFIG_LANGUAGE, LV_SCR_LOAD_ANIM_MOVE_LEFT);
+}
+
 void lvglStyleScreensaverToggleEvent(lv_event_t *e)
 {
     if (lvglStyleUiSyncing) return;
@@ -12089,6 +12557,21 @@ void lvglStyleTimezoneEvent(lv_event_t *e)
     lvglTopIndicatorStateValid = false;
     lvglRefreshTopIndicators();
     lvglRefreshStyleUi();
+}
+
+void lvglLanguageDropdownEvent(lv_event_t *e)
+{
+    (void)e;
+    if (!lvglLanguageDropdown) return;
+    const uint16_t selected = lv_dropdown_get_selected(lvglLanguageDropdown);
+    if (selected >= static_cast<uint16_t>(UI_LANG_COUNT)) return;
+    uiLanguage = static_cast<UiLanguage>(selected);
+    uiPrefs.begin("ui", false);
+    uiPrefs.putUChar("lang", static_cast<uint8_t>(uiLanguage));
+    uiPrefs.end();
+    lvglRefreshLocalizedUi();
+    uiStatusLine = tr(TXT_LANGUAGE_SAVED);
+    lvglSyncStatusLine();
 }
 
 void lvglStyleTopCenterNameEvent(lv_event_t *e)
@@ -12315,20 +12798,25 @@ void lvglRefreshConfigUi()
     lvglRefreshPrimaryMenuButtonIcons();
     if (lvglAirplaneBtnLabel) {
         lvglLabelSetTextIfChanged(lvglAirplaneBtnLabel,
-                                  menuCustomIconsEnabled ? (airplaneModeEnabled ? "Airplane: ON" : "Airplane: OFF")
+                                  menuCustomIconsEnabled ? (airplaneModeEnabled ? tr(TXT_AIRPLANE_ON) : tr(TXT_AIRPLANE_OFF))
                                                          : lvglSymbolText(LV_SYMBOL_CLOSE,
-                                                                          airplaneModeEnabled ? "Airplane: ON"
-                                                                                              : "Airplane: OFF"));
+                                                                          airplaneModeEnabled ? tr(TXT_AIRPLANE_ON)
+                                                                                              : tr(TXT_AIRPLANE_OFF)));
     }
     lvglApplyAirplaneButtonStyle();
     if (lvglApModeBtnLabel) {
         lvglLabelSetTextIfChanged(lvglApModeBtnLabel,
-                                  menuCustomIconsEnabled ? (wifiSessionApMode ? "AP Mode: ON" : "AP Mode: OFF")
+                                  menuCustomIconsEnabled ? (wifiSessionApMode ? tr(TXT_AP_MODE_ON) : tr(TXT_AP_MODE_OFF))
                                                          : lvglSymbolText(LV_SYMBOL_WIFI,
-                                                                          wifiSessionApMode ? "AP Mode: ON"
-                                                                                            : "AP Mode: OFF"));
+                                                                          wifiSessionApMode ? tr(TXT_AP_MODE_ON)
+                                                                                            : tr(TXT_AP_MODE_OFF)));
     }
     lvglApplyApModeButtonStyle();
+    if (lvglConfigDeviceNameHeader) lvglLabelSetTextIfChanged(lvglConfigDeviceNameHeader, tr(TXT_DEVICE_NAME));
+    if (lvglConfigDeviceNameSaveBtnLabel) lvglLabelSetTextIfChanged(lvglConfigDeviceNameSaveBtnLabel, tr(TXT_SAVE));
+    if (lvglConfigBrightnessHeader) lvglLabelSetTextIfChanged(lvglConfigBrightnessHeader, tr(TXT_BRIGHTNESS));
+    if (lvglConfigVolumeHeader) lvglLabelSetTextIfChanged(lvglConfigVolumeHeader, tr(TXT_VOLUME));
+    if (lvglConfigRgbHeader) lvglLabelSetTextIfChanged(lvglConfigRgbHeader, tr(TXT_RGB_LED));
     if (lvglConfigDeviceNameTa) {
         String current = lv_textarea_get_text(lvglConfigDeviceNameTa);
         if (current != deviceShortNameValue()) lv_textarea_set_text(lvglConfigDeviceNameTa, deviceShortNameValue().c_str());
@@ -12344,6 +12832,24 @@ void lvglRefreshConfigUi()
     if (lvglRgbLedSlider && lv_slider_get_value(lvglRgbLedSlider) != rgbLedPercent) {
         lv_slider_set_value(lvglRgbLedSlider, rgbLedPercent, LV_ANIM_OFF);
     }
+}
+
+void lvglRefreshLanguageUi()
+{
+    if (lvglLanguageInfoLabel) lvglLabelSetTextIfChanged(lvglLanguageInfoLabel, tr(TXT_SELECT_DISPLAY_LANGUAGE));
+    if (lvglLanguageDropdown) {
+        lv_dropdown_set_options(lvglLanguageDropdown, buildLanguageDropdownOptions().c_str());
+        const uint16_t selected = static_cast<uint16_t>(uiLanguage);
+        if (lv_dropdown_get_selected(lvglLanguageDropdown) != selected) lv_dropdown_set_selected(lvglLanguageDropdown, selected);
+    }
+}
+
+void lvglRefreshLocalizedUi()
+{
+    lvglRefreshConfigUi();
+    lvglRefreshLanguageUi();
+    lvglTopIndicatorStateValid = false;
+    if (lvglReady) lvglRefreshTopIndicators();
 }
 
 void lvglRefreshOtaUi()
@@ -15913,6 +16419,7 @@ void appendUiSettings(JsonDocument &doc)
     doc["AirplaneMode"] = uiPrefs.getBool("airplane", airplaneModeEnabled) ? 1 : 0;
     doc["ButtonStyle"] = uiPrefs.getUChar("btn_style", static_cast<uint8_t>(uiButtonStyleMode));
     doc["Menu3DIcons"] = uiPrefs.getBool("menu_3d_i", menuCustomIconsEnabled) ? 1 : 0;
+    doc["DisplayLanguage"] = uiPrefs.getUChar("lang", static_cast<uint8_t>(uiLanguage));
     doc["TopBarCenter"] = uiPrefs.getUChar("top_mid", static_cast<uint8_t>(topBarCenterMode));
     doc["TopBarTimezone"] = uiPrefs.getInt("tz_gmt", static_cast<int>(topBarTimezoneGmtOffset));
     doc["TelemetryMaxKB"] = uiPrefs.getUInt("tele_kb", telemetryMaxKB);
@@ -15954,6 +16461,9 @@ void loadUiRuntimeConfig()
     webServerEnabled = uiPrefs.getBool("web_srv", true);
     airplaneModeEnabled = uiPrefs.getBool("airplane", false);
     menuCustomIconsEnabled = uiPrefs.getBool("menu_3d_i", false);
+    uiLanguage = static_cast<UiLanguage>(constrain(uiPrefs.getUChar("lang", static_cast<uint8_t>(UI_LANG_ENGLISH)),
+                                                   static_cast<uint8_t>(UI_LANG_ENGLISH),
+                                                   static_cast<uint8_t>(UI_LANG_COUNT - 1)));
     const uint8_t rawButtonStyle = uiPrefs.getUChar("btn_style", static_cast<uint8_t>(UI_BUTTON_STYLE_3D));
     if (rawButtonStyle == static_cast<uint8_t>(UI_BUTTON_STYLE_FLAT)) uiButtonStyleMode = UI_BUTTON_STYLE_FLAT;
     else if (rawButtonStyle == static_cast<uint8_t>(UI_BUTTON_STYLE_BLACK)) uiButtonStyleMode = UI_BUTTON_STYLE_BLACK;
@@ -16187,6 +16697,11 @@ bool handleUiSettingMessage(const char *msg)
             lvglRefreshConfigUi();
             lvglRefreshStyleUi();
         }
+    }
+    else if (strcmp(key, "DisplayLanguage") == 0 && parseIntMessageValue(value, parsed)) {
+        uiLanguage = static_cast<UiLanguage>(constrain(parsed, static_cast<int>(UI_LANG_ENGLISH), static_cast<int>(UI_LANG_COUNT - 1)));
+        uiPrefs.putUChar("lang", static_cast<uint8_t>(uiLanguage));
+        if (lvglReady) lvglRefreshLocalizedUi();
     }
     else if (strcmp(key, "TopBarCenter") == 0 && parseIntMessageValue(value, parsed)) {
         topBarCenterMode = parsed == static_cast<int>(TOP_BAR_CENTER_TIME) ? TOP_BAR_CENTER_TIME : TOP_BAR_CENTER_NAME;

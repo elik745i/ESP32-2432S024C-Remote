@@ -18,7 +18,8 @@
 #define LV_FONT_MONTSERRAT_14 1
 #define LV_FONT_MONTSERRAT_16 1
 #define LV_FONT_MONTSERRAT_18 1
-#define LV_FONT_DEFAULT &lv_font_montserrat_16
+#define LV_FONT_CUSTOM_DECLARE LV_FONT_DECLARE(ui_multilang_font_16)
+#define LV_FONT_DEFAULT &ui_multilang_font_16
 
 #define LV_USE_PERF_MONITOR 0
 #define LV_USE_MEM_MONITOR 0
