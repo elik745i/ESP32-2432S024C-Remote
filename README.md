@@ -16,6 +16,7 @@ Supported boards:
 - Multi-board firmware with board-specific display and touch support selected at build time
 - LVGL touch UI with live swipe-back navigation, delayed click feedback, and global double-tap sleep
 - Reorderable menus and submenu items with press-and-hold drag, persisted order, and raised/pressed button themes
+- `Style` menu now includes a persisted `3D Icons` switch that toggles between custom embedded menu icons and LVGL built-in symbols
 - LVGL touch/UI hot paths trimmed to reduce callback and off-screen refresh overhead
 - Discovery-gated device pairing with accept/reject confirmation on the target device
 - Saved backlight brightness, speaker volume, and RGB LED intensity controls in `Config`
@@ -25,6 +26,7 @@ Supported boards:
 - `HC12 Config` submenu with live channel, baud, mode, power, default-reset, dedicated `Info`, and `Serial Terminal` pages for the HC-12 radio module
 - `OTA Updates` screen with boot-time and periodic update checks, update-available indicator/popup, progress bar, and post-update confirmation
 - `MQTT Config` screen for broker settings, status, and connection control
+- Home and `Config` menu entries can use dedicated embedded icons, including custom `WiFi Config` and `MQTT Config` icons when `3D Icons` is enabled
 - SD recovery browser that can browse all rooted SD folders
 - SD-backed chat history stored per contact under `/Conversations`
 - Encrypted peer-to-peer LAN chat over UDP
@@ -309,6 +311,7 @@ Board-specific defaults:
 - Tapping the top-bar antenna icon opens `WiFi Config`
 - Tapping the top-bar unread mail icon jumps directly into the first unread conversation
 - The top bar can show device name, Wi-Fi state, MQTT state, unread mail, and battery
+- `Style -> 3D Icons` switches menu rows between custom embedded icon art and standard LVGL symbols
 
 ### Keyboard
 
@@ -326,6 +329,7 @@ Board-specific defaults:
 - Low-end brightness warning color on the slider
 - Device rename field with persistence
 - Device name is shown in the top bar and shortened there when needed
+- `Style` includes button theme selection, top-bar center mode, GMT timezone selection, and a persisted `3D Icons` switch
 
 ### HC-12
 

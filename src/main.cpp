@@ -39,10 +39,12 @@
 #include "generated/img_info_small_icon.h"
 #include "generated/img_ap_small_icon.h"
 #include "generated/img_music_small_icon.h"
+#include "generated/img_mqtt_conf_small_icon.h"
 #include "generated/img_mqtt_small_icon.h"
 #include "generated/img_ota_small_icon.h"
 #include "generated/img_radio_small_icon.h"
 #include "generated/img_styles_small_icon.h"
+#include "generated/img_wifi_small_icon.h"
 #include "generated/recovery_browser_asset.h"
 
 enum TouchControllerType : uint8_t {
@@ -570,6 +572,8 @@ void lvglApplyAirplaneButtonStyle();
 void lvglApplyApModeButtonStyle();
 void lvglApplyChatDiscoveryButtonStyle();
 void lvglApplyWifiWebServerButtonStyle();
+static void lvglAttachMenuButtonImage(lv_obj_t *btn, const lv_img_dsc_t *imgSrc, lv_coord_t xOffset, lv_coord_t labelShiftX);
+static void lvglRefreshPrimaryMenuButtonIcons();
 static String topBarCenterText();
 static bool internetTimeValid();
 static void syncInternetTimeIfNeeded(bool force = false);
@@ -809,8 +813,19 @@ static lv_obj_t *lvglAirplaneBtn = nullptr;
 static lv_obj_t *lvglAirplaneBtnLabel = nullptr;
 static lv_obj_t *lvglApModeBtn = nullptr;
 static lv_obj_t *lvglApModeBtnLabel = nullptr;
+static lv_obj_t *lvglHomeChatBtn = nullptr;
+static lv_obj_t *lvglHomeMediaBtn = nullptr;
+static lv_obj_t *lvglHomeInfoBtn = nullptr;
+static lv_obj_t *lvglHomeGamesBtn = nullptr;
+static lv_obj_t *lvglHomeConfigBtn = nullptr;
+static lv_obj_t *lvglConfigWifiBtn = nullptr;
+static lv_obj_t *lvglConfigHc12Btn = nullptr;
+static lv_obj_t *lvglConfigStyleBtn = nullptr;
+static lv_obj_t *lvglConfigMqttBtn = nullptr;
+static lv_obj_t *lvglConfigOtaBtn = nullptr;
 static lv_obj_t *lvglConfigWrap = nullptr;
 static lv_obj_t *lvglStyleScreensaverSw = nullptr;
+static lv_obj_t *lvglStyleMenuIconsSw = nullptr;
 static lv_obj_t *lvglStyleButtonFlatBtn = nullptr;
 static lv_obj_t *lvglStyleButtonFlatBtnLabel = nullptr;
 static lv_obj_t *lvglStyleButton3dBtn = nullptr;
@@ -1830,6 +1845,7 @@ bool recordTelemetryEnabled = false;
 bool systemSoundsEnabled = true;
 bool wsRebootOnDisconnectEnabled = false;
 bool airplaneModeEnabled = false;
+bool menuCustomIconsEnabled = false;
 UiButtonStyleMode uiButtonStyleMode = UI_BUTTON_STYLE_3D;
 uint32_t uiButtonStyleFlatSelectorColor = 0;
 uint32_t uiButtonStyle3dSelectorColor = 0;
@@ -3287,6 +3303,11 @@ static void lvglApplyStyleScreenControlStyles()
         lv_obj_set_style_bg_color(lvglStyleScreensaverSw, lv_color_hex(0x3A8F4B), LV_PART_INDICATOR | LV_STATE_CHECKED);
         lv_obj_set_style_bg_color(lvglStyleScreensaverSw, lv_color_hex(0xDCE7F2), LV_PART_KNOB);
     }
+    if (lvglStyleMenuIconsSw) {
+        lv_obj_set_style_bg_color(lvglStyleMenuIconsSw, lv_color_hex(0x48515C), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(lvglStyleMenuIconsSw, lv_color_hex(0x3A8F4B), LV_PART_INDICATOR | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_color(lvglStyleMenuIconsSw, lv_color_hex(0xDCE7F2), LV_PART_KNOB);
+    }
     if (lvglStyleTimeoutSlider) {
         lv_obj_set_style_bg_color(lvglStyleTimeoutSlider, lv_color_hex(0x2A3340), LV_PART_MAIN);
         lv_obj_set_style_bg_color(lvglStyleTimeoutSlider, lv_color_hex(0x4FC3F7), LV_PART_INDICATOR);
@@ -4324,6 +4345,58 @@ static String topBarCenterText()
     String topName = deviceShortNameValue();
     if (topName.length() > 8) topName.remove(8);
     return topName;
+}
+
+static void lvglSetMenuButtonIconMode(lv_obj_t *btn,
+                                      const String &plainText,
+                                      const char *symbol,
+                                      const lv_img_dsc_t *customImg,
+                                      lv_coord_t xOffset = 8,
+                                      lv_coord_t labelShiftX = 10)
+{
+    if (!btn || !lv_obj_is_valid(btn)) return;
+    lv_obj_t *label = lv_obj_get_child(btn, 0);
+    if (!label) return;
+
+    while (lv_obj_get_child_cnt(btn) > 1) {
+        lv_obj_t *child = lv_obj_get_child(btn, lv_obj_get_child_cnt(btn) - 1);
+        if (!child) break;
+        lv_obj_del(child);
+    }
+
+    const String labelText = (!menuCustomIconsEnabled || !customImg) ? lvglSymbolText(symbol, plainText) : plainText;
+    lv_label_set_text(label, labelText.c_str());
+    lv_obj_center(label);
+
+    if (menuCustomIconsEnabled && customImg) {
+        lvglAttachMenuButtonImage(btn, customImg, xOffset, labelShiftX);
+    }
+}
+
+static void lvglRefreshPrimaryMenuButtonIcons()
+{
+    lvglSetMenuButtonIconMode(lvglHomeChatBtn, "Chat", LV_SYMBOL_BELL, &img_chat_small_icon);
+    lvglSetMenuButtonIconMode(lvglHomeMediaBtn, "Media", LV_SYMBOL_AUDIO, &img_music_small_icon, 8, 12);
+    lvglSetMenuButtonIconMode(lvglHomeInfoBtn, "Info", LV_SYMBOL_WARNING, &img_info_small_icon);
+    lvglSetMenuButtonIconMode(lvglHomeGamesBtn, "Games", LV_SYMBOL_PLAY, &img_games_small_icon);
+    lvglSetMenuButtonIconMode(lvglHomeConfigBtn, "Config", LV_SYMBOL_SETTINGS, &img_config_small_icon);
+
+    lvglSetMenuButtonIconMode(lvglAirplaneBtn,
+                              airplaneModeEnabled ? "Airplane: ON" : "Airplane: OFF",
+                              LV_SYMBOL_CLOSE,
+                              &img_airplane_mode_icon);
+    lvglSetMenuButtonIconMode(lvglApModeBtn,
+                              wifiSessionApMode ? "AP Mode: ON" : "AP Mode: OFF",
+                              LV_SYMBOL_WIFI,
+                              &img_ap_small_icon);
+    lvglAirplaneBtnLabel = lvglAirplaneBtn ? lv_obj_get_child(lvglAirplaneBtn, 0) : nullptr;
+    lvglApModeBtnLabel = lvglApModeBtn ? lv_obj_get_child(lvglApModeBtn, 0) : nullptr;
+
+    lvglSetMenuButtonIconMode(lvglConfigWifiBtn, "WiFi Config", LV_SYMBOL_WIFI, &img_wifi_small_icon, 8, 12);
+    lvglSetMenuButtonIconMode(lvglConfigHc12Btn, "HC12 Config", LV_SYMBOL_SETTINGS, &img_radio_small_icon, 8, 12);
+    lvglSetMenuButtonIconMode(lvglConfigStyleBtn, "Style", LV_SYMBOL_SETTINGS, &img_styles_small_icon, 8, 12);
+    lvglSetMenuButtonIconMode(lvglConfigMqttBtn, "MQTT Config", LV_SYMBOL_SETTINGS, &img_mqtt_conf_small_icon, 8, 12);
+    lvglSetMenuButtonIconMode(lvglConfigOtaBtn, "OTA Updates", LV_SYMBOL_UPLOAD, &img_ota_small_icon, 8, 12);
 }
 
 static void lvglApplyMomentaryButtonStyle(lv_obj_t *btn, lv_obj_t *label, lv_color_t bodyCol, bool compact)
@@ -5888,6 +5961,7 @@ void lvglOpenChatPeersEvent(lv_event_t *e);
 void lvglChatDiscoveryToggleEvent(lv_event_t *e);
 void lvglOpenStyleScreenEvent(lv_event_t *e);
 void lvglStyleScreensaverToggleEvent(lv_event_t *e);
+void lvglStyleMenuIconsToggleEvent(lv_event_t *e);
 void lvglStyleButtonFlatEvent(lv_event_t *e);
 void lvglStyleButton3dEvent(lv_event_t *e);
 void lvglStyleButtonBlackEvent(lv_event_t *e);
@@ -6102,33 +6176,27 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_flex_flow(homeWrap, LV_FLEX_FLOW_COLUMN);
             lv_obj_set_scrollbar_mode(homeWrap, LV_SCROLLBAR_MODE_OFF);
             lvglStatusLabel = nullptr;
-            lv_obj_t *homeChatBtn = lvglCreateMenuButton(homeWrap, "Chat", lv_color_hex(0x7A4F2F), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CHAT)));
-            lvglAttachMenuButtonImage(homeChatBtn, &img_chat_small_icon);
-            lv_obj_t *homeMediaBtn = lvglCreateMenuButton(homeWrap, "Media", lv_color_hex(0x376B93), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_MEDIA)));
-            lvglAttachMenuButtonImage(homeMediaBtn, &img_music_small_icon, 8, 12);
-            lv_obj_t *homeInfoBtn = lvglCreateMenuButton(homeWrap, "Info", lv_color_hex(0x7750A0), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_INFO)));
-            lvglAttachMenuButtonImage(homeInfoBtn, &img_info_small_icon);
-            lv_obj_t *homeGamesBtn = lvglCreateMenuButton(homeWrap, "Games", lv_color_hex(0x2B7D7D), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_GAMES)));
-            lvglAttachMenuButtonImage(homeGamesBtn, &img_games_small_icon);
-            lv_obj_t *homeConfigBtn = lvglCreateMenuButton(homeWrap, "Config", lv_color_hex(0x925A73), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CONFIG)));
-            lvglAttachMenuButtonImage(homeConfigBtn, &img_config_small_icon);
+            lvglHomeChatBtn = lvglCreateMenuButton(homeWrap, "Chat", lv_color_hex(0x7A4F2F), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CHAT)));
+            lvglHomeMediaBtn = lvglCreateMenuButton(homeWrap, "Media", lv_color_hex(0x376B93), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_MEDIA)));
+            lvglHomeInfoBtn = lvglCreateMenuButton(homeWrap, "Info", lv_color_hex(0x7750A0), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_INFO)));
+            lvglHomeGamesBtn = lvglCreateMenuButton(homeWrap, "Games", lv_color_hex(0x2B7D7D), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_GAMES)));
+            lvglHomeConfigBtn = lvglCreateMenuButton(homeWrap, "Config", lv_color_hex(0x925A73), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CONFIG)));
             lvglAirplaneBtn = lvglCreateMenuButton(homeWrap, "Airplane: OFF", lv_color_hex(0x8A5A25), lvglAirplaneToggleEvent, nullptr);
             if (lvglAirplaneBtn) {
                 lvglAirplaneBtnLabel = lv_obj_get_child(lvglAirplaneBtn, 0);
-                lvglAttachMenuButtonImage(lvglAirplaneBtn, &img_airplane_mode_icon);
                 lvglApplyAirplaneButtonStyle();
             }
             lvglApModeBtn = lvglCreateMenuButton(homeWrap, "AP Mode: OFF", lv_color_hex(0xA66A2A), lvglApModeEvent, nullptr);
             if (lvglApModeBtn) {
                 lvglApModeBtnLabel = lv_obj_get_child(lvglApModeBtn, 0);
-                lvglAttachMenuButtonImage(lvglApModeBtn, &img_ap_small_icon);
                 lvglApplyApModeButtonStyle();
             }
-            lvglRegisterReorderableItem(homeChatBtn, "ord_home", "chat");
-            lvglRegisterReorderableItem(homeMediaBtn, "ord_home", "media");
-            lvglRegisterReorderableItem(homeInfoBtn, "ord_home", "info");
-            lvglRegisterReorderableItem(homeGamesBtn, "ord_home", "games");
-            lvglRegisterReorderableItem(homeConfigBtn, "ord_home", "config");
+            lvglRefreshPrimaryMenuButtonIcons();
+            lvglRegisterReorderableItem(lvglHomeChatBtn, "ord_home", "chat");
+            lvglRegisterReorderableItem(lvglHomeMediaBtn, "ord_home", "media");
+            lvglRegisterReorderableItem(lvglHomeInfoBtn, "ord_home", "info");
+            lvglRegisterReorderableItem(lvglHomeGamesBtn, "ord_home", "games");
+            lvglRegisterReorderableItem(lvglHomeConfigBtn, "ord_home", "config");
             lvglRegisterReorderableItem(lvglAirplaneBtn, "ord_home", "air");
             lvglRegisterReorderableItem(lvglApModeBtn, "ord_home", "ap");
             lvglApplySavedOrder(homeWrap, "ord_home");
@@ -6514,17 +6582,14 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_style_pad_row(lvglConfigWrap, 10, 0);
             lv_obj_set_flex_flow(lvglConfigWrap, LV_FLEX_FLOW_COLUMN);
             lv_obj_set_scrollbar_mode(lvglConfigWrap, LV_SCROLLBAR_MODE_OFF);
-            lv_obj_t *cfgWifiBtn = lvglCreateMenuButton(lvglConfigWrap, lvglSymbolText(LV_SYMBOL_WIFI, "WiFi Config").c_str(), lv_color_hex(0x3A8F4B), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_WIFI_LIST)));
-            lv_obj_t *cfgHc12Btn = lvglCreateMenuButton(lvglConfigWrap, "HC12 Config", lv_color_hex(0x7A5C2E), lvglOpenHc12ScreenEvent, nullptr);
-            lvglAttachMenuButtonImage(cfgHc12Btn, &img_radio_small_icon, 8, 12);
-            lv_obj_t *cfgStyleBtn = lvglCreateMenuButton(lvglConfigWrap, "Style", lv_color_hex(0x2D6D8E), lvglOpenStyleScreenEvent, nullptr);
-            lvglAttachMenuButtonImage(cfgStyleBtn, &img_styles_small_icon, 8, 12);
-            lv_obj_t *cfgMqttBtn = lvglCreateMenuButton(lvglConfigWrap, "MQTT Config", lv_color_hex(0x6D4B9A), lvglOpenMqttCfgEvent, nullptr);
-            lvglAttachMenuButtonImage(cfgMqttBtn, &img_mqtt_small_icon, 8, 12);
+            lvglConfigWifiBtn = lvglCreateMenuButton(lvglConfigWrap, "WiFi Config", lv_color_hex(0x3A8F4B), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_WIFI_LIST)));
+            lvglConfigHc12Btn = lvglCreateMenuButton(lvglConfigWrap, "HC12 Config", lv_color_hex(0x7A5C2E), lvglOpenHc12ScreenEvent, nullptr);
+            lvglConfigStyleBtn = lvglCreateMenuButton(lvglConfigWrap, "Style", lv_color_hex(0x2D6D8E), lvglOpenStyleScreenEvent, nullptr);
+            lvglConfigMqttBtn = lvglCreateMenuButton(lvglConfigWrap, "MQTT Config", lv_color_hex(0x6D4B9A), lvglOpenMqttCfgEvent, nullptr);
             lv_obj_t *cfgMqttCtlBtn = lvglCreateMenuButton(lvglConfigWrap, lvglSymbolText(LV_SYMBOL_LIST, "MQTT Controls").c_str(), lv_color_hex(0x2D6D8E), lvglOpenMqttCtrlEvent, nullptr);
             lv_obj_t *cfgShotBtn = lvglCreateMenuButton(lvglConfigWrap, lvglSymbolText(LV_SYMBOL_IMAGE, "Screenshot").c_str(), lv_color_hex(0x6B5B2A), lvglScreenshotEvent, nullptr);
-            lv_obj_t *cfgOtaBtn = lvglCreateMenuButton(lvglConfigWrap, "OTA Updates", lv_color_hex(0x2E6F95), lvglOpenOtaScreenEvent, nullptr);
-            lvglAttachMenuButtonImage(cfgOtaBtn, &img_ota_small_icon, 8, 12);
+            lvglConfigOtaBtn = lvglCreateMenuButton(lvglConfigWrap, "OTA Updates", lv_color_hex(0x2E6F95), lvglOpenOtaScreenEvent, nullptr);
+            lvglRefreshPrimaryMenuButtonIcons();
 
             lv_obj_t *nameWrap = lv_obj_create(lvglConfigWrap);
             lv_obj_set_size(nameWrap, lv_pct(100), LV_SIZE_CONTENT);
@@ -6657,13 +6722,13 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_slider_set_range(lvglRgbLedSlider, 0, 100);
             lv_obj_add_event_cb(lvglRgbLedSlider, lvglRgbLedEvent, LV_EVENT_VALUE_CHANGED, nullptr);
             lvglApplyConfigScreenControlStyles();
-            lvglRegisterReorderableItem(cfgWifiBtn, "ord_cfg", "wifi");
-            lvglRegisterReorderableItem(cfgHc12Btn, "ord_cfg", "hc12");
-            lvglRegisterReorderableItem(cfgStyleBtn, "ord_cfg", "style");
-            lvglRegisterReorderableItem(cfgMqttBtn, "ord_cfg", "mqtt");
+            lvglRegisterReorderableItem(lvglConfigWifiBtn, "ord_cfg", "wifi");
+            lvglRegisterReorderableItem(lvglConfigHc12Btn, "ord_cfg", "hc12");
+            lvglRegisterReorderableItem(lvglConfigStyleBtn, "ord_cfg", "style");
+            lvglRegisterReorderableItem(lvglConfigMqttBtn, "ord_cfg", "mqtt");
             lvglRegisterReorderableItem(cfgMqttCtlBtn, "ord_cfg", "mctl");
             lvglRegisterReorderableItem(cfgShotBtn, "ord_cfg", "shot");
-            lvglRegisterReorderableItem(cfgOtaBtn, "ord_cfg", "ota");
+            lvglRegisterReorderableItem(lvglConfigOtaBtn, "ord_cfg", "ota");
             lvglRegisterReorderableItem(nameWrap, "ord_cfg", "name");
             lvglRegisterReorderableItem(brightWrap, "ord_cfg", "bright");
             lvglRegisterReorderableItem(volWrap, "ord_cfg", "vol");
@@ -6680,6 +6745,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglStyleButton3dBtnLabel = nullptr;
             lvglStyleButtonBlackBtn = nullptr;
             lvglStyleButtonBlackBtnLabel = nullptr;
+            lvglStyleMenuIconsSw = nullptr;
             lvglStyleTimezoneDd = nullptr;
             lvglStyleTopCenterNameBtn = nullptr;
             lvglStyleTopCenterNameBtnLabel = nullptr;
@@ -6715,6 +6781,27 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_add_event_cb(lvglStyleScreensaverSw, lvglGestureBlockEvent, LV_EVENT_PRESSED, nullptr);
             lv_obj_add_event_cb(lvglStyleScreensaverSw, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
             lv_obj_add_event_cb(lvglStyleScreensaverSw, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
+
+            lv_obj_t *menuIconsRow = lv_obj_create(wrap);
+            lv_obj_set_size(menuIconsRow, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_color(menuIconsRow, lv_color_hex(0x18222D), 0);
+            lv_obj_set_style_border_width(menuIconsRow, 0, 0);
+            lv_obj_set_style_radius(menuIconsRow, 12, 0);
+            lv_obj_set_style_pad_all(menuIconsRow, 12, 0);
+            lv_obj_set_style_pad_column(menuIconsRow, 8, 0);
+            lv_obj_set_flex_flow(menuIconsRow, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(menuIconsRow, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *menuIconsLbl = lv_label_create(menuIconsRow);
+            lv_label_set_text(menuIconsLbl, "3D Icons");
+            lv_obj_set_style_text_color(menuIconsLbl, lv_color_hex(0xE5ECF3), 0);
+            lv_obj_set_flex_grow(menuIconsLbl, 1);
+
+            lvglStyleMenuIconsSw = lv_switch_create(menuIconsRow);
+            lv_obj_add_event_cb(lvglStyleMenuIconsSw, lvglStyleMenuIconsToggleEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+            lv_obj_add_event_cb(lvglStyleMenuIconsSw, lvglGestureBlockEvent, LV_EVENT_PRESSED, nullptr);
+            lv_obj_add_event_cb(lvglStyleMenuIconsSw, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
+            lv_obj_add_event_cb(lvglStyleMenuIconsSw, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
 
             lv_obj_t *buttonStyleWrap = lv_obj_create(wrap);
             lv_obj_set_size(buttonStyleWrap, lv_pct(100), LV_SIZE_CONTENT);
@@ -11952,6 +12039,19 @@ void lvglStyleScreensaverToggleEvent(lv_event_t *e)
     lvglRefreshStyleUi();
 }
 
+void lvglStyleMenuIconsToggleEvent(lv_event_t *e)
+{
+    if (lvglStyleUiSyncing) return;
+    lv_obj_t *target = e ? lv_event_get_target(e) : nullptr;
+    menuCustomIconsEnabled = target && lv_obj_has_state(target, LV_STATE_CHECKED);
+    uiPrefs.begin("ui", false);
+    uiPrefs.putBool("menu_3d_i", menuCustomIconsEnabled);
+    uiPrefs.end();
+    lvglRefreshPrimaryMenuButtonIcons();
+    lvglRefreshConfigUi();
+    lvglRefreshStyleUi();
+}
+
 void lvglStyleButtonFlatEvent(lv_event_t *e)
 {
     (void)e;
@@ -12070,6 +12170,13 @@ void lvglRefreshStyleUi()
         if (screensaverEnabled != checked) {
             if (screensaverEnabled) lv_obj_add_state(lvglStyleScreensaverSw, LV_STATE_CHECKED);
             else lv_obj_clear_state(lvglStyleScreensaverSw, LV_STATE_CHECKED);
+        }
+    }
+    if (lvglStyleMenuIconsSw) {
+        const bool checked = lv_obj_has_state(lvglStyleMenuIconsSw, LV_STATE_CHECKED);
+        if (menuCustomIconsEnabled != checked) {
+            if (menuCustomIconsEnabled) lv_obj_add_state(lvglStyleMenuIconsSw, LV_STATE_CHECKED);
+            else lv_obj_clear_state(lvglStyleMenuIconsSw, LV_STATE_CHECKED);
         }
     }
     if (lvglStyleTimeoutSlider) {
@@ -12199,9 +12306,22 @@ void lvglSaveDeviceNameEvent(lv_event_t *e)
 
 void lvglRefreshConfigUi()
 {
-    if (lvglAirplaneBtnLabel) lvglLabelSetTextIfChanged(lvglAirplaneBtnLabel, airplaneModeEnabled ? "Airplane: ON" : "Airplane: OFF");
+    lvglRefreshPrimaryMenuButtonIcons();
+    if (lvglAirplaneBtnLabel) {
+        lvglLabelSetTextIfChanged(lvglAirplaneBtnLabel,
+                                  menuCustomIconsEnabled ? (airplaneModeEnabled ? "Airplane: ON" : "Airplane: OFF")
+                                                         : lvglSymbolText(LV_SYMBOL_CLOSE,
+                                                                          airplaneModeEnabled ? "Airplane: ON"
+                                                                                              : "Airplane: OFF"));
+    }
     lvglApplyAirplaneButtonStyle();
-    if (lvglApModeBtnLabel) lvglLabelSetTextIfChanged(lvglApModeBtnLabel, wifiSessionApMode ? "AP Mode: ON" : "AP Mode: OFF");
+    if (lvglApModeBtnLabel) {
+        lvglLabelSetTextIfChanged(lvglApModeBtnLabel,
+                                  menuCustomIconsEnabled ? (wifiSessionApMode ? "AP Mode: ON" : "AP Mode: OFF")
+                                                         : lvglSymbolText(LV_SYMBOL_WIFI,
+                                                                          wifiSessionApMode ? "AP Mode: ON"
+                                                                                            : "AP Mode: OFF"));
+    }
     lvglApplyApModeButtonStyle();
     if (lvglConfigDeviceNameTa) {
         String current = lv_textarea_get_text(lvglConfigDeviceNameTa);
@@ -15786,6 +15906,7 @@ void appendUiSettings(JsonDocument &doc)
     doc["WsRebootOnDisconnect"] = uiPrefs.getBool("ws_reboot", wsRebootOnDisconnectEnabled) ? 1 : 0;
     doc["AirplaneMode"] = uiPrefs.getBool("airplane", airplaneModeEnabled) ? 1 : 0;
     doc["ButtonStyle"] = uiPrefs.getUChar("btn_style", static_cast<uint8_t>(uiButtonStyleMode));
+    doc["Menu3DIcons"] = uiPrefs.getBool("menu_3d_i", menuCustomIconsEnabled) ? 1 : 0;
     doc["TopBarCenter"] = uiPrefs.getUChar("top_mid", static_cast<uint8_t>(topBarCenterMode));
     doc["TopBarTimezone"] = uiPrefs.getInt("tz_gmt", static_cast<int>(topBarTimezoneGmtOffset));
     doc["TelemetryMaxKB"] = uiPrefs.getUInt("tele_kb", telemetryMaxKB);
@@ -15826,6 +15947,7 @@ void loadUiRuntimeConfig()
     wsRebootOnDisconnectEnabled = uiPrefs.getBool("ws_reboot", false);
     webServerEnabled = uiPrefs.getBool("web_srv", true);
     airplaneModeEnabled = uiPrefs.getBool("airplane", false);
+    menuCustomIconsEnabled = uiPrefs.getBool("menu_3d_i", false);
     const uint8_t rawButtonStyle = uiPrefs.getUChar("btn_style", static_cast<uint8_t>(UI_BUTTON_STYLE_3D));
     if (rawButtonStyle == static_cast<uint8_t>(UI_BUTTON_STYLE_FLAT)) uiButtonStyleMode = UI_BUTTON_STYLE_FLAT;
     else if (rawButtonStyle == static_cast<uint8_t>(UI_BUTTON_STYLE_BLACK)) uiButtonStyleMode = UI_BUTTON_STYLE_BLACK;
@@ -16048,6 +16170,15 @@ bool handleUiSettingMessage(const char *msg)
         uiPrefs.putUChar("btn_style", static_cast<uint8_t>(uiButtonStyleMode));
         if (lvglReady) {
             lvglRefreshAllButtonStyles();
+            lvglRefreshStyleUi();
+        }
+    }
+    else if (strcmp(key, "Menu3DIcons") == 0) {
+        menuCustomIconsEnabled = atoi(value) != 0;
+        uiPrefs.putBool("menu_3d_i", menuCustomIconsEnabled);
+        if (lvglReady) {
+            lvglRefreshPrimaryMenuButtonIcons();
+            lvglRefreshConfigUi();
             lvglRefreshStyleUi();
         }
     }
