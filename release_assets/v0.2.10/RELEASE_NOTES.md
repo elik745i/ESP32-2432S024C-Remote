@@ -16,6 +16,7 @@ This release refines the new swipe-back interaction, hardens it across all suppo
 - Incoming chat messages now play a short notification beep on the speaker output when media playback is idle.
 - Home and config menu entries now use embedded custom icons instead of LVGL text symbols for a cleaner menu layout.
 - `WiFi Config` and `MQTT Config` now use dedicated embedded config icons instead of generic symbols.
+- Additional `Config` rows now have dedicated 3D icons, including `MQTT Controls` and `Screenshot`, and the airplane icon asset has been refreshed.
 
 ### Performance and Stability
 

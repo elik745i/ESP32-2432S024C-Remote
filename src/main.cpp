@@ -39,10 +39,12 @@
 #include "generated/img_info_small_icon.h"
 #include "generated/img_ap_small_icon.h"
 #include "generated/img_music_small_icon.h"
+#include "generated/img_mqtt_controls_small_icon.h"
 #include "generated/img_mqtt_conf_small_icon.h"
 #include "generated/img_mqtt_small_icon.h"
 #include "generated/img_ota_small_icon.h"
 #include "generated/img_radio_small_icon.h"
+#include "generated/img_screenshot_small_icon.h"
 #include "generated/img_styles_small_icon.h"
 #include "generated/img_wifi_small_icon.h"
 #include "generated/recovery_browser_asset.h"
@@ -822,6 +824,8 @@ static lv_obj_t *lvglConfigWifiBtn = nullptr;
 static lv_obj_t *lvglConfigHc12Btn = nullptr;
 static lv_obj_t *lvglConfigStyleBtn = nullptr;
 static lv_obj_t *lvglConfigMqttBtn = nullptr;
+static lv_obj_t *lvglConfigMqttControlsBtn = nullptr;
+static lv_obj_t *lvglConfigScreenshotBtn = nullptr;
 static lv_obj_t *lvglConfigOtaBtn = nullptr;
 static lv_obj_t *lvglConfigWrap = nullptr;
 static lv_obj_t *lvglStyleScreensaverSw = nullptr;
@@ -4396,6 +4400,8 @@ static void lvglRefreshPrimaryMenuButtonIcons()
     lvglSetMenuButtonIconMode(lvglConfigHc12Btn, "HC12 Config", LV_SYMBOL_SETTINGS, &img_radio_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(lvglConfigStyleBtn, "Style", LV_SYMBOL_SETTINGS, &img_styles_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(lvglConfigMqttBtn, "MQTT Config", LV_SYMBOL_SETTINGS, &img_mqtt_conf_small_icon, 8, 12);
+    lvglSetMenuButtonIconMode(lvglConfigMqttControlsBtn, "MQTT Controls", LV_SYMBOL_LIST, &img_mqtt_controls_small_icon, 8, 12);
+    lvglSetMenuButtonIconMode(lvglConfigScreenshotBtn, "Screenshot", LV_SYMBOL_IMAGE, &img_screenshot_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(lvglConfigOtaBtn, "OTA Updates", LV_SYMBOL_UPLOAD, &img_ota_small_icon, 8, 12);
 }
 
@@ -6586,8 +6592,8 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglConfigHc12Btn = lvglCreateMenuButton(lvglConfigWrap, "HC12 Config", lv_color_hex(0x7A5C2E), lvglOpenHc12ScreenEvent, nullptr);
             lvglConfigStyleBtn = lvglCreateMenuButton(lvglConfigWrap, "Style", lv_color_hex(0x2D6D8E), lvglOpenStyleScreenEvent, nullptr);
             lvglConfigMqttBtn = lvglCreateMenuButton(lvglConfigWrap, "MQTT Config", lv_color_hex(0x6D4B9A), lvglOpenMqttCfgEvent, nullptr);
-            lv_obj_t *cfgMqttCtlBtn = lvglCreateMenuButton(lvglConfigWrap, lvglSymbolText(LV_SYMBOL_LIST, "MQTT Controls").c_str(), lv_color_hex(0x2D6D8E), lvglOpenMqttCtrlEvent, nullptr);
-            lv_obj_t *cfgShotBtn = lvglCreateMenuButton(lvglConfigWrap, lvglSymbolText(LV_SYMBOL_IMAGE, "Screenshot").c_str(), lv_color_hex(0x6B5B2A), lvglScreenshotEvent, nullptr);
+            lvglConfigMqttControlsBtn = lvglCreateMenuButton(lvglConfigWrap, "MQTT Controls", lv_color_hex(0x2D6D8E), lvglOpenMqttCtrlEvent, nullptr);
+            lvglConfigScreenshotBtn = lvglCreateMenuButton(lvglConfigWrap, "Screenshot", lv_color_hex(0x6B5B2A), lvglScreenshotEvent, nullptr);
             lvglConfigOtaBtn = lvglCreateMenuButton(lvglConfigWrap, "OTA Updates", lv_color_hex(0x2E6F95), lvglOpenOtaScreenEvent, nullptr);
             lvglRefreshPrimaryMenuButtonIcons();
 
@@ -6726,8 +6732,8 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglRegisterReorderableItem(lvglConfigHc12Btn, "ord_cfg", "hc12");
             lvglRegisterReorderableItem(lvglConfigStyleBtn, "ord_cfg", "style");
             lvglRegisterReorderableItem(lvglConfigMqttBtn, "ord_cfg", "mqtt");
-            lvglRegisterReorderableItem(cfgMqttCtlBtn, "ord_cfg", "mctl");
-            lvglRegisterReorderableItem(cfgShotBtn, "ord_cfg", "shot");
+            lvglRegisterReorderableItem(lvglConfigMqttControlsBtn, "ord_cfg", "mctl");
+            lvglRegisterReorderableItem(lvglConfigScreenshotBtn, "ord_cfg", "shot");
             lvglRegisterReorderableItem(lvglConfigOtaBtn, "ord_cfg", "ota");
             lvglRegisterReorderableItem(nameWrap, "ord_cfg", "name");
             lvglRegisterReorderableItem(brightWrap, "ord_cfg", "bright");
