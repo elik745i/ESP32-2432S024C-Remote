@@ -235,7 +235,7 @@ static constexpr uint16_t LIGHT_RAW_CAL_MAX = 600;
 static constexpr bool LIGHT_LOG_RAW_TO_SERIAL = false;
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.2.9";
+static constexpr const char *FW_VERSION = "0.2.10";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -437,7 +437,7 @@ void lvglRefreshMediaPlayerUi();
 void lvglHideKeyboard();
 void networkSuspendForAudio();
 bool networkResumeAfterAudio();
-void lvglNavigateBackBySwipe();
+void lvglNavigateBackBySwipe(lv_scr_load_anim_t anim = LV_SCR_LOAD_ANIM_MOVE_RIGHT);
 bool captureScreenToJpeg(String &savedPathOut, String &errorOut);
 String mqttDefaultButtonName(int idx);
 String mqttButtonPayloadForIndex(int idx);
@@ -642,6 +642,8 @@ static constexpr int16_t SWIPE_BACK_MIN_DX = 52;
 static constexpr int16_t SWIPE_BACK_MAX_DY = 30;
 static constexpr int16_t SWIPE_LOCK_MIN_DX = 18;
 static constexpr int16_t SWIPE_CANCEL_VERTICAL_DY = 18;
+static constexpr uint16_t SWIPE_BACK_SNAP_MIN_MS = 36;
+static constexpr uint8_t SWIPE_BACK_COMPLETE_PERCENT = 30;
 static constexpr unsigned long SWIPE_BACK_MAX_MS = 550;
 static constexpr int16_t DOUBLE_TAP_MAX_MOVE = 12;
 static constexpr int16_t DOUBLE_TAP_MAX_GAP = 350;
@@ -846,9 +848,14 @@ static int16_t lvglSwipeStartY = 0;
 static int16_t lvglSwipeLastX = 0;
 static int16_t lvglSwipeLastY = 0;
 static unsigned long lvglSwipeStartMs = 0;
-static bool lvglSwipeBackPending = false;
 static bool lvglSwipeCandidate = false;
 static bool lvglSwipeHorizontalLocked = false;
+static lv_obj_t *lvglSwipeVisualScreen = nullptr;
+static lv_obj_t *lvglSwipePreviewImg = nullptr;
+static lv_img_dsc_t *lvglSwipePreviewSnapshot = nullptr;
+static int16_t lvglSwipeVisualOffsetX = 0;
+static bool lvglSwipeVisualActive = false;
+static bool lvglSwipeVisualAnimating = false;
 static bool lvglGestureBlocked = false;
 static bool lvglReorderOwnsHorizontalGesture = false;
 static unsigned long lvglClickSuppressUntilMs = 0;
@@ -2785,6 +2792,195 @@ static inline void lvglResetGestureTracking()
     lvglSwipeHorizontalLocked = false;
 }
 
+static inline lv_coord_t lvglClampSwipeBackOffset(int dx)
+{
+    return static_cast<lv_coord_t>(constrain(dx, 0, DISPLAY_WIDTH));
+}
+
+static bool lvglGetSwipeBackPreviewTarget(UiScreen current, UiScreen &target)
+{
+    switch (current) {
+        case UI_CHAT:
+            if (currentChatPeerKey.isEmpty()) {
+                target = UI_HOME;
+                return true;
+            }
+            return false;
+        case UI_MEDIA:
+        case UI_INFO:
+        case UI_GAMES:
+        case UI_CONFIG:
+            target = UI_HOME;
+            return true;
+        case UI_CHAT_PEERS:
+            target = UI_CHAT;
+            return true;
+        case UI_WIFI_LIST:
+        case UI_CONFIG_STYLE:
+        case UI_CONFIG_OTA:
+        case UI_CONFIG_HC12:
+        case UI_CONFIG_MQTT_CONFIG:
+        case UI_CONFIG_MQTT_CONTROLS:
+            target = UI_CONFIG;
+            return true;
+        case UI_CONFIG_HC12_TERMINAL:
+        case UI_CONFIG_HC12_INFO:
+            target = UI_CONFIG_HC12;
+            return true;
+        case UI_GAME_SNAKE:
+        case UI_GAME_TETRIS:
+        case UI_GAME_CHECKERS:
+        case UI_GAME_SNAKE3D:
+            target = UI_GAMES;
+            return true;
+        default:
+            return false;
+    }
+}
+
+static void lvglSetObjXAnim(void *obj, int32_t v)
+{
+    if (!obj) return;
+    lv_obj_set_x(static_cast<lv_obj_t *>(obj), static_cast<lv_coord_t>(v));
+}
+
+static uint16_t lvglSwipeBackAnimDuration(lv_coord_t fromX, lv_coord_t toX)
+{
+    const uint32_t distance = static_cast<uint32_t>(abs(static_cast<int32_t>(toX) - static_cast<int32_t>(fromX)));
+    if (distance == 0U) return 0;
+    const uint32_t scaled = (distance * UI_ANIM_MS) / max<int16_t>(DISPLAY_WIDTH, 1);
+    return static_cast<uint16_t>(constrain(scaled, static_cast<uint32_t>(SWIPE_BACK_SNAP_MIN_MS), static_cast<uint32_t>(UI_ANIM_MS)));
+}
+
+static void lvglReleaseSwipeBackPreview()
+{
+    if (lvglSwipePreviewImg && lv_obj_is_valid(lvglSwipePreviewImg)) lv_obj_del(lvglSwipePreviewImg);
+    lvglSwipePreviewImg = nullptr;
+    if (lvglSwipePreviewSnapshot) lv_snapshot_free(lvglSwipePreviewSnapshot);
+    lvglSwipePreviewSnapshot = nullptr;
+}
+
+static bool lvglEnsureSwipeBackPreviewMounted()
+{
+    if (lvglKeyboardVisible()) return false;
+    if (lvglSwipePreviewImg && lv_obj_is_valid(lvglSwipePreviewImg) && lvglSwipePreviewSnapshot) return true;
+    UiScreen targetUi = UI_HOME;
+    if (!lvglGetSwipeBackPreviewTarget(uiScreen, targetUi)) return false;
+
+    lvglEnsureScreenBuilt(targetUi);
+    lv_obj_t *targetScreen = lvglScreenForUi(targetUi);
+    if (!targetScreen || !lv_obj_is_valid(targetScreen) || lv_scr_act() == targetScreen) return false;
+
+    lv_obj_update_layout(targetScreen);
+    lvglReleaseSwipeBackPreview();
+    lvglSwipePreviewSnapshot = lv_snapshot_take(targetScreen, LV_IMG_CF_TRUE_COLOR);
+    if (!lvglSwipePreviewSnapshot) return false;
+
+    lvglSwipePreviewImg = lv_img_create(lv_layer_top());
+    if (!lvglSwipePreviewImg) {
+        lvglReleaseSwipeBackPreview();
+        return false;
+    }
+    lv_obj_clear_flag(lvglSwipePreviewImg, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(lvglSwipePreviewImg, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_img_set_src(lvglSwipePreviewImg, lvglSwipePreviewSnapshot);
+    lv_obj_set_pos(lvglSwipePreviewImg, static_cast<lv_coord_t>(lvglSwipeVisualOffsetX - DISPLAY_WIDTH), 0);
+    lv_obj_move_background(lvglSwipePreviewImg);
+    return true;
+}
+
+static void lvglResetSwipeBackVisualState(bool resetScreenX = true)
+{
+    if (lvglSwipeVisualScreen && lv_obj_is_valid(lvglSwipeVisualScreen)) {
+        lv_anim_del(lvglSwipeVisualScreen, lvglSetObjXAnim);
+        if (resetScreenX) lv_obj_set_x(lvglSwipeVisualScreen, 0);
+    }
+    if (lvglSwipePreviewImg && lv_obj_is_valid(lvglSwipePreviewImg)) {
+        lv_anim_del(lvglSwipePreviewImg, lvglSetObjXAnim);
+    }
+    lvglReleaseSwipeBackPreview();
+    lvglSwipeVisualScreen = nullptr;
+    lvglSwipeVisualOffsetX = 0;
+    lvglSwipeVisualActive = false;
+    lvglSwipeVisualAnimating = false;
+}
+
+static void lvglApplySwipeBackVisual(lv_coord_t offsetX)
+{
+    lv_obj_t *screen = lv_scr_act();
+    if (!screen || !lv_obj_is_valid(screen)) return;
+    if (lvglSwipeVisualScreen && lvglSwipeVisualScreen != screen) {
+        lvglResetSwipeBackVisualState(true);
+    }
+    lvglSwipeVisualScreen = screen;
+    lv_anim_del(screen, lvglSetObjXAnim);
+    lvglSwipeVisualAnimating = false;
+    lvglSwipeVisualOffsetX = offsetX;
+    lvglSwipeVisualActive = offsetX > 0;
+    lvglEnsureSwipeBackPreviewMounted();
+    if (lvglSwipePreviewImg && lv_obj_is_valid(lvglSwipePreviewImg)) {
+        lv_obj_set_x(lvglSwipePreviewImg, static_cast<lv_coord_t>(offsetX - DISPLAY_WIDTH));
+    }
+    lv_obj_set_x(screen, offsetX);
+}
+
+static void lvglSwipeBackVisualAnimReady(lv_anim_t *a)
+{
+    lv_obj_t *screen = a ? static_cast<lv_obj_t *>(a->var) : nullptr;
+    const bool navigateBack = a && lv_anim_get_user_data(a) != nullptr;
+    if (screen && lv_obj_is_valid(screen)) lv_obj_set_x(screen, 0);
+    lvglSwipeVisualScreen = nullptr;
+    lvglSwipeVisualOffsetX = 0;
+    lvglSwipeVisualActive = false;
+    lvglSwipeVisualAnimating = false;
+    if (navigateBack) lvglNavigateBackBySwipe(LV_SCR_LOAD_ANIM_NONE);
+}
+
+static void lvglAnimateSwipeBackVisual(lv_coord_t targetX, bool navigateBack)
+{
+    lv_obj_t *screen = lvglSwipeVisualScreen;
+    if (!screen || !lv_obj_is_valid(screen)) {
+        lvglResetSwipeBackVisualState(false);
+        if (navigateBack) lvglNavigateBackBySwipe(LV_SCR_LOAD_ANIM_NONE);
+        return;
+    }
+
+    lv_anim_del(screen, lvglSetObjXAnim);
+    const lv_coord_t startX = lvglSwipeVisualActive ? lvglSwipeVisualOffsetX : static_cast<lv_coord_t>(lv_obj_get_x(screen));
+    lv_obj_t *previewImg = (lvglSwipePreviewImg && lv_obj_is_valid(lvglSwipePreviewImg)) ? lvglSwipePreviewImg : nullptr;
+    const lv_coord_t previewStartX = previewImg ? static_cast<lv_coord_t>(lv_obj_get_x(previewImg)) : 0;
+    const lv_coord_t previewTargetX = navigateBack ? 0 : static_cast<lv_coord_t>(-DISPLAY_WIDTH);
+    if (startX == targetX) {
+        lvglResetSwipeBackVisualState(true);
+        if (navigateBack) lvglNavigateBackBySwipe(LV_SCR_LOAD_ANIM_NONE);
+        return;
+    }
+
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, screen);
+    lv_anim_set_exec_cb(&a, lvglSetObjXAnim);
+    lv_anim_set_values(&a, startX, targetX);
+    lv_anim_set_time(&a, lvglSwipeBackAnimDuration(startX, targetX));
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    lv_anim_set_ready_cb(&a, lvglSwipeBackVisualAnimReady);
+    lv_anim_set_user_data(&a, reinterpret_cast<void *>(navigateBack ? 1 : 0));
+    if (previewImg) {
+        lv_anim_t previewAnim;
+        lv_anim_init(&previewAnim);
+        lv_anim_set_var(&previewAnim, previewImg);
+        lv_anim_set_exec_cb(&previewAnim, lvglSetObjXAnim);
+        lv_anim_set_values(&previewAnim, previewStartX, previewTargetX);
+        lv_anim_set_time(&previewAnim, lvglSwipeBackAnimDuration(previewStartX, previewTargetX));
+        lv_anim_set_path_cb(&previewAnim, lv_anim_path_ease_out);
+        lv_anim_start(&previewAnim);
+    }
+    lvglSwipeVisualOffsetX = startX;
+    lvglSwipeVisualActive = true;
+    lvglSwipeVisualAnimating = true;
+    lv_anim_start(&a);
+}
+
 static bool lvglTouchOwnsHorizontalGesture()
 {
     if (lvglReorderOwnsHorizontalGesture) return true;
@@ -3588,10 +3784,12 @@ struct UiReorderDragState {
     lv_obj_t *obj;
     lv_obj_t *parent;
     unsigned long pressedAtMs;
+    lv_point_t pressPoint;
     lv_coord_t fingerOffsetY;
     lv_coord_t originalWidth;
     lv_coord_t originalHeight;
     bool active;
+    bool cancelled;
     bool parentOverflowTemporarilyEnabled;
 };
 
@@ -3801,13 +3999,18 @@ static void lvglReorderItemEvent(lv_event_t *e)
 
     const lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_PRESSED) {
+        lv_indev_t *indev = lv_indev_get_act();
+        lv_point_t pt = {0, 0};
+        if (indev) lv_indev_get_point(indev, &pt);
         lvglReorderDrag.obj = obj;
         lvglReorderDrag.parent = entry->parent;
         lvglReorderDrag.pressedAtMs = millis();
+        lvglReorderDrag.pressPoint = pt;
         lvglReorderDrag.fingerOffsetY = 0;
         lvglReorderDrag.originalWidth = lv_obj_get_width(obj);
         lvglReorderDrag.originalHeight = lv_obj_get_height(obj);
         lvglReorderDrag.active = false;
+        lvglReorderDrag.cancelled = false;
         lvglReorderDrag.parentOverflowTemporarilyEnabled = false;
         return;
     }
@@ -3820,6 +4023,17 @@ static void lvglReorderItemEvent(lv_event_t *e)
         lv_indev_get_point(indev, &pt);
 
         if (!lvglReorderDrag.active) {
+            if (!lvglReorderDrag.cancelled) {
+                const int dx = static_cast<int>(pt.x) - static_cast<int>(lvglReorderDrag.pressPoint.x);
+                const int dy = static_cast<int>(pt.y) - static_cast<int>(lvglReorderDrag.pressPoint.y);
+                const int absDx = abs(dx);
+                const int absDy = abs(dy);
+                if ((absDx >= SWIPE_LOCK_MIN_DX && absDx > (absDy * 2)) ||
+                    (absDy >= SWIPE_CANCEL_VERTICAL_DY && absDy > absDx)) {
+                    lvglReorderDrag.cancelled = true;
+                }
+            }
+            if (lvglReorderDrag.cancelled) return;
             if (static_cast<unsigned long>(millis() - lvglReorderDrag.pressedAtMs) < UI_REORDER_HOLD_MS) return;
             lv_area_t startArea;
             lv_obj_get_coords(obj, &startArea);
@@ -3899,7 +4113,12 @@ static void lvglReorderItemEvent(lv_event_t *e)
     if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
         if (lvglReorderDrag.obj == obj) {
             const bool persistOrder = lvglReorderDrag.active;
-            lvglEndReorderDrag(persistOrder);
+            if (lvglReorderDrag.active) lvglEndReorderDrag(persistOrder);
+            else {
+                lvglReorderDrag = {};
+                lvglGestureBlocked = false;
+                lvglReorderOwnsHorizontalGesture = false;
+            }
         } else {
             lvglReorderOwnsHorizontalGesture = false;
         }
@@ -5541,12 +5760,16 @@ static bool checkersPromotionContinuesCapture();
 inline void lvglLoadScreen(lv_obj_t *target, lv_scr_load_anim_t anim)
 {
     if (!target) return;
-    lvglSwipeBackPending = false;
+    lvglResetSwipeBackVisualState(true);
     lvglResetGestureTracking();
     lvglGestureBlocked = false;
     lvglReorderOwnsHorizontalGesture = false;
     if (lvglTouchIndev) lv_indev_reset(lvglTouchIndev, nullptr);
-    lv_scr_load_anim(target, anim, UI_ANIM_MS, 0, false);
+    if (anim == LV_SCR_LOAD_ANIM_NONE) {
+        lv_scr_load_anim(target, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
+    } else {
+        lv_scr_load_anim(target, anim, UI_ANIM_MS, 0, false);
+    }
 }
 
 static bool uiScreenSupportsSwipeBack(UiScreen screen)
@@ -7257,7 +7480,7 @@ void lvglOpenScreen(UiScreen screen, lv_scr_load_anim_t anim)
     lvglLoadScreen(target, anim);
 }
 
-void lvglNavigateBackBySwipe()
+void lvglNavigateBackBySwipe(lv_scr_load_anim_t anim)
 {
     const UiScreen prev = uiScreen;
     if (!lvglReady) return;
@@ -7271,41 +7494,41 @@ void lvglNavigateBackBySwipe()
                 lvglRefreshChatContactsUi();
                 lvglRefreshChatUi();
             } else {
-                lvglOpenScreen(UI_HOME, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
+                lvglOpenScreen(UI_HOME, anim);
             }
             break;
         case UI_MEDIA:
         case UI_INFO:
         case UI_GAMES:
         case UI_CONFIG:
-            lvglOpenScreen(UI_HOME, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
+            lvglOpenScreen(UI_HOME, anim);
             break;
         case UI_CHAT_PEERS:
-            lvglOpenScreen(UI_CHAT, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
+            lvglOpenScreen(UI_CHAT, anim);
             break;
         case UI_WIFI_LIST:
-            lvglOpenScreen(UI_CONFIG, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
+            lvglOpenScreen(UI_CONFIG, anim);
             break;
         case UI_CONFIG_STYLE:
-            lvglOpenScreen(UI_CONFIG, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
+            lvglOpenScreen(UI_CONFIG, anim);
             break;
         case UI_CONFIG_OTA:
         case UI_CONFIG_HC12:
-            lvglOpenScreen(UI_CONFIG, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
+            lvglOpenScreen(UI_CONFIG, anim);
             break;
         case UI_CONFIG_HC12_TERMINAL:
         case UI_CONFIG_HC12_INFO:
-            lvglOpenScreen(UI_CONFIG_HC12, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
+            lvglOpenScreen(UI_CONFIG_HC12, anim);
             break;
         case UI_GAME_SNAKE:
         case UI_GAME_TETRIS:
         case UI_GAME_CHECKERS:
         case UI_GAME_SNAKE3D:
-            lvglOpenScreen(UI_GAMES, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
+            lvglOpenScreen(UI_GAMES, anim);
             break;
         case UI_CONFIG_MQTT_CONFIG:
         case UI_CONFIG_MQTT_CONTROLS:
-            lvglOpenScreen(UI_CONFIG, LV_SCR_LOAD_ANIM_MOVE_RIGHT);
+            lvglOpenScreen(UI_CONFIG, anim);
             break;
         default:
             break;
@@ -12053,11 +12276,6 @@ void lvglService()
             p2pPairRequestDiscoveredIdx = -1;
         }
     }
-    if (lvglSwipeBackPending) {
-        lvglSwipeBackPending = false;
-        if (lvglKb && !lv_obj_has_flag(lvglKb, LV_OBJ_FLAG_HIDDEN)) lvglHideKeyboard();
-        else lvglNavigateBackBySwipe();
-    }
     if (lvglMediaRefreshPending) {
         lvglMediaRefreshPending = false;
         lvglRefreshMediaList();
@@ -12111,6 +12329,12 @@ void lvglService()
                     lvglSwipeCandidate = false;
                     lvglSwipeHorizontalLocked = false;
                 }
+                if (lvglSwipeCandidate && lvglSwipeHorizontalLocked) {
+                    lvglApplySwipeBackVisual(lvglClampSwipeBackOffset(dx));
+                }
+            }
+            if ((!lvglSwipeCandidate || !lvglSwipeHorizontalLocked) && lvglSwipeVisualActive && !lvglSwipeVisualAnimating) {
+                lvglResetSwipeBackVisualState(true);
             }
         }
     } else if (lvglSwipeTracking) {
@@ -12118,25 +12342,38 @@ void lvglService()
         const int dx = static_cast<int>(lvglSwipeLastX) - static_cast<int>(lvglSwipeStartX);
         const int dy = static_cast<int>(lvglSwipeLastY) - static_cast<int>(lvglSwipeStartY);
         const unsigned long dt = static_cast<unsigned long>(now - lvglSwipeStartMs);
+        const bool hadSwipeVisual = lvglSwipeVisualActive;
+        const int completionDx = max<int>(1, (DISPLAY_WIDTH * SWIPE_BACK_COMPLETE_PERCENT) / 100);
+        const bool passedCompletionThreshold = hadSwipeVisual && dx >= completionDx;
         const bool tapCandidate = displayAwake &&
                                   !lvglKeyboardVisible() &&
                                   abs(dx) <= DOUBLE_TAP_MAX_MOVE &&
                                   abs(dy) <= DOUBLE_TAP_MAX_MOVE &&
                                   dt <= DOUBLE_TAP_MAX_TAP_MS;
-        if (lvglSwipeCandidate &&
+        const bool swipeComplete =
+            lvglSwipeCandidate &&
             lvglSwipeHorizontalLocked &&
-            dx >= SWIPE_BACK_MIN_DX &&
             abs(dy) <= SWIPE_BACK_MAX_DY &&
             dx > (abs(dy) * 2) &&
-            dt <= SWIPE_BACK_MAX_MS) {
-            lvglSwipeBackPending = true;
+            ((dx >= SWIPE_BACK_MIN_DX && dt <= SWIPE_BACK_MAX_MS) || passedCompletionThreshold);
+        if (swipeComplete) {
             lvglSuppressClicksAfterGesture();
             lvglLastTapReleaseMs = 0;
+            if (lvglKb && !lv_obj_has_flag(lvglKb, LV_OBJ_FLAG_HIDDEN)) {
+                if (hadSwipeVisual) lvglAnimateSwipeBackVisual(0, false);
+                lvglHideKeyboard();
+            } else if (hadSwipeVisual) {
+                lvglAnimateSwipeBackVisual(DISPLAY_WIDTH, true);
+            } else {
+                lvglNavigateBackBySwipe();
+            }
         } else if (tapCandidate) {
+            if (hadSwipeVisual) lvglAnimateSwipeBackVisual(0, false);
             lvglLastTapReleaseMs = now;
             lvglLastTapReleaseX = lvglLastTouchX;
             lvglLastTapReleaseY = lvglLastTouchY;
         } else {
+            if (hadSwipeVisual) lvglAnimateSwipeBackVisual(0, false);
             if (abs(dx) >= SWIPE_LOCK_MIN_DX || abs(dy) >= SWIPE_CANCEL_VERTICAL_DY) lvglSuppressClicksAfterGesture();
             lvglLastTapReleaseMs = 0;
         }

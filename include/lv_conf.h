@@ -22,5 +22,6 @@
 
 #define LV_USE_PERF_MONITOR 0
 #define LV_USE_MEM_MONITOR 0
+#define LV_USE_SNAPSHOT 1
 
 #endif

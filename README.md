@@ -2,7 +2,7 @@
 
 Firmware for Sunton-style ESP32 touch display boards with an LVGL touch UI, Wi-Fi/AP management, SD-backed recovery tools, MQTT controls, and encrypted device-to-device chat.
 
-Current firmware version: **`0.2.9`**
+Current firmware version: **`0.2.10`**
 
 Supported boards:
 - `ESP32-2432S024C` (`240x320`, `ILI9341`, `CST820`)
@@ -14,7 +14,7 @@ Supported boards:
 ## Key Features
 
 - Multi-board firmware with board-specific display and touch support selected at build time
-- LVGL touch UI with swipe-back navigation, delayed click feedback, and global double-tap sleep
+- LVGL touch UI with live swipe-back navigation, delayed click feedback, and global double-tap sleep
 - Reorderable menus and submenu items with press-and-hold drag, persisted order, and raised/pressed button themes
 - LVGL touch/UI hot paths trimmed to reduce callback and off-screen refresh overhead
 - Discovery-gated device pairing with accept/reject confirmation on the target device
@@ -35,7 +35,7 @@ Supported boards:
 - `Snake`, `Tetris`, `Snake 3D`, and `Checkers` save scores or win counts in `Preferences`
 - `Snake 3D` is enabled on the `ESP32-S3-3248S035-N16R8` target with a software-rendered chase camera prototype
 - `Info` screen with battery, Wi-Fi, light, CPU, SRAM, PSRAM, and SD usage indicators
-- S3 build uses PSRAM-first allocation for LVGL and major UI/work buffers to reduce internal SRAM pressure
+- S3 build uses PSRAM-first allocation for LVGL, swipe-preview snapshots, and major UI/work buffers to reduce internal SRAM pressure
 - Swipe-back and scroll gestures are filtered to avoid triggering button clicks while navigating lists and menus, including dense vertical button lists
 - Screensaver now renders the exact `esp32-eyes` eye geometry adapted to each supported display resolution
 
@@ -292,7 +292,8 @@ Board-specific defaults:
 ## UI Notes
 
 - Buttons visually react on confirmed release, not on initial touch
-- Horizontal swipe-back works on supported sub-screens and no longer has to start at the far left edge
+- Horizontal swipe-back works on supported sub-screens, tracks under the finger, and completes on release once roughly 30% of the previous screen is revealed
+- Reorder drag and swipe-back now arbitrate by touch intent: horizontal motion stays swipe-back, while a mostly still long-press activates reorder
 - Swipe-back is suppressed when a drag starts on sliders, switches, or scrollable UI regions
 - Single tap wakes the display, and the wake tap is consumed before normal UI interaction resumes
 - Double-tap anywhere while awake turns the screen off
