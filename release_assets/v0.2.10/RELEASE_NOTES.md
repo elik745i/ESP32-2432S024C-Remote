@@ -9,6 +9,7 @@ This release refines the new swipe-back interaction, hardens it across all suppo
 - Releasing the swipe now completes the back navigation once about 30% of the previous screen is visible, even on slower drags.
 - Reorder drag and swipe-back now arbitrate by touch intent so horizontal swipes stay navigation gestures while long-press still enables menu reordering.
 - `Config` now includes a persisted `Volume` slider alongside brightness so speaker output can be adjusted without opening the media screen.
+- Speaker output now uses an exponential volume curve, which gives finer control at the low end while keeping full output at 100%.
 - Incoming chat messages now play a short notification beep on the speaker output when media playback is idle.
 
 ### Performance and Stability

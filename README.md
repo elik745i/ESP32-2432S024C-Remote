@@ -19,6 +19,7 @@ Supported boards:
 - LVGL touch/UI hot paths trimmed to reduce callback and off-screen refresh overhead
 - Discovery-gated device pairing with accept/reject confirmation on the target device
 - Saved backlight brightness, speaker volume, and RGB LED intensity controls in `Config`
+- Speaker volume now uses an exponential response curve for finer low-volume control
 - Brightness, volume, and RGB slider values are persisted in `Preferences`
 - `WiFi Config` screen with current network info, manual scan, saved-network actions, and editable AP SSID/password
 - `HC12 Config` submenu with live channel, baud, mode, power, default-reset, dedicated `Info`, and `Serial Terminal` pages for the HC-12 radio module

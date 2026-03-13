@@ -154,6 +154,7 @@ static constexpr int I2S_SPK_PIN = 26;
 static constexpr uint8_t AUDIO_I2S_PORT = I2S_NUM_0;
 static constexpr uint8_t AUDIO_VOLUME_TARGET = 21;
 static constexpr bool AUDIO_FORCE_MONO_INTERNAL_DAC = true;
+static constexpr float AUDIO_VOLUME_CURVE_EXPONENT = 2.0f;
 static constexpr uint8_t CHAT_NOTIFY_LEDC_CHANNEL = 7;
 static constexpr uint16_t CHAT_NOTIFY_FREQ_PRIMARY = 1760;
 static constexpr uint16_t CHAT_NOTIFY_FREQ_SECONDARY = 1320;
@@ -14514,7 +14515,11 @@ String mediaDirFromPath(const String &path)
 uint8_t audioVolumeLevelFromPercent(uint8_t percent)
 {
     if (percent > 100) percent = 100;
-    return static_cast<uint8_t>((static_cast<uint16_t>(percent) * AUDIO_VOLUME_TARGET + 50U) / 100U);
+    if (percent == 0) return 0;
+    const float normalized = static_cast<float>(percent) / 100.0f;
+    const float curved = powf(normalized, AUDIO_VOLUME_CURVE_EXPONENT);
+    const long mapped = lroundf(curved * static_cast<float>(AUDIO_VOLUME_TARGET));
+    return static_cast<uint8_t>(constrain(mapped, 1L, static_cast<long>(AUDIO_VOLUME_TARGET)));
 }
 
 void mediaFormatSeconds(uint32_t sec, char *out, size_t outLen)
@@ -14747,7 +14752,11 @@ static bool chatMessageBeepEnsurePinAttached()
 
 static inline uint32_t chatMessageBeepDuty()
 {
-    return static_cast<uint32_t>((static_cast<uint32_t>(mediaVolumePercent) * 1023U) / 100U);
+    if (mediaVolumePercent == 0) return 0;
+    const float normalized = static_cast<float>(mediaVolumePercent) / 100.0f;
+    const float curved = powf(normalized, AUDIO_VOLUME_CURVE_EXPONENT);
+    const long mapped = lroundf(curved * 1023.0f);
+    return static_cast<uint32_t>(constrain(mapped, 1L, 1023L));
 }
 
 void chatQueueIncomingMessageBeep()
