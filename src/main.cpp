@@ -23,6 +23,7 @@
 #include <esp_bt_main.h>
 #include <esp_sleep.h>
 #include <esp_heap_caps.h>
+#include <esp_system.h>
 #include <driver/gpio.h>
 #include <math.h>
 #include <new>
@@ -256,6 +257,10 @@ static constexpr float BATTERY_DIVIDER_R_BOTTOM = 100000.0f;
 static constexpr float BATTERY_CAL_FACTOR = 0.96f;
 static constexpr float BATTERY_EMPTY_V = 3.30f;
 static constexpr float BATTERY_FULL_V = 4.20f;
+static constexpr float BATTERY_CAL_FACTOR_MIN = 0.75f;
+static constexpr float BATTERY_CAL_FACTOR_MAX = 1.35f;
+static constexpr float BATTERY_CAL_MIN_SPAN_V = 0.55f;
+static constexpr float BATTERY_CAL_BLEND_ALPHA = 0.30f;
 static constexpr int BATTERY_ADC_SAMPLES = 16;
 static constexpr int BATTERY_ADC_SETTLE_READS = 3;
 static constexpr unsigned int BATTERY_ADC_SETTLE_US = 250U;
@@ -264,6 +269,8 @@ static constexpr unsigned long BATTERY_SNAPSHOT_PERIOD_MS = 30000;
 static constexpr unsigned long BATTERY_SNAPSHOT_FORCE_MS = 300000;
 static constexpr float BATTERY_SNAPSHOT_MIN_DELTA_V = 0.010f;
 static constexpr float BATTERY_BOOT_CHARGE_DELTA_V = 0.015f;
+static constexpr float BATTERY_BOOT_EMPTY_INFER_MAX_V = 3.55f;
+static constexpr unsigned long BATTERY_BOOT_EMPTY_MIN_UPTIME_MS = 120000UL;
 static constexpr unsigned long CHARGE_DETECT_INTERVAL_MS = 4000;
 static constexpr float CHARGE_RISE_THRESHOLD_V = 0.003f;
 static constexpr int8_t CHARGE_SCORE_ON = 1;
@@ -271,6 +278,11 @@ static constexpr int8_t CHARGE_SCORE_MAX = 6;
 static constexpr unsigned long CHARGE_HOLD_MS = 120000;
 static constexpr bool CHARGE_LOG_TO_SERIAL = false;
 static constexpr uint8_t CHARGE_ANIM_CYCLES = 1;
+static constexpr unsigned long CHARGE_CAL_SESSION_MIN_MS = 20UL * 60UL * 1000UL;
+static constexpr float CHARGE_CAL_SESSION_MIN_RISE_V = 0.18f;
+static constexpr float CHARGE_CAL_FULL_MIN_RAW_V = 3.65f;
+static constexpr float CHARGE_CAL_PLATEAU_BAND_V = 0.015f;
+static constexpr unsigned long CHARGE_CAL_PLATEAU_HOLD_MS = 5UL * 60UL * 1000UL;
 static constexpr int LIGHT_ADC_SAMPLES = 8;
 static constexpr float LIGHT_FILTER_ALPHA = 0.20f;
 static constexpr bool LIGHT_INVERT = true;
@@ -285,7 +297,7 @@ static constexpr uint8_t VIBRATION_QUEUE_MAX = 4;
 #endif
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.2.12";
+static constexpr const char *FW_VERSION = "0.2.13";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -423,6 +435,20 @@ struct OtaUploadCtx {
     String error;
 };
 
+struct BatterySnapshot {
+    bool valid = false;
+    float rawV = 0.0f;
+    bool charging = false;
+    uint32_t uptimeMs = 0;
+};
+
+struct BatteryCalibrationState {
+    float observedFullRawV = 0.0f;
+    float observedEmptyRawV = 0.0f;
+    bool hasFullAnchor = false;
+    bool hasEmptyAnchor = false;
+};
+
 TFT_eSPI tft;
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
 SPIClass sdSpi(FSPI);
@@ -455,6 +481,7 @@ static void snake3dMaybeStoreHighScore(bool persist = false);
 static void saveGameValue(const char *key, uint16_t value);
 void tryBootStaReconnect();
 void sampleTopIndicators();
+float batteryCalibrationFactor();
 const char *authName(wifi_auth_mode_t auth);
 String mediaResolvePlaybackPath(const String &originalPath);
 String mediaDisplayNameFromPath(const String &path);
@@ -468,6 +495,8 @@ void chatQueueIncomingMessageBeep();
 void chatMessageBeepService();
 void chatQueueIncomingMessageVibration();
 void chatMessageVibrationService();
+static void chatMessageBeepPreview();
+static void chatMessageVibrationPreview();
 bool mediaPathIsFlac(const String &path);
 bool audioFlacSupportedNow(uint32_t *freeHeapOut = nullptr, uint32_t *largestOut = nullptr);
 wl_status_t wifiStatusSafe();
@@ -879,6 +908,7 @@ static lv_obj_t *lvglConfigBrightnessHeader = nullptr;
 static lv_obj_t *lvglConfigVolumeHeader = nullptr;
 static lv_obj_t *lvglConfigRgbHeader = nullptr;
 static lv_obj_t *lvglConfigVibrationHeader = nullptr;
+static lv_obj_t *lvglConfigMessageToneHeader = nullptr;
 static lv_obj_t *lvglConfigDeviceNameSaveBtnLabel = nullptr;
 static lv_obj_t *lvglBrightnessSlider = nullptr;
 static lv_obj_t *lvglBrightnessValueLabel = nullptr;
@@ -886,6 +916,7 @@ static lv_obj_t *lvglVolumeSlider = nullptr;
 static lv_obj_t *lvglVolumeValueLabel = nullptr;
 static lv_obj_t *lvglRgbLedSlider = nullptr;
 static lv_obj_t *lvglVibrationDropdown = nullptr;
+static lv_obj_t *lvglMessageToneDropdown = nullptr;
 static lv_obj_t *lvglKb = nullptr;
 static uint8_t lvglWarmupScreenIndex = 0;
 static unsigned long lvglWarmupLastMs = 0;
@@ -1200,7 +1231,11 @@ unsigned long touchLastInitMs = 0;
 unsigned long touchLastNoIrqPollMs = 0;
 unsigned long touchLastPollMs = 0;
 unsigned long touchLastRecoveryMs = 0;
+bool touchLastSampleDown = false;
+int16_t touchLastSampleX = 0;
+int16_t touchLastSampleY = 0;
 float batteryVoltage = 0.0f;
+float batteryRawVoltage = 0.0f;
 uint8_t batteryPercent = 0;
 bool batteryCharging = false;
 uint8_t lightPercent = 0;
@@ -1223,6 +1258,11 @@ bool lightFilterInitialized = false;
 float lightPercentFiltered = 0.0f;
 float chargePrevVoltage = 0.0f;
 int8_t chargeTrendScore = 0;
+bool chargeSessionActive = false;
+unsigned long chargeSessionStartMs = 0;
+unsigned long chargePlateauStartMs = 0;
+float chargeSessionStartRawVoltage = 0.0f;
+float chargeSessionMaxRawVoltage = 0.0f;
 uint8_t batteryIconAnimPercent = 0;
 unsigned long batteryIconAnimLastMs = 0;
 uint16_t lightRawAdc = 0;
@@ -1319,12 +1359,27 @@ enum VibrationIntensity : uint8_t {
     VIBRATION_INTENSITY_COUNT
 };
 
+enum MessageBeepTone : uint8_t {
+    MESSAGE_BEEP_SINGLE = 0,
+    MESSAGE_BEEP_DOUBLE_SHORT,
+    MESSAGE_BEEP_ASCEND,
+    MESSAGE_BEEP_DESCEND,
+    MESSAGE_BEEP_DOORBELL,
+    MESSAGE_BEEP_WESTMINSTER,
+    MESSAGE_BEEP_FUR_ELISE,
+    MESSAGE_BEEP_ODE_TO_JOY,
+    MESSAGE_BEEP_TONE_COUNT
+};
+
 VibrationIntensity vibrationIntensity = VIBRATION_INTENSITY_MEDIUM;
+MessageBeepTone messageBeepTone = MESSAGE_BEEP_DOUBLE_SHORT;
 
 static const char *tr(UiTextId id);
 static String buildLanguageDropdownOptions();
 static String buildVibrationIntensityDropdownOptions();
+static String buildMessageBeepDropdownOptions();
 static const char *vibrationIntensityLabel(VibrationIntensity intensity);
+static const char *messageBeepToneLabel(MessageBeepTone tone);
 
 void lvglEnsureScreenBuilt(UiScreen screen);
 lv_obj_t *lvglScreenForUi(UiScreen screen);
@@ -2016,6 +2071,8 @@ wifi_event_id_t wifiStaGotIpEventId = 0;
 wifi_event_id_t wifiStaDisconnectedEventId = 0;
 unsigned long lastBatterySnapshotMs = 0;
 float lastBatterySnapshotVoltage = -1.0f;
+BatteryCalibrationState batteryCalState;
+unsigned long lvglNextHandlerDueMs = 0;
 unsigned long lastCarInputTelemetryMs = 0;
 bool rebootRequested = false;
 unsigned long rebootRequestedAtMs = 0;
@@ -2843,6 +2900,9 @@ void gt911Init()
 
 void touchInit()
 {
+    touchLastSampleDown = false;
+    touchLastSampleX = 0;
+    touchLastSampleY = 0;
     if (TOUCH_CONTROLLER == TOUCH_CTRL_GT911) gt911Init();
     else cstInit();
 }
@@ -2878,13 +2938,22 @@ void rotatePointByOffset(int16_t &x, int16_t &y, uint8_t offset)
 bool readScreenTouch(int16_t &sx, int16_t &sy)
 {
     const unsigned long now = millis();
-    if (static_cast<unsigned long>(now - touchLastPollMs) < TOUCH_POLL_INTERVAL_MS) return false;
+    if (static_cast<unsigned long>(now - touchLastPollMs) < TOUCH_POLL_INTERVAL_MS) {
+        sx = touchLastSampleX;
+        sy = touchLastSampleY;
+        return touchLastSampleDown;
+    }
     touchLastPollMs = now;
 
     bool irqLow = true;
     if (TOUCH_USE_IRQ) {
         irqLow = (digitalRead(TOUCH_IRQ) == LOW);
-        if (!irqLow) return false;
+        if (!irqLow) {
+            touchLastSampleDown = false;
+            sx = touchLastSampleX;
+            sy = touchLastSampleY;
+            return false;
+        }
     } else {
         touchLastNoIrqPollMs = now;
     }
@@ -2902,6 +2971,7 @@ bool readScreenTouch(int16_t &sx, int16_t &sy)
         if (((status & 0x80U) == 0U) || touchCount == 0U) {
             touchGhostLowStreak = 0;
             if (status & 0x80U) gt911WriteReg8(GT911_REG_STATUS, 0);
+            touchLastSampleDown = false;
             return false;
         }
 
@@ -2930,6 +3000,7 @@ bool readScreenTouch(int16_t &sx, int16_t &sy)
             } else {
                 touchGhostLowStreak = 0;
             }
+            touchLastSampleDown = false;
             return false;
         }
 
@@ -2949,6 +3020,9 @@ bool readScreenTouch(int16_t &sx, int16_t &sy)
     rotatePointByOffset(x, y, TOUCH_ROTATION_OFFSET);
     sx = x;
     sy = y;
+    touchLastSampleX = x;
+    touchLastSampleY = y;
+    touchLastSampleDown = true;
     touchReadFailStreak = 0;
     touchGhostLowStreak = 0;
     return true;
@@ -2986,11 +3060,8 @@ static bool lvglGetSwipeBackPreviewTarget(UiScreen current, UiScreen &target)
 {
     switch (current) {
         case UI_CHAT:
-            if (currentChatPeerKey.isEmpty()) {
-                target = UI_HOME;
-                return true;
-            }
-            return false;
+            target = currentChatPeerKey.isEmpty() ? UI_HOME : UI_CHAT;
+            return true;
         case UI_MEDIA:
         case UI_INFO:
         case UI_GAMES:
@@ -3047,6 +3118,29 @@ static void lvglReleaseSwipeBackPreview()
     lvglSwipePreviewUsesSnapshot = false;
 }
 
+static lv_img_dsc_t *lvglCreateChatSwipeBackSnapshot()
+{
+    if (uiScreen != UI_CHAT || currentChatPeerKey.isEmpty() || !lvglScrChat || !lv_obj_is_valid(lvglScrChat)) return nullptr;
+
+    const String savedPeerKey = currentChatPeerKey;
+    currentChatPeerKey = "";
+    chatClearCache();
+    lvglRefreshChatLayout();
+    lvglRefreshChatContactsUi();
+    lvglRefreshChatUi();
+    lv_obj_update_layout(lvglScrChat);
+    lv_img_dsc_t *snapshot = lv_snapshot_take(lvglScrChat, LV_IMG_CF_TRUE_COLOR);
+
+    currentChatPeerKey = savedPeerKey;
+    chatReloadRecentMessagesFromSd(currentChatPeerKey);
+    lvglRefreshChatLayout();
+    lvglRefreshChatContactsUi();
+    lvglRefreshChatUi();
+    lv_obj_update_layout(lvglScrChat);
+
+    return snapshot;
+}
+
 static bool lvglEnsureSwipeBackPreviewMounted()
 {
     if (lvglKeyboardVisible()) return false;
@@ -3057,14 +3151,18 @@ static bool lvglEnsureSwipeBackPreviewMounted()
     UiScreen targetUi = UI_HOME;
     if (!lvglGetSwipeBackPreviewTarget(uiScreen, targetUi)) return false;
 
-    lvglEnsureScreenBuilt(targetUi);
-    lv_obj_t *targetScreen = lvglScreenForUi(targetUi);
-    if (!targetScreen || !lv_obj_is_valid(targetScreen) || lv_scr_act() == targetScreen) return false;
-
     lvglReleaseSwipeBackPreview();
     if (boardHasUsablePsram()) {
-        lv_obj_update_layout(targetScreen);
-        lvglSwipePreviewSnapshot = lv_snapshot_take(targetScreen, LV_IMG_CF_TRUE_COLOR);
+        lv_obj_t *targetScreen = nullptr;
+        if (uiScreen == UI_CHAT && !currentChatPeerKey.isEmpty() && targetUi == UI_CHAT) {
+            lvglSwipePreviewSnapshot = lvglCreateChatSwipeBackSnapshot();
+        } else {
+            lvglEnsureScreenBuilt(targetUi);
+            targetScreen = lvglScreenForUi(targetUi);
+            if (!targetScreen || !lv_obj_is_valid(targetScreen) || lv_scr_act() == targetScreen) return false;
+            lv_obj_update_layout(targetScreen);
+            lvglSwipePreviewSnapshot = lv_snapshot_take(targetScreen, LV_IMG_CF_TRUE_COLOR);
+        }
         if (lvglSwipePreviewSnapshot) {
             lvglSwipePreviewImg = lv_img_create(lv_layer_top());
             if (!lvglSwipePreviewImg) {
@@ -3080,6 +3178,15 @@ static bool lvglEnsureSwipeBackPreviewMounted()
             return true;
         }
         lvglReleaseSwipeBackPreview();
+    }
+
+    lvglEnsureScreenBuilt(targetUi);
+    lv_obj_t *targetScreen = lvglScreenForUi(targetUi);
+    if (!targetScreen || !lv_obj_is_valid(targetScreen) || lv_scr_act() == targetScreen) return false;
+
+    if (boardHasUsablePsram()) {
+        lv_obj_update_layout(targetScreen);
+        lvglSwipePreviewSnapshot = lv_snapshot_take(targetScreen, LV_IMG_CF_TRUE_COLOR);
     }
 
     lvglSwipePreviewImg = lv_obj_create(lv_layer_top());
@@ -3461,6 +3568,13 @@ static void lvglApplyConfigScreenControlStyles()
         lv_obj_set_style_border_color(lvglVibrationDropdown, lv_color_hex(0x2F4658), 0);
         lv_obj_set_style_border_width(lvglVibrationDropdown, 1, 0);
         lv_obj_set_style_radius(lvglVibrationDropdown, 8, 0);
+    }
+    if (lvglMessageToneDropdown) {
+        lv_obj_set_style_bg_color(lvglMessageToneDropdown, lv_color_hex(0x111922), 0);
+        lv_obj_set_style_text_color(lvglMessageToneDropdown, lv_color_hex(0xE5ECF3), 0);
+        lv_obj_set_style_border_color(lvglMessageToneDropdown, lv_color_hex(0x2F4658), 0);
+        lv_obj_set_style_border_width(lvglMessageToneDropdown, 1, 0);
+        lv_obj_set_style_radius(lvglMessageToneDropdown, 8, 0);
     }
 }
 
@@ -4561,6 +4675,81 @@ static String buildVibrationIntensityDropdownOptions()
         options += vibrationIntensityLabel(static_cast<VibrationIntensity>(i));
     }
     return options;
+}
+
+static const char *messageBeepToneLabel(MessageBeepTone tone)
+{
+    switch (tone) {
+        case MESSAGE_BEEP_SINGLE: return "One Beep";
+        case MESSAGE_BEEP_DOUBLE_SHORT: return "Two Short";
+        case MESSAGE_BEEP_ASCEND: return "Ascend";
+        case MESSAGE_BEEP_DESCEND: return "Descend";
+        case MESSAGE_BEEP_DOORBELL: return "Doorbell";
+        case MESSAGE_BEEP_WESTMINSTER: return "Westminster";
+        case MESSAGE_BEEP_FUR_ELISE: return "Fur Elise";
+        case MESSAGE_BEEP_ODE_TO_JOY: return "Ode to Joy";
+        default: return "Two Short";
+    }
+}
+
+static String buildMessageBeepDropdownOptions()
+{
+    String options;
+    for (int i = 0; i < static_cast<int>(MESSAGE_BEEP_TONE_COUNT); ++i) {
+        if (i > 0) options += "\n";
+        options += messageBeepToneLabel(static_cast<MessageBeepTone>(i));
+    }
+    return options;
+}
+
+struct ChatBeepStep {
+    uint16_t freq;
+    uint16_t durationMs;
+};
+
+struct ChatBeepPattern {
+    const ChatBeepStep *steps;
+    uint8_t count;
+};
+
+static constexpr ChatBeepStep CHAT_BEEP_PATTERN_SINGLE[] = {
+    {1760, 140}
+};
+static constexpr ChatBeepStep CHAT_BEEP_PATTERN_DOUBLE_SHORT[] = {
+    {1760, 70}, {0, 55}, {1320, 95}
+};
+static constexpr ChatBeepStep CHAT_BEEP_PATTERN_ASCEND[] = {
+    {988, 70}, {0, 35}, {1319, 70}, {0, 35}, {1760, 110}
+};
+static constexpr ChatBeepStep CHAT_BEEP_PATTERN_DESCEND[] = {
+    {1760, 70}, {0, 35}, {1319, 70}, {0, 35}, {988, 110}
+};
+static constexpr ChatBeepStep CHAT_BEEP_PATTERN_DOORBELL[] = {
+    {1047, 85}, {0, 40}, {1568, 150}
+};
+static constexpr ChatBeepStep CHAT_BEEP_PATTERN_WESTMINSTER[] = {
+    {1568, 90}, {0, 30}, {1175, 90}, {0, 30}, {1319, 90}, {0, 30}, {988, 160}
+};
+static constexpr ChatBeepStep CHAT_BEEP_PATTERN_FUR_ELISE[] = {
+    {1319, 90}, {0, 25}, {1245, 90}, {0, 25}, {1319, 90}, {0, 25}, {1245, 90}, {0, 25}, {1319, 120}
+};
+static constexpr ChatBeepStep CHAT_BEEP_PATTERN_ODE_TO_JOY[] = {
+    {1319, 85}, {0, 25}, {1319, 85}, {0, 25}, {1480, 85}, {0, 25}, {1568, 85}, {0, 25}, {1568, 120}
+};
+
+static ChatBeepPattern chatMessageBeepPattern(MessageBeepTone tone)
+{
+    switch (tone) {
+        case MESSAGE_BEEP_SINGLE: return {CHAT_BEEP_PATTERN_SINGLE, static_cast<uint8_t>(sizeof(CHAT_BEEP_PATTERN_SINGLE) / sizeof(CHAT_BEEP_PATTERN_SINGLE[0]))};
+        case MESSAGE_BEEP_DOUBLE_SHORT: return {CHAT_BEEP_PATTERN_DOUBLE_SHORT, static_cast<uint8_t>(sizeof(CHAT_BEEP_PATTERN_DOUBLE_SHORT) / sizeof(CHAT_BEEP_PATTERN_DOUBLE_SHORT[0]))};
+        case MESSAGE_BEEP_ASCEND: return {CHAT_BEEP_PATTERN_ASCEND, static_cast<uint8_t>(sizeof(CHAT_BEEP_PATTERN_ASCEND) / sizeof(CHAT_BEEP_PATTERN_ASCEND[0]))};
+        case MESSAGE_BEEP_DESCEND: return {CHAT_BEEP_PATTERN_DESCEND, static_cast<uint8_t>(sizeof(CHAT_BEEP_PATTERN_DESCEND) / sizeof(CHAT_BEEP_PATTERN_DESCEND[0]))};
+        case MESSAGE_BEEP_DOORBELL: return {CHAT_BEEP_PATTERN_DOORBELL, static_cast<uint8_t>(sizeof(CHAT_BEEP_PATTERN_DOORBELL) / sizeof(CHAT_BEEP_PATTERN_DOORBELL[0]))};
+        case MESSAGE_BEEP_WESTMINSTER: return {CHAT_BEEP_PATTERN_WESTMINSTER, static_cast<uint8_t>(sizeof(CHAT_BEEP_PATTERN_WESTMINSTER) / sizeof(CHAT_BEEP_PATTERN_WESTMINSTER[0]))};
+        case MESSAGE_BEEP_FUR_ELISE: return {CHAT_BEEP_PATTERN_FUR_ELISE, static_cast<uint8_t>(sizeof(CHAT_BEEP_PATTERN_FUR_ELISE) / sizeof(CHAT_BEEP_PATTERN_FUR_ELISE[0]))};
+        case MESSAGE_BEEP_ODE_TO_JOY: return {CHAT_BEEP_PATTERN_ODE_TO_JOY, static_cast<uint8_t>(sizeof(CHAT_BEEP_PATTERN_ODE_TO_JOY) / sizeof(CHAT_BEEP_PATTERN_ODE_TO_JOY[0]))};
+        default: return {CHAT_BEEP_PATTERN_DOUBLE_SHORT, static_cast<uint8_t>(sizeof(CHAT_BEEP_PATTERN_DOUBLE_SHORT) / sizeof(CHAT_BEEP_PATTERN_DOUBLE_SHORT[0]))};
+    }
 }
 
 static const char *tr(UiTextId id)
@@ -6485,7 +6674,7 @@ void loadP2pConfig()
 
 void lvglRefreshWifiList();
 void lvglRefreshMediaList();
-void lvglRefreshInfoPanel();
+void lvglRefreshInfoPanel(bool refreshIndicators = true);
 void lvglMediaPlayStopEvent(lv_event_t *e);
 void lvglMediaPrevTrackEvent(lv_event_t *e);
 void lvglMediaNextTrackEvent(lv_event_t *e);
@@ -6520,6 +6709,7 @@ void lvglStyleButtonBlackEvent(lv_event_t *e);
 void lvglStyleTimezoneEvent(lv_event_t *e);
 void lvglLanguageDropdownEvent(lv_event_t *e);
 void lvglVibrationDropdownEvent(lv_event_t *e);
+void lvglMessageToneDropdownEvent(lv_event_t *e);
 void lvglStyleTopCenterNameEvent(lv_event_t *e);
 void lvglStyleTopCenterTimeEvent(lv_event_t *e);
 void lvglStyleTimeoutEvent(lv_event_t *e);
@@ -7285,6 +7475,38 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_add_event_cb(lvglVibrationDropdown, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
             lv_obj_add_event_cb(lvglVibrationDropdown, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
 
+            lv_obj_t *toneWrap = lv_obj_create(lvglConfigWrap);
+            lv_obj_set_size(toneWrap, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_color(toneWrap, lv_color_hex(0x18222D), 0);
+            lv_obj_set_style_border_width(toneWrap, 0, 0);
+            lv_obj_set_style_radius(toneWrap, 12, 0);
+            lv_obj_set_style_pad_all(toneWrap, 10, 0);
+            lv_obj_set_style_pad_row(toneWrap, 6, 0);
+            lv_obj_set_flex_flow(toneWrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_clear_flag(toneWrap, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *toneHdr = lv_obj_create(toneWrap);
+            lv_obj_set_size(toneHdr, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(toneHdr, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(toneHdr, 0, 0);
+            lv_obj_set_style_pad_all(toneHdr, 0, 0);
+            lv_obj_set_style_pad_column(toneHdr, 8, 0);
+            lv_obj_set_flex_flow(toneHdr, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(toneHdr, LV_OBJ_FLAG_SCROLLABLE);
+
+            lvglConfigMessageToneHeader = lv_label_create(toneHdr);
+            lv_label_set_text(lvglConfigMessageToneHeader, "Message tone");
+            lv_obj_set_style_text_color(lvglConfigMessageToneHeader, lv_color_hex(0xE5ECF3), 0);
+            lv_obj_set_flex_grow(lvglConfigMessageToneHeader, 1);
+
+            lvglMessageToneDropdown = lv_dropdown_create(toneWrap);
+            lv_obj_set_width(lvglMessageToneDropdown, lv_pct(100));
+            lv_dropdown_set_options(lvglMessageToneDropdown, buildMessageBeepDropdownOptions().c_str());
+            lv_obj_add_event_cb(lvglMessageToneDropdown, lvglMessageToneDropdownEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+            lv_obj_add_event_cb(lvglMessageToneDropdown, lvglGestureBlockEvent, LV_EVENT_PRESSED, nullptr);
+            lv_obj_add_event_cb(lvglMessageToneDropdown, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
+            lv_obj_add_event_cb(lvglMessageToneDropdown, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
+
             lv_obj_t *rgbWrap = lv_obj_create(lvglConfigWrap);
             lv_obj_set_size(rgbWrap, lv_pct(100), LV_SIZE_CONTENT);
             lv_obj_set_style_bg_color(rgbWrap, lv_color_hex(0x18222D), 0);
@@ -7330,6 +7552,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglRegisterReorderableItem(brightWrap, "ord_cfg", "bright");
             lvglRegisterReorderableItem(volWrap, "ord_cfg", "vol");
             lvglRegisterReorderableItem(vibrationWrap, "ord_cfg", "vib");
+            lvglRegisterReorderableItem(toneWrap, "ord_cfg", "tone");
             lvglRegisterReorderableItem(rgbWrap, "ord_cfg", "rgb");
             lvglApplySavedOrder(lvglConfigWrap, "ord_cfg");
             lvglRefreshConfigUi();
@@ -10185,12 +10408,14 @@ void p2pService()
     }
 }
 
-void lvglRefreshInfoPanel()
+void lvglRefreshInfoPanel(bool refreshIndicators)
 {
     if (!lvglInfoList) return;
     if (uiScreen != UI_INFO) return;
-    sampleTopIndicators();
-    lvglRefreshTopIndicators();
+    if (refreshIndicators) {
+        sampleTopIndicators();
+        lvglRefreshTopIndicators();
+    }
     const bool connected = wifiConnectedSafe();
     const String ssid = connected ? wifiSsidSafe() : String("Disconnected");
     const String ip = connected ? wifiIpSafe() : String("-");
@@ -12764,6 +12989,27 @@ void lvglVibrationDropdownEvent(lv_event_t *e)
     uiPrefs.begin("ui", false);
     uiPrefs.putUChar("vib_int", static_cast<uint8_t>(vibrationIntensity));
     uiPrefs.end();
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+    chatMessageVibrationPreview();
+#endif
+    uiStatusLine = String("Vibration: ") + vibrationIntensityLabel(vibrationIntensity);
+    lvglSyncStatusLine();
+    lvglRefreshConfigUi();
+}
+
+void lvglMessageToneDropdownEvent(lv_event_t *e)
+{
+    (void)e;
+    if (!lvglMessageToneDropdown) return;
+    const uint16_t selected = lv_dropdown_get_selected(lvglMessageToneDropdown);
+    if (selected >= static_cast<uint16_t>(MESSAGE_BEEP_TONE_COUNT)) return;
+    messageBeepTone = static_cast<MessageBeepTone>(selected);
+    uiPrefs.begin("ui", false);
+    uiPrefs.putUChar("msg_tone", static_cast<uint8_t>(messageBeepTone));
+    uiPrefs.end();
+    chatMessageBeepPreview();
+    uiStatusLine = String("Message tone: ") + messageBeepToneLabel(messageBeepTone);
+    lvglSyncStatusLine();
     lvglRefreshConfigUi();
 }
 
@@ -12869,6 +13115,13 @@ void lvglRefreshStyleUi()
     }
     if (lvglStyleTimeoutValueLabel) {
         lvglLabelSetTextIfChanged(lvglStyleTimeoutValueLabel, formatIdleTimeoutLabel(displayIdleTimeoutMs));
+    }
+    if (lvglStyleTimezoneDd) {
+        lv_dropdown_set_options(lvglStyleTimezoneDd, buildGmtOffsetDropdownOptions().c_str());
+        const uint16_t selected = static_cast<uint16_t>(topBarTimezoneGmtOffset - TOP_BAR_GMT_MIN);
+        if (lv_dropdown_get_selected(lvglStyleTimezoneDd) != selected) {
+            lv_dropdown_set_selected(lvglStyleTimezoneDd, selected);
+        }
     }
     if (lvglStyleButtonFlatBtn && lvglStyleButtonFlatBtnLabel) {
         lvglLabelSetTextIfChanged(lvglStyleButtonFlatBtnLabel, uiButtonStyleMode == UI_BUTTON_STYLE_FLAT ? "Selected" : "Select");
@@ -13010,6 +13263,7 @@ void lvglRefreshConfigUi()
     if (lvglConfigBrightnessHeader) lvglLabelSetTextIfChanged(lvglConfigBrightnessHeader, tr(TXT_BRIGHTNESS));
     if (lvglConfigVolumeHeader) lvglLabelSetTextIfChanged(lvglConfigVolumeHeader, tr(TXT_VOLUME));
     if (lvglConfigVibrationHeader) lvglLabelSetTextIfChanged(lvglConfigVibrationHeader, "Vibration");
+    if (lvglConfigMessageToneHeader) lvglLabelSetTextIfChanged(lvglConfigMessageToneHeader, "Message tone");
     if (lvglConfigRgbHeader) lvglLabelSetTextIfChanged(lvglConfigRgbHeader, tr(TXT_RGB_LED));
     if (lvglConfigDeviceNameTa) {
         String current = lv_textarea_get_text(lvglConfigDeviceNameTa);
@@ -13027,6 +13281,11 @@ void lvglRefreshConfigUi()
         lv_dropdown_set_options(lvglVibrationDropdown, buildVibrationIntensityDropdownOptions().c_str());
         const uint16_t selected = static_cast<uint16_t>(vibrationIntensity);
         if (lv_dropdown_get_selected(lvglVibrationDropdown) != selected) lv_dropdown_set_selected(lvglVibrationDropdown, selected);
+    }
+    if (lvglMessageToneDropdown) {
+        lv_dropdown_set_options(lvglMessageToneDropdown, buildMessageBeepDropdownOptions().c_str());
+        const uint16_t selected = static_cast<uint16_t>(messageBeepTone);
+        if (lv_dropdown_get_selected(lvglMessageToneDropdown) != selected) lv_dropdown_set_selected(lvglMessageToneDropdown, selected);
     }
     if (lvglRgbLedSlider && lv_slider_get_value(lvglRgbLedSlider) != rgbLedPercent) {
         lv_slider_set_value(lvglRgbLedSlider, rgbLedPercent, LV_ANIM_OFF);
@@ -13490,6 +13749,7 @@ void lvglInitUi()
     lvglEnsurePersistentTopBar();
 
     lvglLastTickMs = millis();
+    lvglNextHandlerDueMs = 0;
     lvglLastInfoRefreshMs = 0;
     lvglLastStatusRefreshMs = 0;
     lvglLastMediaPlayerRefreshMs = 0;
@@ -13572,7 +13832,17 @@ void lvglService()
         lv_tick_inc(delta);
         lvglLastTickMs = now;
     }
-    lv_timer_handler();
+    const bool uiInteractive = lvglTouchDown || wakeTouchReleaseGuard || lvglSwipeTracking || lv_anim_count_running() > 0U;
+    if (!uiInteractive && lvglNextHandlerDueMs != 0 && static_cast<long>(now - lvglNextHandlerDueMs) < 0) return;
+    const uint32_t nextHandlerInMs = lv_timer_handler();
+    if (uiInteractive) {
+        lvglNextHandlerDueMs = now + 1UL;
+    } else {
+        uint32_t delayMs = nextHandlerInMs;
+        if (delayMs < 2U) delayMs = 2U;
+        if (delayMs > 12U) delayMs = 12U;
+        lvglNextHandlerDueMs = now + delayMs;
+    }
 
     if (lvglTouchDown) {
         if (!lvglSwipeTracking) {
@@ -13669,10 +13939,84 @@ void lvglService()
         lvglLastMediaPlayerRefreshMs = now;
         lvglRefreshMediaPlayerUi();
     }
-    if (uiScreen == UI_INFO && (now - lvglLastInfoRefreshMs) >= 2500UL) {
+    if (uiScreen == UI_INFO && !lvglTouchDown && (now - lvglLastInfoRefreshMs) >= 2500UL) {
         lvglLastInfoRefreshMs = now;
         lvglRefreshInfoPanel();
     }
+}
+
+static void batteryCalibrationLoad()
+{
+    batteryPrefs.begin("battery", true);
+    batteryCalState.observedFullRawV = batteryPrefs.getFloat("cal_full", 0.0f);
+    batteryCalState.observedEmptyRawV = batteryPrefs.getFloat("cal_empty", 0.0f);
+    batteryPrefs.end();
+    batteryCalState.hasFullAnchor = batteryCalState.observedFullRawV > 0.0f;
+    batteryCalState.hasEmptyAnchor = batteryCalState.observedEmptyRawV > 0.0f;
+}
+
+static void batteryCalibrationSave()
+{
+    batteryPrefs.begin("battery", false);
+    if (batteryCalState.hasFullAnchor) batteryPrefs.putFloat("cal_full", batteryCalState.observedFullRawV);
+    else batteryPrefs.remove("cal_full");
+    if (batteryCalState.hasEmptyAnchor) batteryPrefs.putFloat("cal_empty", batteryCalState.observedEmptyRawV);
+    else batteryPrefs.remove("cal_empty");
+    batteryPrefs.end();
+}
+
+static float batteryBlendObserved(float current, float observed)
+{
+    if (current <= 0.0f) return observed;
+    return current + BATTERY_CAL_BLEND_ALPHA * (observed - current);
+}
+
+static void batteryCalibrationLearnFull(float rawV)
+{
+    if (rawV <= 0.0f) return;
+    const float next = batteryBlendObserved(batteryCalState.observedFullRawV, rawV);
+    if (batteryCalState.hasFullAnchor && fabsf(next - batteryCalState.observedFullRawV) < 0.003f) return;
+    batteryCalState.observedFullRawV = next;
+    batteryCalState.hasFullAnchor = true;
+    batteryCalibrationSave();
+}
+
+static void batteryCalibrationLearnEmpty(float rawV)
+{
+    if (rawV <= 0.0f) return;
+    const float next = batteryBlendObserved(batteryCalState.observedEmptyRawV, rawV);
+    if (batteryCalState.hasEmptyAnchor && fabsf(next - batteryCalState.observedEmptyRawV) < 0.003f) return;
+    batteryCalState.observedEmptyRawV = next;
+    batteryCalState.hasEmptyAnchor = true;
+    batteryCalibrationSave();
+}
+
+float batteryCalibrationFactor()
+{
+    float scale = 0.0f;
+    uint8_t weight = 0;
+
+    if (batteryCalState.hasFullAnchor && batteryCalState.observedFullRawV > 0.0f) {
+        scale += BATTERY_FULL_V / batteryCalState.observedFullRawV;
+        weight++;
+    }
+    if (batteryCalState.hasEmptyAnchor && batteryCalState.observedEmptyRawV > 0.0f) {
+        scale += BATTERY_EMPTY_V / batteryCalState.observedEmptyRawV;
+        weight++;
+    }
+    if (batteryCalState.hasFullAnchor && batteryCalState.hasEmptyAnchor) {
+        const float observedSpan = batteryCalState.observedFullRawV - batteryCalState.observedEmptyRawV;
+        if (observedSpan >= BATTERY_CAL_MIN_SPAN_V) {
+            scale += (BATTERY_FULL_V - BATTERY_EMPTY_V) / observedSpan;
+            weight++;
+        }
+    }
+
+    if (weight == 0U) return BATTERY_CAL_FACTOR;
+    scale /= static_cast<float>(weight);
+    if (scale < BATTERY_CAL_FACTOR_MIN) scale = BATTERY_CAL_FACTOR_MIN;
+    if (scale > BATTERY_CAL_FACTOR_MAX) scale = BATTERY_CAL_FACTOR_MAX;
+    return scale;
 }
 
 float readBatteryVoltage()
@@ -13689,7 +14033,7 @@ float readBatteryVoltage()
     const uint32_t mv = mvSum / BATTERY_ADC_SAMPLES;
     const float pinV = static_cast<float>(mv) / 1000.0f;
     const float ratio = (BATTERY_DIVIDER_R_TOP + BATTERY_DIVIDER_R_BOTTOM) / BATTERY_DIVIDER_R_BOTTOM;
-    return pinV * ratio * BATTERY_CAL_FACTOR;
+    return pinV * ratio;
 }
 
 uint8_t batteryPercentFromVoltage(float vbat)
@@ -13766,7 +14110,8 @@ uint8_t lightPercentFromRaw(uint16_t raw)
 void sampleTopIndicators()
 {
     const unsigned long now = millis();
-    const float rawVoltage = readBatteryVoltage();
+    batteryRawVoltage = readBatteryVoltage();
+    const float rawVoltage = batteryRawVoltage * batteryCalibrationFactor();
     if (!batteryFilterInitialized) {
         batteryVoltage = rawVoltage;
         batteryFilterInitialized = true;
@@ -13796,9 +14141,42 @@ void sampleTopIndicators()
                           (lastChargeSeenMs != 0 && (now - lastChargeSeenMs) <= CHARGE_HOLD_MS);
 
         if (CHARGE_LOG_TO_SERIAL) {
-            Serial.printf("[CHG] V=%.3f dv=%.4f score=%d charging=%d\n",
-                          batteryVoltage, dv, chargeTrendScore, batteryCharging ? 1 : 0);
+            Serial.printf("[CHG] raw=%.3f V=%.3f dv=%.4f score=%d charging=%d cal=%.4f\n",
+                          batteryRawVoltage, batteryVoltage, dv, chargeTrendScore, batteryCharging ? 1 : 0,
+                          batteryCalibrationFactor());
         }
+    }
+
+    if (batteryCharging) {
+        if (!chargeSessionActive) {
+            chargeSessionActive = true;
+            chargeSessionStartMs = now;
+            chargePlateauStartMs = 0;
+            chargeSessionStartRawVoltage = batteryRawVoltage;
+            chargeSessionMaxRawVoltage = batteryRawVoltage;
+        } else {
+            if (batteryRawVoltage > chargeSessionMaxRawVoltage) chargeSessionMaxRawVoltage = batteryRawVoltage;
+        }
+
+        if ((chargeSessionMaxRawVoltage - batteryRawVoltage) <= CHARGE_CAL_PLATEAU_BAND_V) {
+            if (chargePlateauStartMs == 0) chargePlateauStartMs = now;
+        } else {
+            chargePlateauStartMs = 0;
+        }
+
+        const bool sessionLongEnough = (now - chargeSessionStartMs) >= CHARGE_CAL_SESSION_MIN_MS;
+        const bool sessionRoseEnough = (chargeSessionMaxRawVoltage - chargeSessionStartRawVoltage) >= CHARGE_CAL_SESSION_MIN_RISE_V;
+        const bool plateauLongEnough = chargePlateauStartMs != 0 && (now - chargePlateauStartMs) >= CHARGE_CAL_PLATEAU_HOLD_MS;
+        if (sessionLongEnough && sessionRoseEnough && plateauLongEnough &&
+            chargeSessionMaxRawVoltage >= CHARGE_CAL_FULL_MIN_RAW_V) {
+            batteryCalibrationLearnFull(chargeSessionMaxRawVoltage);
+        }
+    } else if (chargeSessionActive) {
+        chargeSessionActive = false;
+        chargeSessionStartMs = 0;
+        chargePlateauStartMs = 0;
+        chargeSessionStartRawVoltage = 0.0f;
+        chargeSessionMaxRawVoltage = 0.0f;
     }
 
     if (LIGHT_ADC_PIN >= 0) {
@@ -15933,6 +16311,37 @@ static inline uint32_t chatMessageBeepDuty()
     return static_cast<uint32_t>(constrain(mapped, 1L, 1023L));
 }
 
+static void chatMessageBeepStartStep(uint8_t stepIndex)
+{
+    const ChatBeepPattern pattern = chatMessageBeepPattern(messageBeepTone);
+    if (stepIndex >= pattern.count || pattern.count == 0) {
+        if (chatMessageBeepQueue > 0) chatMessageBeepQueue--;
+        chatMessageBeepStop(false);
+        chatMessageBeepDeadlineMs = millis() + CHAT_NOTIFY_REPEAT_GAP_MS;
+        return;
+    }
+    if (!chatMessageBeepEnsurePinAttached()) return;
+    const ChatBeepStep &step = pattern.steps[stepIndex];
+    if (step.freq == 0) {
+        ledcWriteTone(CHAT_NOTIFY_LEDC_CHANNEL, 0);
+        ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, 0);
+    } else {
+        ledcWriteTone(CHAT_NOTIFY_LEDC_CHANNEL, step.freq);
+        ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, chatMessageBeepDuty());
+    }
+    chatMessageBeepPhase = static_cast<uint8_t>(stepIndex + 1U);
+    chatMessageBeepDeadlineMs = millis() + step.durationMs;
+}
+
+static void chatMessageBeepPreview()
+{
+    if (!chatMessageBeepCanPlay()) return;
+    chatMessageBeepStop(true);
+    chatMessageBeepQueue = 1;
+    chatMessageBeepDeadlineMs = 0;
+    chatMessageBeepStartStep(0);
+}
+
 void chatQueueIncomingMessageBeep()
 {
     if (!chatMessageBeepCanPlay()) return;
@@ -15987,6 +16396,14 @@ static void chatMessageVibrationStartOutput()
     ledcWrite(VIBRATION_LEDC_CHANNEL, chatMessageVibrationDuty());
     chatMessageVibrationPinOutput = true;
 }
+
+static void chatMessageVibrationPreview()
+{
+    chatMessageVibrationStop(true);
+    chatMessageVibrationQueue = 1;
+    chatMessageVibrationDeadlineMs = 0;
+    chatMessageVibrationService();
+}
 #endif
 
 void chatMessageBeepService()
@@ -16000,38 +16417,12 @@ void chatMessageBeepService()
     if (chatMessageBeepPhase == 0) {
         if (chatMessageBeepQueue == 0) return;
         if (chatMessageBeepDeadlineMs != 0 && static_cast<long>(now - chatMessageBeepDeadlineMs) < 0) return;
-        if (!chatMessageBeepEnsurePinAttached()) return;
-        ledcWriteTone(CHAT_NOTIFY_LEDC_CHANNEL, CHAT_NOTIFY_FREQ_PRIMARY);
-        ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, chatMessageBeepDuty());
-        chatMessageBeepPhase = 1;
-        chatMessageBeepDeadlineMs = now + CHAT_NOTIFY_BEEP1_MS;
+        chatMessageBeepStartStep(0);
         return;
     }
 
     if (static_cast<long>(now - chatMessageBeepDeadlineMs) < 0) return;
-
-    switch (chatMessageBeepPhase) {
-        case 1:
-            ledcWriteTone(CHAT_NOTIFY_LEDC_CHANNEL, 0);
-            ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, 0);
-            chatMessageBeepPhase = 2;
-            chatMessageBeepDeadlineMs = now + CHAT_NOTIFY_GAP_MS;
-            break;
-        case 2:
-            ledcWriteTone(CHAT_NOTIFY_LEDC_CHANNEL, CHAT_NOTIFY_FREQ_SECONDARY);
-            ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, chatMessageBeepDuty());
-            chatMessageBeepPhase = 3;
-            chatMessageBeepDeadlineMs = now + CHAT_NOTIFY_BEEP2_MS;
-            break;
-        case 3:
-            if (chatMessageBeepQueue > 0) chatMessageBeepQueue--;
-            chatMessageBeepStop(false);
-            chatMessageBeepDeadlineMs = now + CHAT_NOTIFY_REPEAT_GAP_MS;
-            break;
-        default:
-            chatMessageBeepStop(true);
-            break;
-    }
+    chatMessageBeepStartStep(chatMessageBeepPhase);
 }
 
 void chatMessageVibrationService()
@@ -16487,8 +16878,9 @@ void displaySetAwake(bool awake)
         if (lvglReady) {
             // Charge animation is drawn directly to TFT; force LVGL to repaint active menu screen on wake.
             lv_obj_invalidate(lv_scr_act());
+            lvglNextHandlerDueMs = 0;
             lv_timer_handler();
-            lvglRefreshInfoPanel();
+            lvglRefreshInfoPanel(false);
             lvglRefreshTopIndicators();
         }
     } else {
@@ -16569,22 +16961,31 @@ void loadSavedStaCreds()
     }
 }
 
-bool loadBatterySnapshot(float &vbatOut)
+bool loadBatterySnapshot(BatterySnapshot &snapshotOut)
 {
     batteryPrefs.begin("battery", true);
     bool valid = batteryPrefs.getBool("valid", false);
-    float v = batteryPrefs.getFloat("vbat", 0.0f);
+    float rawV = batteryPrefs.getFloat("raw_v", 0.0f);
+    if (rawV <= 0.0f) rawV = batteryPrefs.getFloat("vbat", 0.0f);
+    bool charging = batteryPrefs.getBool("charging", false);
+    uint32_t uptimeMs = batteryPrefs.getULong("uptime_ms", 0UL);
     batteryPrefs.end();
-    if (!valid || v <= 0.0f) return false;
-    vbatOut = v;
+    if (!valid || rawV <= 0.0f) return false;
+    snapshotOut.valid = true;
+    snapshotOut.rawV = rawV;
+    snapshotOut.charging = charging;
+    snapshotOut.uptimeMs = uptimeMs;
     return true;
 }
 
-void saveBatterySnapshot(float vbat)
+void saveBatterySnapshot(float rawV, bool charging, uint32_t uptimeMs)
 {
     batteryPrefs.begin("battery", false);
     batteryPrefs.putBool("valid", true);
-    batteryPrefs.putFloat("vbat", vbat);
+    batteryPrefs.putFloat("raw_v", rawV);
+    batteryPrefs.putFloat("vbat", rawV * batteryCalibrationFactor());
+    batteryPrefs.putBool("charging", charging);
+    batteryPrefs.putULong("uptime_ms", uptimeMs);
     batteryPrefs.end();
 }
 
@@ -16735,6 +17136,7 @@ void appendUiSettings(JsonDocument &doc)
     doc["ViewGravityStr"] = uiPrefs.getInt("grav_str", 55);
     doc["SerialLogRateMs"] = uiPrefs.getUInt("ser_rate", SERIAL_LOG_RATE_MS_DEFAULT);
     doc["SerialLogKeepLines"] = uiPrefs.getUInt("ser_keep", SERIAL_LOG_RING_SIZE);
+    doc["MessageTone"] = uiPrefs.getUChar("msg_tone", static_cast<uint8_t>(messageBeepTone));
 
     uiPrefs.end();
 }
@@ -16759,6 +17161,9 @@ void loadUiRuntimeConfig()
     vibrationIntensity = static_cast<VibrationIntensity>(constrain(uiPrefs.getUChar("vib_int", static_cast<uint8_t>(VIBRATION_INTENSITY_MEDIUM)),
                                                                    static_cast<uint8_t>(VIBRATION_INTENSITY_LOW),
                                                                    static_cast<uint8_t>(VIBRATION_INTENSITY_HIGH)));
+    messageBeepTone = static_cast<MessageBeepTone>(constrain(uiPrefs.getUChar("msg_tone", static_cast<uint8_t>(MESSAGE_BEEP_DOUBLE_SHORT)),
+                                                             static_cast<uint8_t>(MESSAGE_BEEP_SINGLE),
+                                                             static_cast<uint8_t>(MESSAGE_BEEP_TONE_COUNT - 1)));
     const uint8_t rawButtonStyle = uiPrefs.getUChar("btn_style", static_cast<uint8_t>(UI_BUTTON_STYLE_3D));
     if (rawButtonStyle == static_cast<uint8_t>(UI_BUTTON_STYLE_FLAT)) uiButtonStyleMode = UI_BUTTON_STYLE_FLAT;
     else if (rawButtonStyle == static_cast<uint8_t>(UI_BUTTON_STYLE_BLACK)) uiButtonStyleMode = UI_BUTTON_STYLE_BLACK;
@@ -17003,6 +17408,13 @@ bool handleUiSettingMessage(const char *msg)
                                                                        static_cast<int>(VIBRATION_INTENSITY_LOW),
                                                                        static_cast<int>(VIBRATION_INTENSITY_HIGH)));
         uiPrefs.putUChar("vib_int", static_cast<uint8_t>(vibrationIntensity));
+        if (lvglReady) lvglRefreshConfigUi();
+    }
+    else if (strcmp(key, "MessageTone") == 0 && parseIntMessageValue(value, parsed)) {
+        messageBeepTone = static_cast<MessageBeepTone>(constrain(parsed,
+                                                                 static_cast<int>(MESSAGE_BEEP_SINGLE),
+                                                                 static_cast<int>(MESSAGE_BEEP_TONE_COUNT - 1)));
+        uiPrefs.putUChar("msg_tone", static_cast<uint8_t>(messageBeepTone));
         if (lvglReady) lvglRefreshConfigUi();
     }
     else if (strcmp(key, "TopBarCenter") == 0 && parseIntMessageValue(value, parsed)) {
@@ -20770,6 +21182,7 @@ void setup()
     if (p2pReady) loadP2pConfig();
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step loadUiRuntimeConfig");
     loadUiRuntimeConfig();
+    batteryCalibrationLoad();
     loadGamePrefs();
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step mqttBuildIdentity");
     mqttBuildIdentity();
@@ -20779,13 +21192,21 @@ void setup()
     else mqttStatusLine = "Disabled";
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step sampleTopIndicators");
     sampleTopIndicators();
-    float prevBootV = 0.0f;
-    if (loadBatterySnapshot(prevBootV)) {
+    BatterySnapshot prevBatterySnapshot;
+    if (loadBatterySnapshot(prevBatterySnapshot)) {
+        const float prevBootV = prevBatterySnapshot.rawV * batteryCalibrationFactor();
         if ((batteryVoltage - prevBootV) >= BATTERY_BOOT_CHARGE_DELTA_V) {
             chargeTrendScore = CHARGE_SCORE_ON;
             batteryCharging = true;
             lastChargeSeenMs = millis();
         }
+        const esp_reset_reason_t resetReason = esp_reset_reason();
+        const bool inferEmptyFromPreviousCycle =
+            resetReason == ESP_RST_POWERON &&
+            !prevBatterySnapshot.charging &&
+            prevBatterySnapshot.uptimeMs >= BATTERY_BOOT_EMPTY_MIN_UPTIME_MS &&
+            prevBatterySnapshot.rawV <= BATTERY_BOOT_EMPTY_INFER_MAX_V;
+        if (inferEmptyFromPreviousCycle) batteryCalibrationLearnEmpty(prevBatterySnapshot.rawV);
     }
     lastBatterySnapshotVoltage = batteryVoltage;
     lastBatterySnapshotMs = millis();
@@ -20943,7 +21364,7 @@ void loop()
     }
 
     const unsigned long sensorPeriodMs = uiPriorityActive ? (SENSOR_SAMPLE_PERIOD_MS * 2UL) : SENSOR_SAMPLE_PERIOD_MS;
-    if (millis() - lastSensorSampleMs >= sensorPeriodMs) {
+    if (!isDown && millis() - lastSensorSampleMs >= sensorPeriodMs) {
         lastSensorSampleMs = millis();
         sampleTopIndicators();
     }
@@ -21006,7 +21427,7 @@ void loop()
         }
         if (lvglReady) {
             lvglSyncStatusLine();
-            if (uiScreen == UI_INFO) lvglRefreshInfoPanel();
+            if (uiScreen == UI_INFO) lvglRefreshInfoPanel(false);
             if (uiScreen == UI_WIFI_LIST) lvglRefreshWifiList();
             if (lvglMqttStatusLabel) lv_label_set_text_fmt(lvglMqttStatusLabel, "MQTT: %s", mqttStatusLine.c_str());
         }
@@ -21020,19 +21441,19 @@ void loop()
         lastTopIndicatorRefreshMs = millis();
         sampleTopIndicators();
         lvglRefreshTopIndicators();
-        if (uiScreen == UI_INFO) lvglRefreshInfoPanel();
+        if (uiScreen == UI_INFO && !uiPriorityActive) lvglRefreshInfoPanel(false);
     }
 
     // Service audio again after UI/network work to reduce underruns.
     audioService();
 
-    if (millis() - lastBatterySnapshotMs >= BATTERY_SNAPSHOT_PERIOD_MS) {
+    if (!isDown && millis() - lastBatterySnapshotMs >= BATTERY_SNAPSHOT_PERIOD_MS) {
         sampleTopIndicators();
         const float dv = (lastBatterySnapshotVoltage < 0.0f) ? 999.0f : fabsf(batteryVoltage - lastBatterySnapshotVoltage);
         const bool dueByDelta = dv >= BATTERY_SNAPSHOT_MIN_DELTA_V;
         const bool dueByForce = (millis() - lastBatterySnapshotMs) >= BATTERY_SNAPSHOT_FORCE_MS;
         if (dueByDelta || dueByForce) {
-            saveBatterySnapshot(batteryVoltage);
+            saveBatterySnapshot(batteryRawVoltage, batteryCharging, millis());
             lastBatterySnapshotVoltage = batteryVoltage;
             lastBatterySnapshotMs = millis();
         }

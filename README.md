@@ -2,7 +2,7 @@
 
 Firmware for Sunton-style ESP32 touch display boards with an LVGL touch UI, Wi-Fi/AP management, SD-backed recovery tools, MQTT controls, and encrypted device-to-device chat.
 
-Current firmware version: **`0.2.12`**
+Current firmware version: **`0.2.13`**
 
 Supported boards:
 - `ESP32-2432S024C` (`240x320`, `ILI9341`, `CST820`)
@@ -18,9 +18,12 @@ Supported boards:
 - Reorderable menus and submenu items with press-and-hold drag, persisted order, and raised/pressed button themes
 - `Config` now includes a persisted `Language` screen with English, Russian, Chinese, French, Turkish, Italian, German, Japanese, and Korean UI selection
 - `Config` on the S3 build now includes persisted vibration intensity selection with `Low`, `Medium`, and `High`
+- `Config` on the S3 build now includes previewable incoming-message tone selection with multiple beep and melody patterns
 - Build output now includes an auto-generated multilingual LVGL font subset so non-Latin menu text renders correctly on-device
 - `Style` menu now includes a persisted `3D Icons` switch that toggles between custom embedded menu icons and LVGL built-in symbols
 - LVGL touch/UI hot paths trimmed to reduce callback and off-screen refresh overhead
+- Swipe-back from an open conversation now previews the correct chat-list screen instead of showing a blank/white background
+- Style timezone selection is persisted and restored correctly after navigation and reboot
 - Discovery-gated device pairing with accept/reject confirmation on the target device
 - Saved backlight brightness, speaker volume, and RGB LED intensity controls in `Config`
 - Speaker volume now uses an exponential response curve for finer low-volume control
@@ -244,6 +247,7 @@ Optional HC-12 UART on the `ESP32-S3` build:
 | HC-12 `SET` | 3 |
 
 Battery sense on the current `ESP32-S3` wiring expects a `470K / 220K` divider into `GPIO10`.
+Battery percentage uses the measured cell voltage range `3.30V` to `4.20V` and now supports persisted self-calibration so divider tolerance and ADC scaling can be learned over time.
 
 ## Recent Project Photos
 
@@ -306,7 +310,11 @@ Board-specific defaults:
 ### Power / sensors
 
 - Battery range: empty `3.30V`, full `4.20V`
-- Battery calibration factor: `0.96`
+- Default battery calibration factor: `0.96`
+- Battery percentage can auto-calibrate from observed charge cycles
+- Full-charge calibration is learned when a charge session reaches a stable upper plateau
+- Low-battery calibration can be learned after a likely smart-BMS cutoff followed by next boot
+- Learned battery calibration is stored in NVS and blended over later cycles
 - Battery samples: `16`
 - Light samples: `8`
 - Display idle timeout: `120000 ms`
