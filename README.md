@@ -2,7 +2,7 @@
 
 Firmware for Sunton-style ESP32 touch display boards with an LVGL touch UI, Wi-Fi/AP management, SD-backed recovery tools, MQTT controls, and encrypted device-to-device chat.
 
-Current firmware version: **`0.2.11`**
+Current firmware version: **`0.2.12`**
 
 Supported boards:
 - `ESP32-2432S024C` (`240x320`, `ILI9341`, `CST820`)
@@ -17,6 +17,7 @@ Supported boards:
 - LVGL touch UI with live swipe-back navigation, delayed click feedback, and global double-tap sleep
 - Reorderable menus and submenu items with press-and-hold drag, persisted order, and raised/pressed button themes
 - `Config` now includes a persisted `Language` screen with English, Russian, Chinese, French, Turkish, Italian, German, Japanese, and Korean UI selection
+- `Config` on the S3 build now includes persisted vibration intensity selection with `Low`, `Medium`, and `High`
 - Build output now includes an auto-generated multilingual LVGL font subset so non-Latin menu text renders correctly on-device
 - `Style` menu now includes a persisted `3D Icons` switch that toggles between custom embedded menu icons and LVGL built-in symbols
 - LVGL touch/UI hot paths trimmed to reduce callback and off-screen refresh overhead
@@ -42,6 +43,7 @@ Supported boards:
 - `Snake 3D` is enabled on the `ESP32-S3-3248S035-N16R8` target with a software-rendered chase camera prototype
 - `Info` screen with battery, Wi-Fi, light, CPU, SRAM, PSRAM, and SD usage indicators
 - S3 build uses PSRAM-first allocation for LVGL, swipe-preview snapshots, and major UI/work buffers to reduce internal SRAM pressure
+- S3 build now prebuilds common submenu screens in the background and uses a larger LVGL draw buffer for smoother first-open and scroll behavior
 - Swipe-back and scroll gestures are filtered to avoid triggering button clicks while navigating lists and menus, including dense vertical button lists
 - Screensaver now renders the exact `esp32-eyes` eye geometry adapted to each supported display resolution
 
@@ -229,8 +231,9 @@ Audio, LEDs, Sensors:
 | RGB R | 4 | reserved by octal PSRAM |
 | RGB G | 17 | reserved by octal PSRAM |
 | RGB B | 16 | reserved by octal PSRAM |
-| Battery ADC | 35 | 7 |
+| Battery ADC | 35 | 10 |
 | Light ADC | 34 | 6 |
+| Vibration motor | - | 2 |
 
 Optional HC-12 UART on the `ESP32-S3` build:
 
@@ -239,6 +242,8 @@ Optional HC-12 UART on the `ESP32-S3` build:
 | HC-12 `RXD` | 4 |
 | HC-12 `TXD` | 5 |
 | HC-12 `SET` | 3 |
+
+Battery sense on the current `ESP32-S3` wiring expects a `470K / 220K` divider into `GPIO10`.
 
 ## Recent Project Photos
 

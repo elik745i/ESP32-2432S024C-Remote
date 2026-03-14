@@ -181,6 +181,11 @@ static constexpr uint8_t AUDIO_I2S_PORT = I2S_NUM_0;
 static constexpr uint8_t AUDIO_VOLUME_TARGET = 21;
 static constexpr bool AUDIO_FORCE_MONO_INTERNAL_DAC = true;
 static constexpr float AUDIO_VOLUME_CURVE_EXPONENT = 2.0f;
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+static constexpr uint8_t VIBRATION_LEDC_CHANNEL = 6;
+static constexpr uint16_t VIBRATION_PWM_HZ = 220;
+static constexpr uint8_t VIBRATION_PWM_RES_BITS = 8;
+#endif
 static constexpr uint8_t CHAT_NOTIFY_LEDC_CHANNEL = 7;
 static constexpr uint16_t CHAT_NOTIFY_FREQ_PRIMARY = 1760;
 static constexpr uint16_t CHAT_NOTIFY_FREQ_SECONDARY = 1320;
@@ -237,18 +242,23 @@ static constexpr unsigned long SCREENSAVER_POSE_MAX_MS = 3200UL;
 static constexpr unsigned long SCREENSAVER_BLINK_MS = 160UL;
 static constexpr uint32_t SCREENSAVER_EYE_COLOR_RGB = 0x19E0C3UL;
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
-static constexpr int BATTERY_ADC_PIN = 7;
+static constexpr int BATTERY_ADC_PIN = 10;
 static constexpr int LIGHT_ADC_PIN = 6;
+static constexpr int VIBRATION_MOTOR_PIN = 2;
+static constexpr float BATTERY_DIVIDER_R_TOP = 470000.0f;
+static constexpr float BATTERY_DIVIDER_R_BOTTOM = 220000.0f;
 #else
 static constexpr int BATTERY_ADC_PIN = 35;
 static constexpr int LIGHT_ADC_PIN = 34;
-#endif
 static constexpr float BATTERY_DIVIDER_R_TOP = 220000.0f;
 static constexpr float BATTERY_DIVIDER_R_BOTTOM = 100000.0f;
+#endif
 static constexpr float BATTERY_CAL_FACTOR = 0.96f;
 static constexpr float BATTERY_EMPTY_V = 3.30f;
 static constexpr float BATTERY_FULL_V = 4.20f;
 static constexpr int BATTERY_ADC_SAMPLES = 16;
+static constexpr int BATTERY_ADC_SETTLE_READS = 3;
+static constexpr unsigned int BATTERY_ADC_SETTLE_US = 250U;
 static constexpr float BATTERY_FILTER_ALPHA = 0.12f;
 static constexpr unsigned long BATTERY_SNAPSHOT_PERIOD_MS = 30000;
 static constexpr unsigned long BATTERY_SNAPSHOT_FORCE_MS = 300000;
@@ -268,9 +278,14 @@ static constexpr int LIGHT_MIN_SPAN_RAW = 80;
 static constexpr uint16_t LIGHT_RAW_CAL_MIN = 0;
 static constexpr uint16_t LIGHT_RAW_CAL_MAX = 600;
 static constexpr bool LIGHT_LOG_RAW_TO_SERIAL = false;
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+static constexpr unsigned long VIBRATION_PULSE_MS = 500UL;
+static constexpr unsigned long VIBRATION_GAP_MS = 180UL;
+static constexpr uint8_t VIBRATION_QUEUE_MAX = 4;
+#endif
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.2.11";
+static constexpr const char *FW_VERSION = "0.2.12";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -451,6 +466,8 @@ void audioSetVolumeImmediate(uint8_t v);
 bool audioEnsureBackendReady(const char *reason);
 void chatQueueIncomingMessageBeep();
 void chatMessageBeepService();
+void chatQueueIncomingMessageVibration();
+void chatMessageVibrationService();
 bool mediaPathIsFlac(const String &path);
 bool audioFlacSupportedNow(uint32_t *freeHeapOut = nullptr, uint32_t *largestOut = nullptr);
 wl_status_t wifiStatusSafe();
@@ -672,8 +689,8 @@ uint32_t sdStatsLastLoggedRemountSuccess = 0;
 uint32_t sdStatsLastLoggedRemountFailure = 0;
 
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
-static constexpr uint16_t LVGL_BUF_LINES_MIN = 40;
-static constexpr uint16_t LVGL_BUF_LINES_MAX = 80;
+static constexpr uint16_t LVGL_BUF_LINES_MIN = 64;
+static constexpr uint16_t LVGL_BUF_LINES_MAX = 120;
 static constexpr uint16_t UI_ANIM_MS = 88;
 #else
 static constexpr uint16_t LVGL_BUF_LINES_MIN = 32;
@@ -699,6 +716,7 @@ static constexpr int16_t DOUBLE_TAP_MAX_MOVE = 12;
 static constexpr int16_t DOUBLE_TAP_MAX_GAP = 350;
 static constexpr unsigned long DOUBLE_TAP_MAX_TAP_MS = 240;
 static constexpr unsigned long CLICK_SUPPRESS_AFTER_GESTURE_MS = 180UL;
+static constexpr unsigned long UI_WARMUP_INTERVAL_MS = 220UL;
 static lv_color_t *lvglDrawPixels = nullptr;
 static uint16_t lvglBufLinesActive = 0;
 static lv_disp_draw_buf_t lvglDrawBuf;
@@ -860,13 +878,17 @@ static lv_obj_t *lvglConfigDeviceNameHeader = nullptr;
 static lv_obj_t *lvglConfigBrightnessHeader = nullptr;
 static lv_obj_t *lvglConfigVolumeHeader = nullptr;
 static lv_obj_t *lvglConfigRgbHeader = nullptr;
+static lv_obj_t *lvglConfigVibrationHeader = nullptr;
 static lv_obj_t *lvglConfigDeviceNameSaveBtnLabel = nullptr;
 static lv_obj_t *lvglBrightnessSlider = nullptr;
 static lv_obj_t *lvglBrightnessValueLabel = nullptr;
 static lv_obj_t *lvglVolumeSlider = nullptr;
 static lv_obj_t *lvglVolumeValueLabel = nullptr;
 static lv_obj_t *lvglRgbLedSlider = nullptr;
+static lv_obj_t *lvglVibrationDropdown = nullptr;
 static lv_obj_t *lvglKb = nullptr;
+static uint8_t lvglWarmupScreenIndex = 0;
+static unsigned long lvglWarmupLastMs = 0;
 static lv_obj_t *lvglSnakeScoreLabel = nullptr;
 static lv_obj_t *lvglSnakeBestLabel = nullptr;
 static lv_obj_t *lvglSnakePauseBtnLabel = nullptr;
@@ -1272,6 +1294,10 @@ enum UiTextId : uint8_t {
     TXT_BRIGHTNESS,
     TXT_VOLUME,
     TXT_RGB_LED,
+    TXT_VIBRATION,
+    TXT_LOW,
+    TXT_MEDIUM,
+    TXT_HIGH,
     TXT_SELECT_DISPLAY_LANGUAGE,
     TXT_LANGUAGE_SAVED,
     TXT_HC12_TERMINAL,
@@ -1286,8 +1312,19 @@ UiScreen screensaverReturnScreen = UI_HOME;
 String uiStatusLine = "Ready";
 UiLanguage uiLanguage = UI_LANG_ENGLISH;
 
+enum VibrationIntensity : uint8_t {
+    VIBRATION_INTENSITY_LOW = 0,
+    VIBRATION_INTENSITY_MEDIUM,
+    VIBRATION_INTENSITY_HIGH,
+    VIBRATION_INTENSITY_COUNT
+};
+
+VibrationIntensity vibrationIntensity = VIBRATION_INTENSITY_MEDIUM;
+
 static const char *tr(UiTextId id);
 static String buildLanguageDropdownOptions();
+static String buildVibrationIntensityDropdownOptions();
+static const char *vibrationIntensityLabel(VibrationIntensity intensity);
 
 void lvglEnsureScreenBuilt(UiScreen screen);
 lv_obj_t *lvglScreenForUi(UiScreen screen);
@@ -1880,6 +1917,13 @@ bool chatMessageBeepPinAttached = false;
 uint8_t chatMessageBeepPhase = 0;
 uint8_t chatMessageBeepQueue = 0;
 unsigned long chatMessageBeepDeadlineMs = 0;
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+bool chatMessageVibrationPinAttached = false;
+bool chatMessageVibrationPinOutput = false;
+uint8_t chatMessageVibrationPhase = 0;
+uint8_t chatMessageVibrationQueue = 0;
+unsigned long chatMessageVibrationDeadlineMs = 0;
+#endif
 
 Preferences wifiPrefs;
 Preferences batteryPrefs;
@@ -3411,6 +3455,13 @@ static void lvglApplyConfigScreenControlStyles()
         lv_obj_set_style_bg_grad_stop(lvglRgbLedSlider, 255, LV_PART_INDICATOR);
         lv_obj_set_style_bg_color(lvglRgbLedSlider, lv_color_hex(0xE5ECF3), LV_PART_KNOB);
     }
+    if (lvglVibrationDropdown) {
+        lv_obj_set_style_bg_color(lvglVibrationDropdown, lv_color_hex(0x111922), 0);
+        lv_obj_set_style_text_color(lvglVibrationDropdown, lv_color_hex(0xE5ECF3), 0);
+        lv_obj_set_style_border_color(lvglVibrationDropdown, lv_color_hex(0x2F4658), 0);
+        lv_obj_set_style_border_width(lvglVibrationDropdown, 1, 0);
+        lv_obj_set_style_radius(lvglVibrationDropdown, 8, 0);
+    }
 }
 
 void lvglRegisterTopIndicator(lv_obj_t *obj)
@@ -3917,6 +3968,43 @@ static bool lvglCanBuildScreen(UiScreen screen)
     return false;
 }
 
+static void lvglWarmupScreensService(bool uiPriorityActive)
+{
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+    if (!lvglReady || !displayAwake || uiPriorityActive || screensaverActive || lvglKeyboardVisible()) return;
+    static const UiScreen warmupScreens[] = {
+        UI_CONFIG,
+        UI_CONFIG_STYLE,
+        UI_CONFIG_LANGUAGE,
+        UI_CONFIG_OTA,
+        UI_WIFI_LIST,
+        UI_INFO,
+        UI_MEDIA,
+        UI_GAMES,
+        UI_CONFIG_HC12,
+        UI_CONFIG_HC12_TERMINAL,
+        UI_CONFIG_HC12_INFO,
+        UI_CONFIG_MQTT_CONFIG,
+        UI_CONFIG_MQTT_CONTROLS
+    };
+    const unsigned long now = millis();
+    if (static_cast<unsigned long>(now - lvglWarmupLastMs) < UI_WARMUP_INTERVAL_MS) return;
+    lvglWarmupLastMs = now;
+
+    const size_t warmupCount = sizeof(warmupScreens) / sizeof(warmupScreens[0]);
+    for (size_t i = 0; i < warmupCount; ++i) {
+        const UiScreen screen = warmupScreens[lvglWarmupScreenIndex];
+        lvglWarmupScreenIndex = static_cast<uint8_t>((lvglWarmupScreenIndex + 1U) % warmupCount);
+        if (lvglScreenForUi(screen)) continue;
+        if (!lvglCanBuildScreen(screen)) return;
+        lvglEnsureScreenBuilt(screen);
+        return;
+    }
+#else
+    (void)uiPriorityActive;
+#endif
+}
+
 static GameBoardLayout gameBoardLayout(int cols, int rows)
 {
     (void)cols;
@@ -4413,12 +4501,64 @@ static const char *uiLanguageOptionName(UiLanguage lang)
     }
 }
 
+static const char *vibrationIntensityLabel(VibrationIntensity intensity)
+{
+    switch (uiLanguage) {
+        case UI_LANG_FRENCH:
+            switch (intensity) {
+                case VIBRATION_INTENSITY_LOW: return "Faible";
+                case VIBRATION_INTENSITY_MEDIUM: return "Moyenne";
+                case VIBRATION_INTENSITY_HIGH: return "Elevee";
+                default: return "Moyenne";
+            }
+        case UI_LANG_TURKISH:
+            switch (intensity) {
+                case VIBRATION_INTENSITY_LOW: return "Dusuk";
+                case VIBRATION_INTENSITY_MEDIUM: return "Orta";
+                case VIBRATION_INTENSITY_HIGH: return "Yuksek";
+                default: return "Orta";
+            }
+        case UI_LANG_ITALIAN:
+            switch (intensity) {
+                case VIBRATION_INTENSITY_LOW: return "Bassa";
+                case VIBRATION_INTENSITY_MEDIUM: return "Media";
+                case VIBRATION_INTENSITY_HIGH: return "Alta";
+                default: return "Media";
+            }
+        case UI_LANG_GERMAN:
+            switch (intensity) {
+                case VIBRATION_INTENSITY_LOW: return "Niedrig";
+                case VIBRATION_INTENSITY_MEDIUM: return "Mittel";
+                case VIBRATION_INTENSITY_HIGH: return "Hoch";
+                default: return "Mittel";
+            }
+        default:
+            break;
+    }
+    switch (intensity) {
+        case VIBRATION_INTENSITY_LOW: return "Low";
+        case VIBRATION_INTENSITY_MEDIUM: return "Medium";
+        case VIBRATION_INTENSITY_HIGH: return "High";
+        default: return "Medium";
+    }
+}
+
 static String buildLanguageDropdownOptions()
 {
     String options;
     for (uint8_t i = 0; i < static_cast<uint8_t>(UI_LANG_COUNT); ++i) {
         if (!options.isEmpty()) options += '\n';
         options += uiLanguageOptionName(static_cast<UiLanguage>(i));
+    }
+    return options;
+}
+
+static String buildVibrationIntensityDropdownOptions()
+{
+    String options;
+    for (int i = 0; i < static_cast<int>(VIBRATION_INTENSITY_COUNT); ++i) {
+        if (i > 0) options += "\n";
+        options += vibrationIntensityLabel(static_cast<VibrationIntensity>(i));
     }
     return options;
 }
@@ -5788,6 +5928,8 @@ static void chatStoreMessage(const String &peerKey, const String &author, const 
         chatAddMessage(author, text, outgoing, transport, messageId);
     } else if (!outgoing) {
         chatSetPeerUnread(peerKey, true);
+        chatQueueIncomingMessageBeep();
+        chatQueueIncomingMessageVibration();
     }
 }
 
@@ -6377,6 +6519,7 @@ void lvglStyleButton3dEvent(lv_event_t *e);
 void lvglStyleButtonBlackEvent(lv_event_t *e);
 void lvglStyleTimezoneEvent(lv_event_t *e);
 void lvglLanguageDropdownEvent(lv_event_t *e);
+void lvglVibrationDropdownEvent(lv_event_t *e);
 void lvglStyleTopCenterNameEvent(lv_event_t *e);
 void lvglStyleTopCenterTimeEvent(lv_event_t *e);
 void lvglStyleTimeoutEvent(lv_event_t *e);
@@ -6433,6 +6576,7 @@ void lvglMqttPublishDiscoveryEvent(lv_event_t *e);
 void lvglRefreshMqttConfigUi();
 void lvglRefreshMqttControlsUi();
 static bool lvglCanBuildScreen(UiScreen screen);
+static void lvglWarmupScreensService(bool uiPriorityActive);
 void lvglOtaPopupEvent(lv_event_t *e);
 void lvglOtaAvailablePromptEvent(lv_event_t *e);
 void lvglRefreshSnakeBoard();
@@ -6486,8 +6630,11 @@ inline void lvglLoadScreen(lv_obj_t *target, lv_scr_load_anim_t anim)
     lvglGestureBlocked = false;
     lvglReorderOwnsHorizontalGesture = false;
     if (lvglTouchIndev) lv_indev_reset(lvglTouchIndev, nullptr);
+    lv_obj_update_layout(target);
+    lv_obj_invalidate(target);
     if (anim == LV_SCR_LOAD_ANIM_NONE) {
-        lv_scr_load_anim(target, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
+        lv_scr_load(target);
+        lv_refr_now(nullptr);
     } else {
         lv_scr_load_anim(target, anim, UI_ANIM_MS, 0, false);
     }
@@ -7106,6 +7253,38 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_slider_set_range(lvglVolumeSlider, 0, 100);
             lv_obj_add_event_cb(lvglVolumeSlider, lvglConfigVolumeEvent, LV_EVENT_VALUE_CHANGED, nullptr);
 
+            lv_obj_t *vibrationWrap = lv_obj_create(lvglConfigWrap);
+            lv_obj_set_size(vibrationWrap, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_color(vibrationWrap, lv_color_hex(0x18222D), 0);
+            lv_obj_set_style_border_width(vibrationWrap, 0, 0);
+            lv_obj_set_style_radius(vibrationWrap, 12, 0);
+            lv_obj_set_style_pad_all(vibrationWrap, 10, 0);
+            lv_obj_set_style_pad_row(vibrationWrap, 6, 0);
+            lv_obj_set_flex_flow(vibrationWrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_clear_flag(vibrationWrap, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *vibrationHdr = lv_obj_create(vibrationWrap);
+            lv_obj_set_size(vibrationHdr, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(vibrationHdr, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(vibrationHdr, 0, 0);
+            lv_obj_set_style_pad_all(vibrationHdr, 0, 0);
+            lv_obj_set_style_pad_column(vibrationHdr, 8, 0);
+            lv_obj_set_flex_flow(vibrationHdr, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(vibrationHdr, LV_OBJ_FLAG_SCROLLABLE);
+
+            lvglConfigVibrationHeader = lv_label_create(vibrationHdr);
+            lv_label_set_text(lvglConfigVibrationHeader, "Vibration");
+            lv_obj_set_style_text_color(lvglConfigVibrationHeader, lv_color_hex(0xE5ECF3), 0);
+            lv_obj_set_flex_grow(lvglConfigVibrationHeader, 1);
+
+            lvglVibrationDropdown = lv_dropdown_create(vibrationWrap);
+            lv_obj_set_width(lvglVibrationDropdown, lv_pct(100));
+            lv_dropdown_set_options(lvglVibrationDropdown, buildVibrationIntensityDropdownOptions().c_str());
+            lv_obj_add_event_cb(lvglVibrationDropdown, lvglVibrationDropdownEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+            lv_obj_add_event_cb(lvglVibrationDropdown, lvglGestureBlockEvent, LV_EVENT_PRESSED, nullptr);
+            lv_obj_add_event_cb(lvglVibrationDropdown, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
+            lv_obj_add_event_cb(lvglVibrationDropdown, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
+
             lv_obj_t *rgbWrap = lv_obj_create(lvglConfigWrap);
             lv_obj_set_size(rgbWrap, lv_pct(100), LV_SIZE_CONTENT);
             lv_obj_set_style_bg_color(rgbWrap, lv_color_hex(0x18222D), 0);
@@ -7150,6 +7329,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglRegisterReorderableItem(nameWrap, "ord_cfg", "name");
             lvglRegisterReorderableItem(brightWrap, "ord_cfg", "bright");
             lvglRegisterReorderableItem(volWrap, "ord_cfg", "vol");
+            lvglRegisterReorderableItem(vibrationWrap, "ord_cfg", "vib");
             lvglRegisterReorderableItem(rgbWrap, "ord_cfg", "rgb");
             lvglApplySavedOrder(lvglConfigWrap, "ord_cfg");
             lvglRefreshConfigUi();
@@ -12574,6 +12754,19 @@ void lvglLanguageDropdownEvent(lv_event_t *e)
     lvglSyncStatusLine();
 }
 
+void lvglVibrationDropdownEvent(lv_event_t *e)
+{
+    (void)e;
+    if (!lvglVibrationDropdown) return;
+    const uint16_t selected = lv_dropdown_get_selected(lvglVibrationDropdown);
+    if (selected >= static_cast<uint16_t>(VIBRATION_INTENSITY_COUNT)) return;
+    vibrationIntensity = static_cast<VibrationIntensity>(selected);
+    uiPrefs.begin("ui", false);
+    uiPrefs.putUChar("vib_int", static_cast<uint8_t>(vibrationIntensity));
+    uiPrefs.end();
+    lvglRefreshConfigUi();
+}
+
 void lvglStyleTopCenterNameEvent(lv_event_t *e)
 {
     (void)e;
@@ -12816,6 +13009,7 @@ void lvglRefreshConfigUi()
     if (lvglConfigDeviceNameSaveBtnLabel) lvglLabelSetTextIfChanged(lvglConfigDeviceNameSaveBtnLabel, tr(TXT_SAVE));
     if (lvglConfigBrightnessHeader) lvglLabelSetTextIfChanged(lvglConfigBrightnessHeader, tr(TXT_BRIGHTNESS));
     if (lvglConfigVolumeHeader) lvglLabelSetTextIfChanged(lvglConfigVolumeHeader, tr(TXT_VOLUME));
+    if (lvglConfigVibrationHeader) lvglLabelSetTextIfChanged(lvglConfigVibrationHeader, "Vibration");
     if (lvglConfigRgbHeader) lvglLabelSetTextIfChanged(lvglConfigRgbHeader, tr(TXT_RGB_LED));
     if (lvglConfigDeviceNameTa) {
         String current = lv_textarea_get_text(lvglConfigDeviceNameTa);
@@ -12829,6 +13023,11 @@ void lvglRefreshConfigUi()
         lv_slider_set_value(lvglVolumeSlider, mediaVolumePercent, LV_ANIM_OFF);
     }
     if (lvglVolumeValueLabel) lvglLabelSetTextIfChanged(lvglVolumeValueLabel, String(mediaVolumePercent) + "%");
+    if (lvglVibrationDropdown) {
+        lv_dropdown_set_options(lvglVibrationDropdown, buildVibrationIntensityDropdownOptions().c_str());
+        const uint16_t selected = static_cast<uint16_t>(vibrationIntensity);
+        if (lv_dropdown_get_selected(lvglVibrationDropdown) != selected) lv_dropdown_set_selected(lvglVibrationDropdown, selected);
+    }
     if (lvglRgbLedSlider && lv_slider_get_value(lvglRgbLedSlider) != rgbLedPercent) {
         lv_slider_set_value(lvglRgbLedSlider, rgbLedPercent, LV_ANIM_OFF);
     }
@@ -13480,7 +13679,12 @@ float readBatteryVoltage()
 {
     uint32_t mvSum = 0;
     for (int i = 0; i < BATTERY_ADC_SAMPLES; i++) {
+        for (int settle = 0; settle < BATTERY_ADC_SETTLE_READS; ++settle) {
+            (void)analogReadMilliVolts(BATTERY_ADC_PIN);
+            delayMicroseconds(BATTERY_ADC_SETTLE_US);
+        }
         mvSum += analogReadMilliVolts(BATTERY_ADC_PIN);
+        delayMicroseconds(BATTERY_ADC_SETTLE_US);
     }
     const uint32_t mv = mvSum / BATTERY_ADC_SAMPLES;
     const float pinV = static_cast<float>(mv) / 1000.0f;
@@ -15735,6 +15939,56 @@ void chatQueueIncomingMessageBeep()
     if (chatMessageBeepQueue < CHAT_NOTIFY_QUEUE_MAX) chatMessageBeepQueue++;
 }
 
+void chatQueueIncomingMessageVibration()
+{
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+    if (chatMessageVibrationQueue < VIBRATION_QUEUE_MAX) chatMessageVibrationQueue++;
+#endif
+}
+
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+static uint32_t chatMessageVibrationDuty()
+{
+    switch (vibrationIntensity) {
+        case VIBRATION_INTENSITY_LOW: return 96;
+        case VIBRATION_INTENSITY_MEDIUM: return 168;
+        case VIBRATION_INTENSITY_HIGH:
+        default: return 255;
+    }
+}
+
+static bool chatMessageVibrationEnsurePinAttached()
+{
+    if (chatMessageVibrationPinAttached) return true;
+    ledcSetup(VIBRATION_LEDC_CHANNEL, VIBRATION_PWM_HZ, VIBRATION_PWM_RES_BITS);
+    ledcAttachPin(VIBRATION_MOTOR_PIN, VIBRATION_LEDC_CHANNEL);
+    chatMessageVibrationPinAttached = true;
+    return true;
+}
+
+static void chatMessageVibrationStop(bool clearQueue)
+{
+    ledcWrite(VIBRATION_LEDC_CHANNEL, 0);
+    if (chatMessageVibrationPinAttached) {
+        ledcDetachPin(VIBRATION_MOTOR_PIN);
+        pinMode(VIBRATION_MOTOR_PIN, OUTPUT);
+        digitalWrite(VIBRATION_MOTOR_PIN, LOW);
+        chatMessageVibrationPinAttached = false;
+    }
+    chatMessageVibrationPinOutput = false;
+    chatMessageVibrationPhase = 0;
+    chatMessageVibrationDeadlineMs = 0;
+    if (clearQueue) chatMessageVibrationQueue = 0;
+}
+
+static void chatMessageVibrationStartOutput()
+{
+    if (!chatMessageVibrationEnsurePinAttached()) return;
+    ledcWrite(VIBRATION_LEDC_CHANNEL, chatMessageVibrationDuty());
+    chatMessageVibrationPinOutput = true;
+}
+#endif
+
 void chatMessageBeepService()
 {
     if (!chatMessageBeepCanPlay()) {
@@ -15778,6 +16032,43 @@ void chatMessageBeepService()
             chatMessageBeepStop(true);
             break;
     }
+}
+
+void chatMessageVibrationService()
+{
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+    const unsigned long now = millis();
+    if (chatMessageVibrationPhase == 0) {
+        if (chatMessageVibrationQueue == 0) return;
+        if (chatMessageVibrationDeadlineMs != 0 && static_cast<long>(now - chatMessageVibrationDeadlineMs) < 0) return;
+        chatMessageVibrationStartOutput();
+        chatMessageVibrationPhase = 1;
+        chatMessageVibrationDeadlineMs = now + VIBRATION_PULSE_MS;
+        return;
+    }
+
+    if (static_cast<long>(now - chatMessageVibrationDeadlineMs) < 0) return;
+
+    switch (chatMessageVibrationPhase) {
+        case 1:
+            ledcWrite(VIBRATION_LEDC_CHANNEL, 0);
+            chatMessageVibrationPhase = 2;
+            chatMessageVibrationDeadlineMs = now + VIBRATION_GAP_MS;
+            break;
+        case 2:
+            ledcWrite(VIBRATION_LEDC_CHANNEL, chatMessageVibrationDuty());
+            chatMessageVibrationPhase = 3;
+            chatMessageVibrationDeadlineMs = now + VIBRATION_PULSE_MS;
+            break;
+        case 3:
+            if (chatMessageVibrationQueue > 0) chatMessageVibrationQueue--;
+            chatMessageVibrationStop(false);
+            break;
+        default:
+            chatMessageVibrationStop(true);
+            break;
+    }
+#endif
 }
 
 bool audioEnsureBackendReady(const char *reason)
@@ -16420,6 +16711,7 @@ void appendUiSettings(JsonDocument &doc)
     doc["ButtonStyle"] = uiPrefs.getUChar("btn_style", static_cast<uint8_t>(uiButtonStyleMode));
     doc["Menu3DIcons"] = uiPrefs.getBool("menu_3d_i", menuCustomIconsEnabled) ? 1 : 0;
     doc["DisplayLanguage"] = uiPrefs.getUChar("lang", static_cast<uint8_t>(uiLanguage));
+    doc["VibrationIntensity"] = uiPrefs.getUChar("vib_int", static_cast<uint8_t>(vibrationIntensity));
     doc["TopBarCenter"] = uiPrefs.getUChar("top_mid", static_cast<uint8_t>(topBarCenterMode));
     doc["TopBarTimezone"] = uiPrefs.getInt("tz_gmt", static_cast<int>(topBarTimezoneGmtOffset));
     doc["TelemetryMaxKB"] = uiPrefs.getUInt("tele_kb", telemetryMaxKB);
@@ -16464,6 +16756,9 @@ void loadUiRuntimeConfig()
     uiLanguage = static_cast<UiLanguage>(constrain(uiPrefs.getUChar("lang", static_cast<uint8_t>(UI_LANG_ENGLISH)),
                                                    static_cast<uint8_t>(UI_LANG_ENGLISH),
                                                    static_cast<uint8_t>(UI_LANG_COUNT - 1)));
+    vibrationIntensity = static_cast<VibrationIntensity>(constrain(uiPrefs.getUChar("vib_int", static_cast<uint8_t>(VIBRATION_INTENSITY_MEDIUM)),
+                                                                   static_cast<uint8_t>(VIBRATION_INTENSITY_LOW),
+                                                                   static_cast<uint8_t>(VIBRATION_INTENSITY_HIGH)));
     const uint8_t rawButtonStyle = uiPrefs.getUChar("btn_style", static_cast<uint8_t>(UI_BUTTON_STYLE_3D));
     if (rawButtonStyle == static_cast<uint8_t>(UI_BUTTON_STYLE_FLAT)) uiButtonStyleMode = UI_BUTTON_STYLE_FLAT;
     else if (rawButtonStyle == static_cast<uint8_t>(UI_BUTTON_STYLE_BLACK)) uiButtonStyleMode = UI_BUTTON_STYLE_BLACK;
@@ -16702,6 +16997,13 @@ bool handleUiSettingMessage(const char *msg)
         uiLanguage = static_cast<UiLanguage>(constrain(parsed, static_cast<int>(UI_LANG_ENGLISH), static_cast<int>(UI_LANG_COUNT - 1)));
         uiPrefs.putUChar("lang", static_cast<uint8_t>(uiLanguage));
         if (lvglReady) lvglRefreshLocalizedUi();
+    }
+    else if (strcmp(key, "VibrationIntensity") == 0 && parseIntMessageValue(value, parsed)) {
+        vibrationIntensity = static_cast<VibrationIntensity>(constrain(parsed,
+                                                                       static_cast<int>(VIBRATION_INTENSITY_LOW),
+                                                                       static_cast<int>(VIBRATION_INTENSITY_HIGH)));
+        uiPrefs.putUChar("vib_int", static_cast<uint8_t>(vibrationIntensity));
+        if (lvglReady) lvglRefreshConfigUi();
     }
     else if (strcmp(key, "TopBarCenter") == 0 && parseIntMessageValue(value, parsed)) {
         topBarCenterMode = parsed == static_cast<int>(TOP_BAR_CENTER_TIME) ? TOP_BAR_CENTER_TIME : TOP_BAR_CENTER_NAME;
@@ -20455,6 +20757,11 @@ void setup()
         if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step light attenuation");
         analogSetPinAttenuation(LIGHT_ADC_PIN, ADC_11db);
     }
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step vibration pin init");
+    pinMode(VIBRATION_MOTOR_PIN, OUTPUT);
+    digitalWrite(VIBRATION_MOTOR_PIN, LOW);
+#endif
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step randomSeed");
     randomSeed(static_cast<unsigned long>(esp_random()));
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step sodium_init");
@@ -20524,6 +20831,9 @@ void setup()
     lastSensorSampleMs = millis();
 
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step speaker pin quiet");
+    pinMode(I2S_SPK_PIN, OUTPUT);
+    digitalWrite(I2S_SPK_PIN, LOW);
     if (VERBOSE_SERIAL_DEBUG) {
         Serial.printf("Audio output is disabled on this ESP32-S3 build; GPIO %d is reserved until external I2S pinout is wired in firmware\n", I2S_SPK_PIN);
     }
@@ -20548,6 +20858,7 @@ void loop()
     screensaverService();
     bool isDown = lvglReady ? lvglTouchDown : false;
     const bool uiPriorityActive = uiPerformancePriorityActive(isDown);
+    lvglWarmupScreensService(uiPriorityActive);
     const bool realtimeMessaging = uiScreenNeedsRealtimeMessaging();
 
     const unsigned long now = millis();
@@ -20614,6 +20925,7 @@ void loop()
     // Keep decoder fed continuously; sparse servicing causes audible clicks.
     audioService();
     chatMessageBeepService();
+    chatMessageVibrationService();
     const bool decoderRunning = audioBackendReady && audio && audio->isRunning();
     if (wasRunning && !decoderRunning && mediaIsPlaying && !mediaPaused) {
         mediaIsPlaying = false;
