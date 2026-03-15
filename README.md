@@ -2,7 +2,7 @@
 
 Firmware for Sunton-style ESP32 touch display boards with an LVGL touch UI, Wi-Fi/AP management, SD-backed recovery tools, MQTT controls, and encrypted device-to-device chat.
 
-Current firmware version: **`0.2.16`**
+Current firmware version: **`0.2.17`**
 
 Supported boards:
 - `ESP32-2432S024C` (`240x320`, `ILI9341`, `CST820`)
@@ -23,7 +23,7 @@ Supported boards:
 - Build output now includes an auto-generated multilingual LVGL font subset so non-Latin menu text renders correctly on-device
 - `Style` menu now includes a persisted `3D Icons` switch that toggles between custom embedded menu icons and LVGL built-in symbols
 - `Style` menu now includes an auto power-off timeout that can shut the device down after extended inactivity
-- `Config` now includes a `Train Battery` screen with manual reset, full-charge capture, discharge capture, and auto-calibration controls
+- `Config` now includes a `Battery` screen with manual reset, full-charge capture, discharge capture, and opt-in auto-calibration controls
 - LVGL touch/UI hot paths trimmed to reduce callback and off-screen refresh overhead
 - Swipe-back from an open conversation now previews the correct chat-list screen instead of showing a blank/white background
 - Style timezone selection is persisted and restored correctly after navigation and reboot
@@ -260,6 +260,10 @@ Optional `Ebyte E220-400T22D` LoRa wiring on the `ESP32-S3` build:
 | E220 `M1` | 11 |
 | E220 `M2` | 3 |
 
+Reference schematic:
+
+![ESP32-S3 E220 wiring](documents/esp32-s3-3248s035-n16r8_EBYTE_E220.png)
+
 Battery sense on the current `ESP32-S3` wiring expects a `470K / 220K` divider into `GPIO10`.
 Battery percentage uses the measured cell voltage range `3.30V` to `4.20V` and now supports persisted self-calibration so divider tolerance and ADC scaling can be learned over time.
 
@@ -325,9 +329,9 @@ Board-specific defaults:
 
 - Battery range: empty `3.30V`, full `4.20V`
 - Default battery calibration factor: `0.96`
-- Battery percentage can auto-calibrate from observed charge cycles
-- Full-charge calibration is learned when a charge session reaches a stable upper plateau
-- Low-battery calibration can be learned after a likely smart-BMS cutoff followed by next boot
+- Battery auto-calibration is opt-in from `Config -> Battery`
+- When enabled, full-charge calibration is learned from a stable charge plateau
+- When enabled, low-battery calibration can be learned after a likely smart-BMS cutoff followed by next boot
 - Learned battery calibration is stored in NVS and blended over later cycles
 - Manual battery training can temporarily force `Power Off` to `Never`, store `FULL` and `EMPTY` anchors, and then restore the user's previous power-off timeout
 - Battery samples: `16`
@@ -368,7 +372,7 @@ Board-specific defaults:
 - Device rename field with persistence
 - Device name is shown in the top bar and shortened there when needed
 - `Style` includes button theme selection, top-bar center mode, GMT timezone selection, and a persisted `3D Icons` switch
-- `Train Battery` shows live battery calibration values, supports manual `FULL` / `DISCHARGE` training, and keeps `Auto Calibration` available on the same screen
+- `Battery` shows live battery calibration values, supports manual `FULL` / `DISCHARGE` training, and enables `Auto Calibration` only after confirmation
 
 ### Radio Config
 

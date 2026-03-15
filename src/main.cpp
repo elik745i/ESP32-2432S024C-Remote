@@ -304,7 +304,7 @@ static constexpr uint8_t VIBRATION_QUEUE_MAX = 4;
 #endif
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.2.16";
+static constexpr const char *FW_VERSION = "0.2.17";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -492,6 +492,7 @@ enum BatteryTrainingPhase : uint8_t {
 struct BatteryTrainingState {
     bool active = false;
     bool powerOverrideActive = false;
+    bool autoCalibrationEnabled = false;
     BatteryTrainingPhase phase = BATTERY_TRAIN_IDLE;
     unsigned long savedPowerOffMs = 0;
 };
@@ -683,6 +684,10 @@ static bool internetTimeValid();
 static void syncInternetTimeIfNeeded(bool force = false);
 static String buildGmtOffsetDropdownOptions();
 static void batteryCalibrationLearnFull(float rawV);
+static void batteryCalibrationSetFull(float rawV);
+static void batteryCalibrationForceFull(float rawV);
+static float batteryCalibratedVoltageFromRaw(float rawV);
+uint8_t batteryPercentFromVoltage(float vbat);
 static void batteryCalibrationReset();
 static void batteryTrainingLoad();
 static void batteryTrainingSave();
@@ -695,8 +700,10 @@ static void lvglRefreshBatteryTrainButtonIcons();
 static void lvglRefreshBatteryTrainUi();
 void lvglBatteryTrainResetEvent(lv_event_t *e);
 void lvglBatteryTrainResetPromptEvent(lv_event_t *e);
+void lvglBatteryTrainFullConfirmEvent(lv_event_t *e);
 void lvglBatteryTrainFullEvent(lv_event_t *e);
 void lvglBatteryTrainDischargeEvent(lv_event_t *e);
+void lvglBatteryTrainAutoConfirmEvent(lv_event_t *e);
 void lvglBatteryTrainAutoEvent(lv_event_t *e);
 void lvglHc12ToggleSetEvent(lv_event_t *e);
 void lvglHc12SendEvent(lv_event_t *e);
@@ -1503,6 +1510,7 @@ static const lv_img_dsc_t *uiVolumeIcon();
 static void lvglRefreshSoundPopupUi();
 static void lvglShowSoundPopup();
 static void lvglHideSoundPopup();
+static void lvglApplyMsgboxModalStyle(lv_obj_t *msgbox);
 
 void lvglEnsureScreenBuilt(UiScreen screen);
 lv_obj_t *lvglScreenForUi(UiScreen screen);
@@ -3628,6 +3636,7 @@ void lvglTouchReadCb(lv_indev_drv_t *indev, lv_indev_data_t *data)
                 lvglLastTapReleaseMs = 0;
                 lvglTouchDown = false;
                 lvglResetGestureTracking();
+                lvglSuppressClicksAfterGesture();
                 if (screensaverEnabled) screensaverSetActive(true);
                 else displaySetAwake(false);
                 wakeTouchReleaseGuard = true;
@@ -4229,6 +4238,22 @@ static void lvglHideSoundPopup()
     lv_obj_add_flag(lvglSoundPopup, LV_OBJ_FLAG_HIDDEN);
 }
 
+static void lvglApplyMsgboxModalStyle(lv_obj_t *msgbox)
+{
+    if (!msgbox) return;
+    lv_obj_t *backdrop = lv_obj_get_parent(msgbox);
+    if (backdrop && backdrop != msgbox) {
+        lv_obj_set_style_bg_color(backdrop, lv_color_hex(0x000000), 0);
+        lv_obj_set_style_bg_opa(backdrop, LV_OPA_80, 0);
+        lv_obj_set_style_border_width(backdrop, 0, 0);
+    }
+    lv_obj_set_style_bg_color(msgbox, lv_color_hex(0x121820), 0);
+    lv_obj_set_style_bg_opa(msgbox, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(msgbox, lv_color_hex(0x384758), 0);
+    lv_obj_set_style_border_width(msgbox, 1, 0);
+    lv_obj_set_style_text_color(msgbox, lv_color_hex(0xE5ECF3), 0);
+}
+
 static void lvglShowSoundPopup()
 {
     if (!lvglReady) return;
@@ -4238,7 +4263,7 @@ static void lvglShowSoundPopup()
         lv_obj_set_size(lvglSoundPopup, DISPLAY_WIDTH, DISPLAY_HEIGHT);
         lv_obj_center(lvglSoundPopup);
         lv_obj_set_style_bg_color(lvglSoundPopup, lv_color_hex(0x000000), 0);
-        lv_obj_set_style_bg_opa(lvglSoundPopup, LV_OPA_50, 0);
+        lv_obj_set_style_bg_opa(lvglSoundPopup, LV_OPA_80, 0);
         lv_obj_set_style_border_width(lvglSoundPopup, 0, 0);
         lv_obj_set_style_pad_all(lvglSoundPopup, 0, 0);
         lv_obj_add_flag(lvglSoundPopup, LV_OBJ_FLAG_CLICKABLE);
@@ -4357,7 +4382,7 @@ static const char *uiScreenName(UiScreen screen)
         case UI_MEDIA: return tr(TXT_MEDIA);
         case UI_INFO: return tr(TXT_INFO);
         case UI_CONFIG: return tr(TXT_CONFIG);
-        case UI_CONFIG_BATTERY: return "Train Battery";
+        case UI_CONFIG_BATTERY: return "Battery";
         case UI_CONFIG_STYLE: return tr(TXT_STYLE);
         case UI_CONFIG_LANGUAGE: return tr(TXT_LANGUAGE);
         case UI_CONFIG_OTA: return tr(TXT_OTA_UPDATES);
@@ -7765,7 +7790,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglConfigWifiBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_WIFI_CONFIG), lv_color_hex(0x3A8F4B), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_WIFI_LIST)));
             lvglConfigHc12Btn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_HC12_CONFIG), lv_color_hex(0x7A5C2E), lvglOpenHc12ScreenEvent, nullptr);
             lvglConfigStyleBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_STYLE), lv_color_hex(0x2D6D8E), lvglOpenStyleScreenEvent, nullptr);
-            lvglConfigBatteryBtn = lvglCreateMenuButton(lvglConfigWrap, "Train Battery", lv_color_hex(0x6C7E2C), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CONFIG_BATTERY)));
+            lvglConfigBatteryBtn = lvglCreateMenuButton(lvglConfigWrap, "Battery", lv_color_hex(0x6C7E2C), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CONFIG_BATTERY)));
             lvglConfigMqttBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_MQTT_CONFIG), lv_color_hex(0x6D4B9A), lvglOpenMqttCfgEvent, nullptr);
             lvglConfigMqttControlsBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_MQTT_CONTROLS), lv_color_hex(0x2D6D8E), lvglOpenMqttCtrlEvent, nullptr);
             lvglConfigScreenshotBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_SCREENSHOT), lv_color_hex(0x6B5B2A), lvglScreenshotEvent, nullptr);
@@ -7988,7 +8013,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             break;
         }
         case UI_CONFIG_BATTERY: {
-            lvglScrBatteryTrain = lvglCreateScreenBase("Train Battery", false);
+            lvglScrBatteryTrain = lvglCreateScreenBase("Battery", false);
             lvglBatteryTrainStatusLabel = nullptr;
             lvglBatteryTrainCurrentLabel = nullptr;
             lvglBatteryTrainFullLabel = nullptr;
@@ -8054,7 +8079,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_style_text_color(hint, lv_color_hex(0x9FB0C2), 0);
             lv_label_set_text(hint,
                               "Reset clears stored anchors and starts charge training. FULL stores the current top voltage and restores your power setting. "
-                              "DISCHARGE forces Power Off to Never until the next low-battery cutoff is learned. Auto Calibration exits manual training and keeps the existing auto-learning algorithm active.");
+                              "DISCHARGE forces Power Off to Never until the next low-battery cutoff is learned. Auto Calibration must be confirmed and only then enables the background learning algorithm.");
 
             makeSmallBtn(wrap, "Reset", DISPLAY_WIDTH - 20, 40, lv_color_hex(0x8D5F1E), lvglBatteryTrainResetEvent, nullptr);
 
@@ -9449,6 +9474,7 @@ void lvglShowChatAirplanePrompt()
                                    "Airplane mode is on.\nTurn it off to use chat.",
                                    btns, false);
     if (!m) return;
+    lvglApplyMsgboxModalStyle(m);
     lv_obj_center(m);
     lv_obj_set_width(m, min<int16_t>(DISPLAY_WIDTH - 24, 260));
     lv_obj_add_event_cb(m, lvglChatAirplanePromptEvent, LV_EVENT_VALUE_CHANGED, nullptr);
@@ -9469,6 +9495,7 @@ static void lvglShowE220FixedModeWarning()
                                    btns,
                                    false);
     if (!m) return;
+    lvglApplyMsgboxModalStyle(m);
     lv_obj_center(m);
     lv_obj_set_width(m, min<int16_t>(DISPLAY_WIDTH - 24, 270));
     lv_obj_add_event_cb(m, lvglRadioModeWarningEvent, LV_EVENT_VALUE_CHANGED, nullptr);
@@ -9515,6 +9542,7 @@ void lvglPowerButtonEvent(lv_event_t *e)
                                    btns,
                                    false);
     if (!m) return;
+    lvglApplyMsgboxModalStyle(m);
     lv_obj_center(m);
     lv_obj_set_width(m, min<int16_t>(DISPLAY_WIDTH - 24, 270));
     lv_obj_add_event_cb(m, lvglPowerConfirmEvent, LV_EVENT_VALUE_CHANGED, nullptr);
@@ -12963,6 +12991,8 @@ void lvglMqttControlPressEvent(lv_event_t *e)
     if (mqttButtonCritical[idx]) {
         static const char *btns[] = {"No", "Yes", ""};
         lv_obj_t *m = lv_msgbox_create(nullptr, "Confirm", mqttButtonNames[idx].c_str(), btns, false);
+        if (!m) return;
+        lvglApplyMsgboxModalStyle(m);
         lv_obj_center(m);
         lv_obj_add_event_cb(m, lvglMqttControlConfirmEvent, LV_EVENT_VALUE_CHANGED, reinterpret_cast<void *>(static_cast<intptr_t>(idx)));
     } else {
@@ -14183,21 +14213,27 @@ static void lvglRefreshBatteryTrainUi()
         if (batteryTrainingState.phase == BATTERY_TRAIN_CHARGE) status += "  |  Charging session in progress";
         else if (batteryTrainingState.phase == BATTERY_TRAIN_DISCHARGE) status += "  |  Waiting for low-battery cutoff";
     } else {
-        status += "  |  Background learning enabled";
+        status += batteryTrainingState.autoCalibrationEnabled
+                      ? "  |  Background learning enabled"
+                      : "  |  Background learning disabled";
     }
     lvglLabelSetTextIfChanged(lvglBatteryTrainStatusLabel, status);
 
-    char currentBuf[96];
-    snprintf(currentBuf, sizeof(currentBuf), "Current: raw %.3fV  |  corrected %.3fV  |  %u%%",
-             batteryRawVoltage, batteryVoltage, static_cast<unsigned>(batteryPercent));
+    char currentBuf[112];
+    snprintf(currentBuf, sizeof(currentBuf), "Battery: %.3fV calibrated  |  Sense: %.3fV raw  |  %u%%",
+             batteryVoltage, batteryRawVoltage, static_cast<unsigned>(batteryPercent));
     lvglLabelSetTextIfChanged(lvglBatteryTrainCurrentLabel, currentBuf);
 
     String fullText = "Stored FULL: ";
-    fullText += batteryCalState.hasFullAnchor ? String(batteryCalState.observedFullRawV, 3) + "V raw" : String("Not learned");
+    fullText += batteryCalState.hasFullAnchor
+                    ? String(batteryCalState.observedFullRawV, 3) + "V raw => 4.20V battery"
+                    : String("Not learned");
     lvglLabelSetTextIfChanged(lvglBatteryTrainFullLabel, fullText);
 
     String emptyText = "Stored EMPTY: ";
-    emptyText += batteryCalState.hasEmptyAnchor ? String(batteryCalState.observedEmptyRawV, 3) + "V raw" : String("Not learned");
+    emptyText += batteryCalState.hasEmptyAnchor
+                     ? String(batteryCalState.observedEmptyRawV, 3) + "V raw => 3.30V battery"
+                     : String("Not learned");
     lvglLabelSetTextIfChanged(lvglBatteryTrainEmptyLabel, emptyText);
 
     lvglLabelSetTextIfChanged(lvglBatteryTrainFactorLabel, String("Effective factor: ") + String(batteryCalibrationFactor(), 4));
@@ -14224,12 +14260,13 @@ void lvglBatteryTrainResetPromptEvent(lv_event_t *e)
     const char *btn = msgbox ? lv_msgbox_get_active_btn_text(msgbox) : nullptr;
     if (btn && strcmp(btn, "OK") == 0) {
         batteryCalibrationReset();
+        batteryTrainingState.autoCalibrationEnabled = false;
         batteryTrainingStartCharge();
         uiStatusLine = "Battery training reset; connect charger and press FULL when charged";
         if (lvglReady) lvglSyncStatusLine();
         lvglRefreshBatteryTrainUi();
     }
-    if (msgbox) lv_obj_del(msgbox);
+    if (msgbox) lv_msgbox_close(msgbox);
 }
 
 void lvglBatteryTrainResetEvent(lv_event_t *e)
@@ -14242,18 +14279,46 @@ void lvglBatteryTrainResetEvent(lv_event_t *e)
                                         btns,
                                         false);
     if (!msgbox) return;
+    lvglApplyMsgboxModalStyle(msgbox);
     lv_obj_center(msgbox);
     lv_obj_add_event_cb(msgbox, lvglBatteryTrainResetPromptEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+}
+
+void lvglBatteryTrainFullConfirmEvent(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
+    lv_obj_t *msgbox = lv_event_get_current_target(e);
+    const char *btn = msgbox ? lv_msgbox_get_active_btn_text(msgbox) : nullptr;
+    if (btn && strcmp(btn, "FULL") == 0) {
+        batteryTrainingState.autoCalibrationEnabled = false;
+        batteryCalibrationForceFull(batteryRawVoltage);
+        batteryVoltage = batteryCalibratedVoltageFromRaw(batteryRawVoltage);
+        batteryPercent = batteryPercentFromVoltage(batteryVoltage);
+        batteryFilterInitialized = true;
+        chargePrevVoltage = batteryVoltage;
+        lastChargeEvalMs = millis();
+        batteryTrainingStopManual();
+        uiStatusLine = "Stored FULL anchor and forced current reading to full scale";
+        if (lvglReady) lvglSyncStatusLine();
+        lvglRefreshTopIndicators();
+        lvglRefreshBatteryTrainUi();
+    }
+    if (msgbox) lv_msgbox_close(msgbox);
 }
 
 void lvglBatteryTrainFullEvent(lv_event_t *e)
 {
     (void)e;
-    batteryCalibrationLearnFull(batteryRawVoltage);
-    batteryTrainingStopManual();
-    uiStatusLine = "Stored FULL anchor";
-    if (lvglReady) lvglSyncStatusLine();
-    lvglRefreshBatteryTrainUi();
+    static const char *btns[] = {"Cancel", "FULL", ""};
+    lv_obj_t *msgbox = lv_msgbox_create(nullptr,
+                                        "Confirm FULL",
+                                        "Store the current battery raw reading as the FULL anchor and recalibrate to the top of the curve?",
+                                        btns,
+                                        false);
+    if (!msgbox) return;
+    lvglApplyMsgboxModalStyle(msgbox);
+    lv_obj_center(msgbox);
+    lv_obj_add_event_cb(msgbox, lvglBatteryTrainFullConfirmEvent, LV_EVENT_VALUE_CHANGED, nullptr);
 }
 
 void lvglBatteryTrainDischargeEvent(lv_event_t *e)
@@ -14265,13 +14330,35 @@ void lvglBatteryTrainDischargeEvent(lv_event_t *e)
     lvglRefreshBatteryTrainUi();
 }
 
+void lvglBatteryTrainAutoConfirmEvent(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
+    lv_obj_t *msgbox = lv_event_get_current_target(e);
+    const char *btn = msgbox ? lv_msgbox_get_active_btn_text(msgbox) : nullptr;
+    if (btn && strcmp(btn, "Enable") == 0) {
+        batteryTrainingStopManual();
+        batteryTrainingState.autoCalibrationEnabled = true;
+        batteryTrainingSave();
+        uiStatusLine = "Battery auto calibration enabled";
+        if (lvglReady) lvglSyncStatusLine();
+        lvglRefreshBatteryTrainUi();
+    }
+    if (msgbox) lv_msgbox_close(msgbox);
+}
+
 void lvglBatteryTrainAutoEvent(lv_event_t *e)
 {
     (void)e;
-    batteryTrainingStopManual();
-    uiStatusLine = "Battery auto calibration active";
-    if (lvglReady) lvglSyncStatusLine();
-    lvglRefreshBatteryTrainUi();
+    static const char *btns[] = {"Enable", "Cancel", ""};
+    lv_obj_t *msgbox = lv_msgbox_create(nullptr,
+                                        "Battery Auto Calibration",
+                                        "Enable automatic charge-curve and low-battery learning in the background?",
+                                        btns,
+                                        true);
+    if (!msgbox) return;
+    lv_obj_center(msgbox);
+    lv_obj_add_event_cb(msgbox, lvglBatteryTrainAutoConfirmEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+    lvglApplyMsgboxModalStyle(msgbox);
 }
 
 void lvglAirplaneToggleEvent(lv_event_t *e)
@@ -14940,6 +15027,7 @@ void lvglService()
         String prompt = String("Device updated to FW Version ") + FW_VERSION;
         lv_obj_t *m = lv_msgbox_create(nullptr, "Update Complete", prompt.c_str(), btns, false);
         if (m) {
+            lvglApplyMsgboxModalStyle(m);
             lv_obj_center(m);
             lv_obj_set_width(m, min<int16_t>(DISPLAY_WIDTH - 24, 280));
             lv_obj_add_event_cb(m, lvglOtaPopupEvent, LV_EVENT_VALUE_CHANGED, nullptr);
@@ -14952,6 +15040,7 @@ void lvglService()
         String prompt = String("Firmware ") + (otaLatestVersion[0] ? otaLatestVersion : "?") + " is available.";
         lv_obj_t *m = lv_msgbox_create(nullptr, "Update Available", prompt.c_str(), btns, false);
         if (m) {
+            lvglApplyMsgboxModalStyle(m);
             lv_obj_center(m);
             lv_obj_set_width(m, min<int16_t>(DISPLAY_WIDTH - 24, 280));
             lv_obj_add_event_cb(m, lvglOtaAvailablePromptEvent, LV_EVENT_VALUE_CHANGED, nullptr);
@@ -14967,6 +15056,7 @@ void lvglService()
         }
         lv_obj_t *m = lv_msgbox_create(nullptr, "Pair Request", prompt.c_str(), btns, false);
         if (m) {
+            lvglApplyMsgboxModalStyle(m);
             lv_obj_center(m);
             lv_obj_set_width(m, min<int16_t>(DISPLAY_WIDTH - 24, 260));
             lv_obj_add_event_cb(m, lvglP2pPairPromptEvent, LV_EVENT_VALUE_CHANGED, nullptr);
@@ -15140,6 +15230,7 @@ static void batteryTrainingLoad()
     batteryPrefs.begin("battery", true);
     batteryTrainingState.active = batteryPrefs.getBool("train_on", false);
     batteryTrainingState.powerOverrideActive = batteryPrefs.getBool("train_ovr", false);
+    batteryTrainingState.autoCalibrationEnabled = batteryPrefs.getBool("auto_en", false);
     batteryTrainingState.phase = static_cast<BatteryTrainingPhase>(batteryPrefs.getUChar("train_ph", static_cast<uint8_t>(BATTERY_TRAIN_IDLE)));
     if (batteryTrainingState.phase > BATTERY_TRAIN_DISCHARGE) batteryTrainingState.phase = BATTERY_TRAIN_IDLE;
     batteryTrainingState.savedPowerOffMs = batteryPrefs.getULong("train_pwr", 0UL);
@@ -15153,6 +15244,7 @@ static void batteryTrainingSave()
     batteryPrefs.begin("battery", false);
     batteryPrefs.putBool("train_on", batteryTrainingState.active);
     batteryPrefs.putBool("train_ovr", batteryTrainingState.powerOverrideActive);
+    batteryPrefs.putBool("auto_en", batteryTrainingState.autoCalibrationEnabled);
     batteryPrefs.putUChar("train_ph", static_cast<uint8_t>(batteryTrainingState.phase));
     batteryPrefs.putULong("train_pwr", batteryTrainingState.savedPowerOffMs);
     batteryPrefs.end();
@@ -15160,10 +15252,13 @@ static void batteryTrainingSave()
 
 static const char *batteryTrainingPhaseLabel()
 {
+    if (!batteryTrainingState.active) {
+        return batteryTrainingState.autoCalibrationEnabled ? "Auto Calibration" : "Manual Calibration";
+    }
     switch (batteryTrainingState.phase) {
         case BATTERY_TRAIN_CHARGE: return "Charge Training";
         case BATTERY_TRAIN_DISCHARGE: return "Discharge Training";
-        default: return "Auto Calibration";
+        default: return "Manual Calibration";
     }
 }
 
@@ -15185,6 +15280,7 @@ static void batteryTrainingStartCharge()
     if (!batteryTrainingState.powerOverrideActive) batteryTrainingState.savedPowerOffMs = powerOffIdleTimeoutMs;
     powerOffIdleTimeoutMs = 0UL;
     batteryTrainingState.active = true;
+    batteryTrainingState.autoCalibrationEnabled = false;
     batteryTrainingState.phase = BATTERY_TRAIN_CHARGE;
     batteryTrainingState.powerOverrideActive = true;
     uiPrefs.begin("ui", false);
@@ -15202,6 +15298,7 @@ static void batteryTrainingStartDischarge()
     if (!batteryTrainingState.powerOverrideActive) batteryTrainingState.savedPowerOffMs = powerOffIdleTimeoutMs;
     powerOffIdleTimeoutMs = 0UL;
     batteryTrainingState.active = true;
+    batteryTrainingState.autoCalibrationEnabled = false;
     batteryTrainingState.phase = BATTERY_TRAIN_DISCHARGE;
     batteryTrainingState.powerOverrideActive = true;
     uiPrefs.begin("ui", false);
@@ -15239,6 +15336,29 @@ static void batteryCalibrationLearnFull(float rawV)
     batteryCalibrationSave();
 }
 
+static void batteryCalibrationSetFull(float rawV)
+{
+    if (rawV <= 0.0f) return;
+    batteryCalState.observedFullRawV = rawV;
+    batteryCalState.hasFullAnchor = true;
+    batteryCalibrationSave();
+}
+
+static void batteryCalibrationForceFull(float rawV)
+{
+    if (rawV <= 0.0f) return;
+    batteryCalState.observedFullRawV = rawV;
+    batteryCalState.hasFullAnchor = true;
+
+    // Rebuild the empty anchor onto the same scale so manual FULL maps the
+    // current reading to 4.20V immediately instead of being diluted by older data.
+    const float scale = BATTERY_FULL_V / rawV;
+    if (scale > 0.0f && batteryCalState.hasEmptyAnchor) {
+        batteryCalState.observedEmptyRawV = BATTERY_EMPTY_V / scale;
+    }
+    batteryCalibrationSave();
+}
+
 static void batteryCalibrationLearnEmpty(float rawV)
 {
     if (rawV <= 0.0f) return;
@@ -15249,32 +15369,42 @@ static void batteryCalibrationLearnEmpty(float rawV)
     batteryCalibrationSave();
 }
 
-float batteryCalibrationFactor()
+static float batteryCalibratedVoltageFromRaw(float rawV)
 {
-    float scale = 0.0f;
-    uint8_t weight = 0;
+    if (rawV <= 0.0f) return 0.0f;
 
-    if (batteryCalState.hasFullAnchor && batteryCalState.observedFullRawV > 0.0f) {
-        scale += BATTERY_FULL_V / batteryCalState.observedFullRawV;
-        weight++;
-    }
-    if (batteryCalState.hasEmptyAnchor && batteryCalState.observedEmptyRawV > 0.0f) {
-        scale += BATTERY_EMPTY_V / batteryCalState.observedEmptyRawV;
-        weight++;
-    }
     if (batteryCalState.hasFullAnchor && batteryCalState.hasEmptyAnchor) {
         const float observedSpan = batteryCalState.observedFullRawV - batteryCalState.observedEmptyRawV;
         if (observedSpan >= BATTERY_CAL_MIN_SPAN_V) {
-            scale += (BATTERY_FULL_V - BATTERY_EMPTY_V) / observedSpan;
-            weight++;
+            const float ratio = (rawV - batteryCalState.observedEmptyRawV) / observedSpan;
+            return BATTERY_EMPTY_V + ratio * (BATTERY_FULL_V - BATTERY_EMPTY_V);
         }
     }
 
-    if (weight == 0U) return BATTERY_CAL_FACTOR;
-    scale /= static_cast<float>(weight);
-    if (scale < BATTERY_CAL_FACTOR_MIN) scale = BATTERY_CAL_FACTOR_MIN;
-    if (scale > BATTERY_CAL_FACTOR_MAX) scale = BATTERY_CAL_FACTOR_MAX;
-    return scale;
+    if (batteryCalState.hasFullAnchor && batteryCalState.observedFullRawV > 0.0f) {
+        return rawV * (BATTERY_FULL_V / batteryCalState.observedFullRawV);
+    }
+
+    if (batteryCalState.hasEmptyAnchor && batteryCalState.observedEmptyRawV > 0.0f) {
+        return rawV * (BATTERY_EMPTY_V / batteryCalState.observedEmptyRawV);
+    }
+
+    return rawV * BATTERY_CAL_FACTOR;
+}
+
+float batteryCalibrationFactor()
+{
+    if (batteryRawVoltage > 0.0f) {
+        const float calibrated = batteryCalibratedVoltageFromRaw(batteryRawVoltage);
+        if (calibrated > 0.0f) return calibrated / batteryRawVoltage;
+    }
+    if (batteryCalState.hasFullAnchor && batteryCalState.observedFullRawV > 0.0f) {
+        return BATTERY_FULL_V / batteryCalState.observedFullRawV;
+    }
+    if (batteryCalState.hasEmptyAnchor && batteryCalState.observedEmptyRawV > 0.0f) {
+        return BATTERY_EMPTY_V / batteryCalState.observedEmptyRawV;
+    }
+    return BATTERY_CAL_FACTOR;
 }
 
 float readBatteryVoltage()
@@ -15369,7 +15499,7 @@ void sampleTopIndicators()
 {
     const unsigned long now = millis();
     batteryRawVoltage = readBatteryVoltage();
-    const float rawVoltage = batteryRawVoltage * batteryCalibrationFactor();
+    const float rawVoltage = batteryCalibratedVoltageFromRaw(batteryRawVoltage);
     if (!batteryFilterInitialized) {
         batteryVoltage = rawVoltage;
         batteryFilterInitialized = true;
@@ -15425,7 +15555,8 @@ void sampleTopIndicators()
         const bool sessionLongEnough = (now - chargeSessionStartMs) >= CHARGE_CAL_SESSION_MIN_MS;
         const bool sessionRoseEnough = (chargeSessionMaxRawVoltage - chargeSessionStartRawVoltage) >= CHARGE_CAL_SESSION_MIN_RISE_V;
         const bool plateauLongEnough = chargePlateauStartMs != 0 && (now - chargePlateauStartMs) >= CHARGE_CAL_PLATEAU_HOLD_MS;
-        if (sessionLongEnough && sessionRoseEnough && plateauLongEnough &&
+        if (batteryTrainingState.autoCalibrationEnabled &&
+            sessionLongEnough && sessionRoseEnough && plateauLongEnough &&
             chargeSessionMaxRawVoltage >= CHARGE_CAL_FULL_MIN_RAW_V) {
             batteryCalibrationLearnFull(chargeSessionMaxRawVoltage);
         }
@@ -18329,7 +18460,7 @@ void saveBatterySnapshot(float rawV, bool charging, uint32_t uptimeMs)
     batteryPrefs.begin("battery", false);
     batteryPrefs.putBool("valid", true);
     batteryPrefs.putFloat("raw_v", rawV);
-    batteryPrefs.putFloat("vbat", rawV * batteryCalibrationFactor());
+    batteryPrefs.putFloat("vbat", batteryCalibratedVoltageFromRaw(rawV));
     batteryPrefs.putBool("charging", charging);
     batteryPrefs.putULong("uptime_ms", uptimeMs);
     batteryPrefs.end();
@@ -22610,7 +22741,7 @@ void setup()
     sampleTopIndicators();
     BatterySnapshot prevBatterySnapshot;
     if (loadBatterySnapshot(prevBatterySnapshot)) {
-        const float prevBootV = prevBatterySnapshot.rawV * batteryCalibrationFactor();
+        const float prevBootV = batteryCalibratedVoltageFromRaw(prevBatterySnapshot.rawV);
         if ((batteryVoltage - prevBootV) >= BATTERY_BOOT_CHARGE_DELTA_V) {
             chargeTrendScore = CHARGE_SCORE_ON;
             batteryCharging = true;
@@ -22622,7 +22753,10 @@ void setup()
             !prevBatterySnapshot.charging &&
             prevBatterySnapshot.uptimeMs >= BATTERY_BOOT_EMPTY_MIN_UPTIME_MS &&
             prevBatterySnapshot.rawV <= BATTERY_BOOT_EMPTY_INFER_MAX_V;
-        if (inferEmptyFromPreviousCycle) {
+        const bool allowEmptyLearning =
+            batteryTrainingState.autoCalibrationEnabled ||
+            (batteryTrainingState.active && batteryTrainingState.phase == BATTERY_TRAIN_DISCHARGE);
+        if (allowEmptyLearning && inferEmptyFromPreviousCycle) {
             batteryCalibrationLearnEmpty(prevBatterySnapshot.rawV);
             if (batteryTrainingState.active && batteryTrainingState.phase == BATTERY_TRAIN_DISCHARGE) {
                 batteryTrainingStopManual();
