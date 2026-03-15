@@ -41,6 +41,7 @@ Board references used while adding `ESP32-3248S035` support:
 ![ESP32-S3 N16R8 swap 1](documents/Swap_to_ESP32_S3_N16R8_1.jpg)
 ![ESP32-S3 N16R8 swap 2](documents/Swap_to_ESP32_S3_N16R8_2.jpg)
 ![ESP32-S3 N16R8 board photo](documents/N16R8.jpg)
+![Top and bottom case halves](documents/connections_top_bottom_case_halves.jpeg)
 ![LoRa module photo](documents/LoRa.jpg)
 ![Recovery browser photo](documents/Recovery.jpg)
 
@@ -127,6 +128,10 @@ Notes:
 S3 notes:
 - RGB output is disabled because the original remap conflicts with octal PSRAM pins on `ESP32-S3-WROOM-1-N16R8`.
 - Audio backend is currently disabled in firmware on S3 because the existing internal DAC path is ESP32-only.
+
+Reference:
+
+![GPIO connection points on 035](documents/GPIO%20connection%20points%20on%20035.jpeg)
 
 ## Radio Module Wiring
 
