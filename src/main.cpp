@@ -44,9 +44,13 @@
 #include "generated/img_mqtt_conf_small_icon.h"
 #include "generated/img_mqtt_small_icon.h"
 #include "generated/img_ota_small_icon.h"
+#include "generated/img_power_small_icon.h"
 #include "generated/img_radio_small_icon.h"
 #include "generated/img_screenshot_small_icon.h"
+#include "generated/img_silent_small_icon.h"
+#include "generated/img_speaker_small_icon.h"
 #include "generated/img_styles_small_icon.h"
+#include "generated/img_vibro_small_icon.h"
 #include "generated/img_wifi_small_icon.h"
 #include "generated/recovery_browser_asset.h"
 
@@ -297,7 +301,7 @@ static constexpr uint8_t VIBRATION_QUEUE_MAX = 4;
 #endif
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.2.13";
+static constexpr const char *FW_VERSION = "0.2.14";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -317,24 +321,51 @@ static constexpr unsigned long NTP_SYNC_REFRESH_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr const char *NTP_SERVER_1 = "pool.ntp.org";
 static constexpr const char *NTP_SERVER_2 = "time.nist.gov";
 static constexpr const char *NTP_SERVER_3 = "time.google.com";
+static constexpr unsigned long POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS[] = {
+    2UL * 60UL * 1000UL,
+    5UL * 60UL * 1000UL,
+    15UL * 60UL * 1000UL,
+    30UL * 60UL * 1000UL,
+    0UL
+};
 
 static constexpr int HC12_UART_NUM = 1;
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
 static constexpr int HC12_RX_PIN = 5;
 static constexpr int HC12_TX_PIN = 4;
 static constexpr int HC12_SET_PIN = 3;
+static constexpr int E220_RX_PIN = 5;
+static constexpr int E220_TX_PIN = 4;
+static constexpr int E220_M0_PIN = 11;
+static constexpr int E220_M1_PIN = 3;
+static constexpr int POWER_OFF_SIGNAL_PIN = 21;
 #else
 static constexpr int HC12_RX_PIN = 39;
 static constexpr int HC12_TX_PIN = 1;
 static constexpr int HC12_SET_PIN = 22;
+static constexpr int E220_RX_PIN = -1;
+static constexpr int E220_TX_PIN = -1;
+static constexpr int E220_M0_PIN = -1;
+static constexpr int E220_M1_PIN = -1;
+static constexpr int POWER_OFF_SIGNAL_PIN = -1;
 #endif
 static constexpr unsigned long HC12_BAUD = 9600UL;
+static constexpr unsigned long E220_AT_BAUD = 9600UL;
+static constexpr unsigned long POWER_OFF_PULSE_MS = 100UL;
+static constexpr unsigned long POWER_OFF_GAP_MS = 100UL;
 static constexpr size_t HC12_TERMINAL_MAX_CHARS = 2800;
 static constexpr unsigned long HC12_SUPPORTED_BAUDS[] = {1200UL, 2400UL, 4800UL, 9600UL, 19200UL, 38400UL, 57600UL, 115200UL};
 static const char *const HC12_MODE_LABELS[] = {"Raw Mod", "Fast", "Norm", "LoRa"};
 static constexpr int8_t HC12_POWER_DBM[] = {-1, 2, 5, 8, 11, 14, 17, 20};
 static constexpr int HC12_MIN_CHANNEL = 1;
 static constexpr int HC12_MAX_CHANNEL = 100;
+static constexpr int E220_MIN_CHANNEL = 0;
+static constexpr int E220_MAX_CHANNEL = 83;
+static constexpr uint8_t E220_UART_BAUD_OPTIONS[] = {0, 1, 2, 3, 4, 5, 6, 7};
+static constexpr unsigned long E220_UART_BAUD_VALUES[] = {1200UL, 2400UL, 4800UL, 9600UL, 19200UL, 38400UL, 57600UL, 115200UL};
+static constexpr uint8_t E220_AIR_RATE_OPTIONS[] = {0, 1, 2, 3, 4, 5, 6, 7};
+static const char *const E220_AIR_RATE_LABELS[] = {"2.4k", "2.4k", "2.4k", "4.8k", "9.6k", "19.2k", "38.4k", "62.5k"};
+static constexpr int8_t E220_POWER_DBM[] = {22, 17, 13, 10};
 static constexpr char HC12_RADIO_FRAME_PREFIX[] = "@RMT|";
 static constexpr size_t HC12_RADIO_MAX_LINE = 1216;
 static constexpr int MAX_HC12_DISCOVERED = 8;
@@ -497,6 +528,9 @@ void chatQueueIncomingMessageVibration();
 void chatMessageVibrationService();
 static void chatMessageBeepPreview();
 static void chatMessageVibrationPreview();
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+static void chatMessageVibrationStop(bool clearQueue);
+#endif
 bool mediaPathIsFlac(const String &path);
 bool audioFlacSupportedNow(uint32_t *freeHeapOut = nullptr, uint32_t *largestOut = nullptr);
 wl_status_t wifiStatusSafe();
@@ -616,12 +650,17 @@ void lvglRefreshConfigUi();
 void lvglRefreshAllButtonStyles();
 void lvglSetButtonStyleMode(UiButtonStyleMode mode, bool persist);
 void lvglRefreshStyleUi();
+void lvglSoundPopupBackdropEvent(lv_event_t *e);
+void lvglSoundPopupVolumeEvent(lv_event_t *e);
+void lvglSoundPopupVibrationEvent(lv_event_t *e);
+void lvglSoundPopupDisableVibrationEvent(lv_event_t *e);
 void lvglApplyAirplaneButtonStyle();
 void lvglApplyApModeButtonStyle();
 void lvglApplyChatDiscoveryButtonStyle();
 void lvglApplyWifiWebServerButtonStyle();
 static void lvglAttachMenuButtonImage(lv_obj_t *btn, const lv_img_dsc_t *imgSrc, lv_coord_t xOffset, lv_coord_t labelShiftX);
 static void lvglRefreshPrimaryMenuButtonIcons();
+static void lvglRegisterStyledButton(lv_obj_t *btn, lv_color_t baseColor, bool compact);
 static String topBarCenterText();
 static bool internetTimeValid();
 static void syncInternetTimeIfNeeded(bool force = false);
@@ -794,6 +833,17 @@ static lv_obj_t *lvglHc12ModeValueLabel = nullptr;
 static lv_obj_t *lvglHc12ModeSubLabel = nullptr;
 static lv_obj_t *lvglHc12PowerValueLabel = nullptr;
 static lv_obj_t *lvglHc12PowerSubLabel = nullptr;
+static lv_obj_t *lvglRadioModuleDropdown = nullptr;
+static lv_obj_t *lvglRadioModuleHeader = nullptr;
+static lv_obj_t *lvglRadioChannelTitleLabel = nullptr;
+static lv_obj_t *lvglRadioBaudTitleLabel = nullptr;
+static lv_obj_t *lvglRadioModeTitleLabel = nullptr;
+static lv_obj_t *lvglRadioPowerTitleLabel = nullptr;
+static lv_obj_t *lvglRadioExtraCard = nullptr;
+static lv_obj_t *lvglRadioExtraTitleLabel = nullptr;
+static lv_obj_t *lvglRadioExtraValueLabel = nullptr;
+static lv_obj_t *lvglRadioExtraSubLabel = nullptr;
+static lv_obj_t *lvglRadioHintLabel = nullptr;
 static lv_obj_t *lvglHc12ConfigStatusLabel = nullptr;
 static lv_obj_t *lvglHc12InfoVersionLabel = nullptr;
 static lv_obj_t *lvglHc12InfoBaudLabel = nullptr;
@@ -863,6 +913,7 @@ static lv_obj_t *lvglAirplaneBtn = nullptr;
 static lv_obj_t *lvglAirplaneBtnLabel = nullptr;
 static lv_obj_t *lvglApModeBtn = nullptr;
 static lv_obj_t *lvglApModeBtnLabel = nullptr;
+static lv_obj_t *lvglHomePowerBtn = nullptr;
 static lv_obj_t *lvglHomeChatBtn = nullptr;
 static lv_obj_t *lvglHomeMediaBtn = nullptr;
 static lv_obj_t *lvglHomeInfoBtn = nullptr;
@@ -892,6 +943,7 @@ static lv_obj_t *lvglStyleTopCenterTimeBtn = nullptr;
 static lv_obj_t *lvglStyleTopCenterTimeBtnLabel = nullptr;
 static lv_obj_t *lvglStyleTimeoutSlider = nullptr;
 static lv_obj_t *lvglStyleTimeoutValueLabel = nullptr;
+static lv_obj_t *lvglStylePowerOffDropdown = nullptr;
 static bool lvglStyleUiSyncing = false;
 static lv_obj_t *lvglOtaCurrentLabel = nullptr;
 static lv_obj_t *lvglOtaLatestLabel = nullptr;
@@ -964,6 +1016,13 @@ static lv_obj_t *lvglSnake3dOverlayBtn = nullptr;
 static lv_obj_t *lvglSnake3dOverlayBtnLabel = nullptr;
 #endif
 static lv_obj_t *lvglTopBarRoot = nullptr;
+static lv_obj_t *lvglSoundPopup = nullptr;
+static lv_obj_t *lvglSoundPopupCard = nullptr;
+static lv_obj_t *lvglSoundPopupVolumeSlider = nullptr;
+static lv_obj_t *lvglSoundPopupVolumeValueLabel = nullptr;
+static lv_obj_t *lvglSoundPopupVolumeIcon = nullptr;
+static lv_obj_t *lvglSoundPopupVibrationDropdown = nullptr;
+static lv_obj_t *lvglSoundPopupVibrationDisableBtn = nullptr;
 static constexpr uint8_t LVGL_MAX_TOP_INDICATORS = 16;
 static lv_obj_t *lvglTopIndicators[LVGL_MAX_TOP_INDICATORS] = {};
 static bool lvglKeyboardShiftOneShot = false;
@@ -1011,6 +1070,7 @@ static bool lvglOtaUpdatePromptVisible = false;
 struct LvglTopIndicatorState {
     uint8_t batteryPercent;
     uint8_t wifiBars;
+    uint8_t soundMode;
     bool batteryCharging;
     bool batteryPulse;
     bool airplaneMode;
@@ -1248,6 +1308,7 @@ unsigned long lastChargeSeenMs = 0;
 bool displayAwake = true;
 uint8_t displayBrightnessPercent = 100;
 unsigned long displayIdleTimeoutMs = LCD_IDLE_TIMEOUT_MS_DEFAULT;
+unsigned long powerOffIdleTimeoutMs = 0;
 bool screensaverEnabled = false;
 bool screensaverActive = false;
 uint8_t rgbLedPercent = 100;
@@ -1359,6 +1420,12 @@ enum VibrationIntensity : uint8_t {
     VIBRATION_INTENSITY_COUNT
 };
 
+enum RadioModuleType : uint8_t {
+    RADIO_MODULE_HC12 = 0,
+    RADIO_MODULE_E220,
+    RADIO_MODULE_COUNT
+};
+
 enum MessageBeepTone : uint8_t {
     MESSAGE_BEEP_SINGLE = 0,
     MESSAGE_BEEP_DOUBLE_SHORT,
@@ -1372,14 +1439,25 @@ enum MessageBeepTone : uint8_t {
 };
 
 VibrationIntensity vibrationIntensity = VIBRATION_INTENSITY_MEDIUM;
+RadioModuleType radioModuleType = RADIO_MODULE_HC12;
 MessageBeepTone messageBeepTone = MESSAGE_BEEP_DOUBLE_SHORT;
+bool vibrationEnabled = true;
 
 static const char *tr(UiTextId id);
 static String buildLanguageDropdownOptions();
 static String buildVibrationIntensityDropdownOptions();
+static String buildRadioModuleDropdownOptions();
 static String buildMessageBeepDropdownOptions();
 static const char *vibrationIntensityLabel(VibrationIntensity intensity);
+static const char *radioModuleLabel(RadioModuleType module);
 static const char *messageBeepToneLabel(MessageBeepTone tone);
+static void saveSoundPrefs();
+static uint8_t uiSoundMode();
+static const lv_img_dsc_t *uiSoundModeIcon();
+static const lv_img_dsc_t *uiVolumeIcon();
+static void lvglRefreshSoundPopupUi();
+static void lvglShowSoundPopup();
+static void lvglHideSoundPopup();
 
 void lvglEnsureScreenBuilt(UiScreen screen);
 lv_obj_t *lvglScreenForUi(UiScreen screen);
@@ -1400,7 +1478,12 @@ enum ChatTransport : uint8_t {
     CHAT_TRANSPORT_WIFI = 0,
     CHAT_TRANSPORT_MQTT = 1,
     CHAT_TRANSPORT_HC12 = 2,
+    CHAT_TRANSPORT_E220 = 3,
 };
+
+static ChatTransport radioSelectedChatTransport();
+static bool radioModuleCanCarryChat();
+static const char *radioModuleChatLabel();
 
 struct ChatMessage {
     String author;
@@ -1530,6 +1613,19 @@ static String formatIdleTimeoutLabel(unsigned long ms)
     if (mins == 0UL) return String(secs) + " sec";
     if (secs == 0UL) return String(mins) + " min";
     return String(mins) + " min " + String(secs) + " sec";
+}
+
+static String buildPowerOffTimeoutDropdownOptions()
+{
+    return String("2 min\n5 min\n15 min\n30 min\nNever");
+}
+
+static int powerOffTimeoutOptionIndex(unsigned long ms)
+{
+    for (int i = 0; i < static_cast<int>(sizeof(POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS) / sizeof(POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS[0])); ++i) {
+        if (POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS[i] == ms) return i;
+    }
+    return static_cast<int>(sizeof(POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS) / sizeof(POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS[0])) - 1;
 }
 
 static String chatSafeFileToken(const String &raw);
@@ -1993,6 +2089,11 @@ int hc12CurrentChannel = HC12_MIN_CHANNEL;
 int hc12CurrentBaudIndex = 3;
 int hc12CurrentModeIndex = 2;
 int hc12CurrentPowerLevel = 8;
+int e220CurrentChannel = 23;
+int e220CurrentBaudIndex = 3;
+int e220CurrentAirRateIndex = 2;
+int e220CurrentPowerIndex = 0;
+bool e220CurrentFixedTransmission = false;
 String hc12ConfigStatusText = "Read current settings from module";
 String *hc12RadioRxLine = nullptr;
 unsigned long hc12LastDiscoveryAnnounceMs = 0;
@@ -3769,9 +3870,11 @@ void lvglTopIndicatorsDrawEvent(lv_event_t *e)
     const bool showUnreadMail = chatHasUnreadMessages() && !conversationOpen;
     const bool showOtaIcon = otaUpdateAvailable;
     const int battX = ox + ow - 54;
+    const int soundX = battX - 28;
+    const int mailX = soundX - 28;
+    const int otaX = mailX - 28;
     if (showOtaIcon) {
         const lv_color_t otaCol = lv_color_hex(0x79E28A);
-        const int otaX = battX - 56;
         const int otaY = topY + 4;
         lvglDrawRectSolid(drawCtx, otaX + 2, otaY + 1, 16, 12, otaCol, LV_OPA_30);
         lvglDrawLineSeg(drawCtx, otaX + 10, otaY + 2, otaX + 10, otaY + 12, otaCol, 2);
@@ -3779,9 +3882,26 @@ void lvglTopIndicatorsDrawEvent(lv_event_t *e)
         lvglDrawLineSeg(drawCtx, otaX + 14, otaY + 8, otaX + 10, otaY + 12, otaCol, 2);
         lvglDrawRectSolid(drawCtx, otaX + 4, otaY + 14, 12, 2, otaCol);
     }
+    {
+        lv_draw_img_dsc_t soundDsc;
+        lv_draw_img_dsc_init(&soundDsc);
+        soundDsc.opa = LV_OPA_COVER;
+        const lv_img_dsc_t *soundIcon = uiSoundModeIcon();
+        if (soundIcon) {
+            const int soundW = static_cast<int>(soundIcon->header.w);
+            const int soundH = static_cast<int>(soundIcon->header.h);
+            const int soundY = topY + 5;
+            lv_area_t soundArea = {
+                static_cast<lv_coord_t>(soundX),
+                static_cast<lv_coord_t>(soundY),
+                static_cast<lv_coord_t>(soundX + soundW - 1),
+                static_cast<lv_coord_t>(soundY + soundH - 1),
+            };
+            lv_draw_img(drawCtx, &soundDsc, &soundArea, soundIcon);
+        }
+    }
     if (showUnreadMail) {
         const lv_color_t mailCol = lv_color_hex(0xF2C35E);
-        const int mailX = battX - 28;
         const int mailY = topY + 5;
         lv_draw_rect_dsc_t mailFrame;
         lv_draw_rect_dsc_init(&mailFrame);
@@ -3828,7 +3948,7 @@ void lvglTopIndicatorsDrawEvent(lv_event_t *e)
     lv_area_t nameA;
     nameA.x1 = static_cast<lv_coord_t>(ox + 56);
     nameA.y1 = topNameY;
-    nameA.x2 = static_cast<lv_coord_t>(battX - ((showUnreadMail ? 34 : 8) + (showOtaIcon ? 28 : 0)));
+    nameA.x2 = static_cast<lv_coord_t>(soundX - ((showUnreadMail ? 34 : 8) + (showOtaIcon ? 28 : 0)));
     nameA.y2 = static_cast<lv_coord_t>(topNameY + topNameLineH + 2);
     lv_draw_label(drawCtx, &labelDsc, &nameA, topName.c_str(), nullptr);
     lv_area_t nameABold = nameA;
@@ -3874,6 +3994,15 @@ void lvglTopUnreadTapEvent(lv_event_t *e)
     if (!displayAwake) return;
     if (lvglKb && !lv_obj_has_flag(lvglKb, LV_OBJ_FLAG_HIDDEN)) lvglHideKeyboard();
     lv_async_call(lvglDeferredChatOpenFirstUnreadCallback, nullptr);
+}
+
+void lvglTopSoundTapEvent(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    if (lvglClickSuppressed()) return;
+    if (!displayAwake) return;
+    if (lvglKb && !lv_obj_has_flag(lvglKb, LV_OBJ_FLAG_HIDDEN)) lvglHideKeyboard();
+    lvglShowSoundPopup();
 }
 
 void lvglTopOtaTapEvent(lv_event_t *e)
@@ -3923,16 +4052,29 @@ void lvglCreateTopIndicators(lv_obj_t *header, bool backToHome)
     lv_obj_add_flag(mailTap, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(mailTap, lvglTopUnreadTapEvent, LV_EVENT_CLICKED, nullptr);
 
+    lv_obj_t *soundTap = lv_obj_create(header);
+    if (!soundTap) return;
+    lv_obj_set_size(soundTap, 30, UI_TOP_BAR_H - 2);
+    lv_obj_align(soundTap, LV_ALIGN_TOP_RIGHT, -56, 0);
+    lv_obj_set_style_bg_opa(soundTap, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(soundTap, 0, 0);
+    lv_obj_set_style_pad_all(soundTap, 0, 0);
+    lv_obj_clear_flag(soundTap, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(soundTap, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(soundTap, lvglTopSoundTapEvent, LV_EVENT_CLICKED, nullptr);
+
     lv_obj_t *otaTap = lv_obj_create(header);
     if (!otaTap) return;
     lv_obj_set_size(otaTap, 30, UI_TOP_BAR_H - 2);
-    lv_obj_align(otaTap, LV_ALIGN_TOP_RIGHT, -84, 0);
+    lv_obj_align(otaTap, LV_ALIGN_TOP_RIGHT, -112, 0);
     lv_obj_set_style_bg_opa(otaTap, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(otaTap, 0, 0);
     lv_obj_set_style_pad_all(otaTap, 0, 0);
     lv_obj_clear_flag(otaTap, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(otaTap, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(otaTap, lvglTopOtaTapEvent, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_align(mailTap, LV_ALIGN_TOP_RIGHT, -84, 0);
 }
 
 void lvglEnsurePersistentTopBar()
@@ -3959,6 +4101,7 @@ void lvglRefreshTopIndicators()
     next.batteryPercent = batteryPercent;
     next.batteryCharging = batteryCharging;
     next.batteryPulse = batteryCharging && (((millis() / 280UL) & 0x1U) != 0U);
+    next.soundMode = uiSoundMode();
     next.airplaneMode = airplaneModeEnabled;
     next.wifiConnected = wifiConnectedSafe();
     next.wifiConnecting = !next.wifiConnected && !airplaneModeEnabled && bootStaConnectInProgress;
@@ -3983,6 +4126,136 @@ void lvglRefreshTopIndicators()
     for (uint8_t i = 0; i < lvglTopIndicatorCount; i++) {
         if (lvglTopIndicators[i]) lv_obj_invalidate(lvglTopIndicators[i]);
     }
+}
+
+static void lvglSoundPopupSetIcon()
+{
+    if (!lvglSoundPopupVolumeIcon) return;
+    lv_img_set_src(lvglSoundPopupVolumeIcon, uiVolumeIcon());
+}
+
+static void lvglRefreshSoundPopupUi()
+{
+    if (!lvglSoundPopup || lv_obj_has_flag(lvglSoundPopup, LV_OBJ_FLAG_HIDDEN)) return;
+    if (lvglSoundPopupVolumeSlider && lv_slider_get_value(lvglSoundPopupVolumeSlider) != mediaVolumePercent) {
+        lv_slider_set_value(lvglSoundPopupVolumeSlider, mediaVolumePercent, LV_ANIM_OFF);
+    }
+    if (lvglSoundPopupVolumeValueLabel) lvglLabelSetTextIfChanged(lvglSoundPopupVolumeValueLabel, String(mediaVolumePercent) + "%");
+    if (lvglSoundPopupVibrationDropdown) {
+        lv_dropdown_set_options(lvglSoundPopupVibrationDropdown, buildVibrationIntensityDropdownOptions().c_str());
+        const uint16_t selected = static_cast<uint16_t>(vibrationIntensity);
+        if (lv_dropdown_get_selected(lvglSoundPopupVibrationDropdown) != selected) {
+            lv_dropdown_set_selected(lvglSoundPopupVibrationDropdown, selected);
+        }
+        if (vibrationEnabled) lv_obj_clear_state(lvglSoundPopupVibrationDropdown, LV_STATE_DISABLED);
+        else lv_obj_add_state(lvglSoundPopupVibrationDropdown, LV_STATE_DISABLED);
+    }
+    if (lvglSoundPopupVibrationDisableBtn) {
+        lv_obj_t *label = lv_obj_get_child(lvglSoundPopupVibrationDisableBtn, 0);
+        if (label) lvglLabelSetTextIfChanged(label, vibrationEnabled ? "X" : "Off");
+        lvglRegisterStyledButton(lvglSoundPopupVibrationDisableBtn, vibrationEnabled ? lv_color_hex(0x8A3A3A) : lv_color_hex(0x586674), true);
+    }
+    lvglSoundPopupSetIcon();
+}
+
+static void lvglHideSoundPopup()
+{
+    if (!lvglSoundPopup) return;
+    lv_obj_add_flag(lvglSoundPopup, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void lvglShowSoundPopup()
+{
+    if (!lvglReady) return;
+    if (!lvglSoundPopup) {
+        lvglSoundPopup = lv_obj_create(lv_layer_top());
+        if (!lvglSoundPopup) return;
+        lv_obj_set_size(lvglSoundPopup, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        lv_obj_center(lvglSoundPopup);
+        lv_obj_set_style_bg_color(lvglSoundPopup, lv_color_hex(0x000000), 0);
+        lv_obj_set_style_bg_opa(lvglSoundPopup, LV_OPA_50, 0);
+        lv_obj_set_style_border_width(lvglSoundPopup, 0, 0);
+        lv_obj_set_style_pad_all(lvglSoundPopup, 0, 0);
+        lv_obj_add_flag(lvglSoundPopup, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_clear_flag(lvglSoundPopup, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_event_cb(lvglSoundPopup, lvglSoundPopupBackdropEvent, LV_EVENT_CLICKED, nullptr);
+
+        lvglSoundPopupCard = lv_obj_create(lvglSoundPopup);
+        if (!lvglSoundPopupCard) return;
+        lv_obj_set_size(lvglSoundPopupCard, DISPLAY_WIDTH - 26, 118);
+        lv_obj_align(lvglSoundPopupCard, LV_ALIGN_TOP_MID, 0, UI_TOP_BAR_H + 10);
+        lv_obj_set_style_bg_color(lvglSoundPopupCard, lv_color_hex(0x16212C), 0);
+        lv_obj_set_style_border_color(lvglSoundPopupCard, lv_color_hex(0x5A6B7C), 0);
+        lv_obj_set_style_border_width(lvglSoundPopupCard, 1, 0);
+        lv_obj_set_style_radius(lvglSoundPopupCard, 12, 0);
+        lv_obj_set_style_pad_all(lvglSoundPopupCard, 10, 0);
+        lv_obj_set_style_pad_row(lvglSoundPopupCard, 10, 0);
+        lv_obj_set_flex_flow(lvglSoundPopupCard, LV_FLEX_FLOW_COLUMN);
+        lv_obj_clear_flag(lvglSoundPopupCard, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *volumeRow = lv_obj_create(lvglSoundPopupCard);
+        lv_obj_set_size(volumeRow, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(volumeRow, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(volumeRow, 0, 0);
+        lv_obj_set_style_pad_all(volumeRow, 0, 0);
+        lv_obj_set_style_pad_column(volumeRow, 8, 0);
+        lv_obj_set_flex_flow(volumeRow, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(volumeRow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_clear_flag(volumeRow, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *volumeLabel = lv_label_create(volumeRow);
+        lv_label_set_text(volumeLabel, tr(TXT_VOLUME));
+        lv_obj_set_style_text_color(volumeLabel, lv_color_hex(0xE5ECF3), 0);
+
+        lvglSoundPopupVolumeSlider = lv_slider_create(volumeRow);
+        lv_obj_set_width(lvglSoundPopupVolumeSlider, 122);
+        lv_slider_set_range(lvglSoundPopupVolumeSlider, 0, 100);
+        lv_obj_add_event_cb(lvglSoundPopupVolumeSlider, lvglSoundPopupVolumeEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+
+        lvglSoundPopupVolumeValueLabel = lv_label_create(volumeRow);
+        lv_obj_set_width(lvglSoundPopupVolumeValueLabel, 38);
+        lv_obj_set_style_text_color(lvglSoundPopupVolumeValueLabel, lv_color_hex(0xB7C4D1), 0);
+
+        lvglSoundPopupVolumeIcon = lv_img_create(volumeRow);
+        lv_obj_set_size(lvglSoundPopupVolumeIcon, 24, 24);
+
+        lv_obj_t *vibrationRow = lv_obj_create(lvglSoundPopupCard);
+        lv_obj_set_size(vibrationRow, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(vibrationRow, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(vibrationRow, 0, 0);
+        lv_obj_set_style_pad_all(vibrationRow, 0, 0);
+        lv_obj_set_style_pad_column(vibrationRow, 8, 0);
+        lv_obj_set_flex_flow(vibrationRow, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(vibrationRow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_clear_flag(vibrationRow, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *vibrationLabel = lv_label_create(vibrationRow);
+        lv_label_set_text(vibrationLabel, "Vibration");
+        lv_obj_set_style_text_color(vibrationLabel, lv_color_hex(0xE5ECF3), 0);
+
+        lvglSoundPopupVibrationDropdown = lv_dropdown_create(vibrationRow);
+        lv_obj_set_width(lvglSoundPopupVibrationDropdown, 126);
+        lv_obj_set_flex_grow(lvglSoundPopupVibrationDropdown, 1);
+        lv_obj_add_event_cb(lvglSoundPopupVibrationDropdown, lvglSoundPopupVibrationEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+        lv_obj_add_event_cb(lvglSoundPopupVibrationDropdown, lvglGestureBlockEvent, LV_EVENT_PRESSED, nullptr);
+        lv_obj_add_event_cb(lvglSoundPopupVibrationDropdown, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
+        lv_obj_add_event_cb(lvglSoundPopupVibrationDropdown, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
+
+        lvglSoundPopupVibrationDisableBtn = lv_btn_create(vibrationRow);
+        lv_obj_set_size(lvglSoundPopupVibrationDisableBtn, 42, 34);
+        lv_obj_set_style_radius(lvglSoundPopupVibrationDisableBtn, 8, 0);
+        lv_obj_set_style_border_width(lvglSoundPopupVibrationDisableBtn, 0, 0);
+        lv_obj_add_event_cb(lvglSoundPopupVibrationDisableBtn, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
+        lv_obj_add_event_cb(lvglSoundPopupVibrationDisableBtn, lvglFilteredClickFlashEvent, LV_EVENT_CLICKED, nullptr);
+        lv_obj_add_event_cb(lvglSoundPopupVibrationDisableBtn, lvglSoundPopupDisableVibrationEvent, LV_EVENT_CLICKED, nullptr);
+        lv_obj_t *disableLabel = lv_label_create(lvglSoundPopupVibrationDisableBtn);
+        lv_label_set_text(disableLabel, "X");
+        lv_obj_center(disableLabel);
+    }
+
+    lv_obj_clear_flag(lvglSoundPopup, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(lvglSoundPopup);
+    lvglRefreshSoundPopupUi();
 }
 
 lv_obj_t *lvglCreateScreenBase(const char *title, bool backToHome = false)
@@ -4667,6 +4940,25 @@ static String buildLanguageDropdownOptions()
     return options;
 }
 
+static const char *radioModuleLabel(RadioModuleType module)
+{
+    switch (module) {
+        case RADIO_MODULE_E220: return "Ebyte E220-400T22D";
+        case RADIO_MODULE_HC12:
+        default: return "HC-12";
+    }
+}
+
+static String buildRadioModuleDropdownOptions()
+{
+    String options = radioModuleLabel(RADIO_MODULE_HC12);
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+    options += "\n";
+    options += radioModuleLabel(RADIO_MODULE_E220);
+#endif
+    return options;
+}
+
 static String buildVibrationIntensityDropdownOptions()
 {
     String options;
@@ -4675,6 +4967,37 @@ static String buildVibrationIntensityDropdownOptions()
         options += vibrationIntensityLabel(static_cast<VibrationIntensity>(i));
     }
     return options;
+}
+
+static void saveSoundPrefs()
+{
+    uiPrefs.begin("ui", false);
+    uiPrefs.putUChar("sys_vol", mediaVolumePercent);
+    uiPrefs.putBool("vib_en", vibrationEnabled);
+    uiPrefs.putUChar("vib_int", static_cast<uint8_t>(vibrationIntensity));
+    uiPrefs.end();
+}
+
+static uint8_t uiSoundMode()
+{
+    if (mediaVolumePercent > 0) return 2;
+    if (vibrationEnabled) return 1;
+    return 0;
+}
+
+static const lv_img_dsc_t *uiSoundModeIcon()
+{
+    switch (uiSoundMode()) {
+        case 0: return &img_silent_small_icon;
+        case 1: return &img_vibro_small_icon;
+        case 2:
+        default: return &img_speaker_small_icon;
+    }
+}
+
+static const lv_img_dsc_t *uiVolumeIcon()
+{
+    return mediaVolumePercent > 0 ? &img_speaker_small_icon : &img_silent_small_icon;
 }
 
 static const char *messageBeepToneLabel(MessageBeepTone tone)
@@ -4836,7 +5159,7 @@ static const char *tr(UiTextId id)
                 case TXT_AP_MODE_ON: return "Mode AP: ON";
                 case TXT_AP_MODE_OFF: return "Mode AP: OFF";
                 case TXT_WIFI_CONFIG: return "Config WiFi";
-                case TXT_HC12_CONFIG: return "Config HC12";
+                case TXT_HC12_CONFIG: return "Config Radio";
                 case TXT_STYLE: return "Style";
                 case TXT_MQTT_CONFIG: return "Config MQTT";
                 case TXT_MQTT_CONTROLS: return "Commandes MQTT";
@@ -4850,8 +5173,8 @@ static const char *tr(UiTextId id)
                 case TXT_RGB_LED: return "LED RGB";
                 case TXT_SELECT_DISPLAY_LANGUAGE: return "Choisir la langue";
                 case TXT_LANGUAGE_SAVED: return "Langue enregistree";
-                case TXT_HC12_TERMINAL: return "Terminal HC12";
-                case TXT_HC12_INFO: return "Infos HC12";
+                case TXT_HC12_TERMINAL: return "Terminal Radio";
+                case TXT_HC12_INFO: return "Infos Radio";
                 case TXT_CHECKERS: return "Dames";
                 case TXT_SNAKE_3D: return "Snake 3D";
                 case TXT_SCREEN:
@@ -4870,7 +5193,7 @@ static const char *tr(UiTextId id)
                 case TXT_AP_MODE_ON: return "AP modu: Acik";
                 case TXT_AP_MODE_OFF: return "AP modu: Kapali";
                 case TXT_WIFI_CONFIG: return "WiFi Ayari";
-                case TXT_HC12_CONFIG: return "HC12 Ayari";
+                case TXT_HC12_CONFIG: return "Radyo Ayari";
                 case TXT_STYLE: return "Stil";
                 case TXT_MQTT_CONFIG: return "MQTT Ayari";
                 case TXT_MQTT_CONTROLS: return "MQTT Kontroller";
@@ -4884,8 +5207,8 @@ static const char *tr(UiTextId id)
                 case TXT_RGB_LED: return "RGB LED";
                 case TXT_SELECT_DISPLAY_LANGUAGE: return "Gosterim dilini sec";
                 case TXT_LANGUAGE_SAVED: return "Dil kaydedildi";
-                case TXT_HC12_TERMINAL: return "HC12 Terminal";
-                case TXT_HC12_INFO: return "HC12 Bilgi";
+                case TXT_HC12_TERMINAL: return "Radyo Terminal";
+                case TXT_HC12_INFO: return "Radyo Bilgi";
                 case TXT_CHECKERS: return "Dama";
                 case TXT_SNAKE_3D: return "Yilan 3D";
                 case TXT_SCREEN:
@@ -4904,7 +5227,7 @@ static const char *tr(UiTextId id)
                 case TXT_AP_MODE_ON: return "Modalita AP: ON";
                 case TXT_AP_MODE_OFF: return "Modalita AP: OFF";
                 case TXT_WIFI_CONFIG: return "Config WiFi";
-                case TXT_HC12_CONFIG: return "Config HC12";
+                case TXT_HC12_CONFIG: return "Config Radio";
                 case TXT_STYLE: return "Stile";
                 case TXT_MQTT_CONFIG: return "Config MQTT";
                 case TXT_MQTT_CONTROLS: return "Controlli MQTT";
@@ -4918,8 +5241,8 @@ static const char *tr(UiTextId id)
                 case TXT_RGB_LED: return "LED RGB";
                 case TXT_SELECT_DISPLAY_LANGUAGE: return "Seleziona lingua display";
                 case TXT_LANGUAGE_SAVED: return "Lingua salvata";
-                case TXT_HC12_TERMINAL: return "Terminale HC12";
-                case TXT_HC12_INFO: return "Info HC12";
+                case TXT_HC12_TERMINAL: return "Terminale Radio";
+                case TXT_HC12_INFO: return "Info Radio";
                 case TXT_CHECKERS: return "Dama";
                 case TXT_SNAKE_3D: return "Snake 3D";
                 case TXT_SCREEN:
@@ -4938,7 +5261,7 @@ static const char *tr(UiTextId id)
                 case TXT_AP_MODE_ON: return "AP Modus: EIN";
                 case TXT_AP_MODE_OFF: return "AP Modus: AUS";
                 case TXT_WIFI_CONFIG: return "WLAN Konfig";
-                case TXT_HC12_CONFIG: return "HC12 Konfig";
+                case TXT_HC12_CONFIG: return "Radio Konfig";
                 case TXT_STYLE: return "Stil";
                 case TXT_MQTT_CONFIG: return "MQTT Konfig";
                 case TXT_MQTT_CONTROLS: return "MQTT Steuerung";
@@ -4952,8 +5275,8 @@ static const char *tr(UiTextId id)
                 case TXT_RGB_LED: return "RGB LED";
                 case TXT_SELECT_DISPLAY_LANGUAGE: return "Displaysprache wahlen";
                 case TXT_LANGUAGE_SAVED: return "Sprache gespeichert";
-                case TXT_HC12_TERMINAL: return "HC12 Terminal";
-                case TXT_HC12_INFO: return "HC12 Info";
+                case TXT_HC12_TERMINAL: return "Radio Terminal";
+                case TXT_HC12_INFO: return "Radio Info";
                 case TXT_CHECKERS: return "Dame";
                 case TXT_SNAKE_3D: return "Snake 3D";
                 case TXT_SCREEN:
@@ -5041,7 +5364,7 @@ static const char *tr(UiTextId id)
                 case TXT_AP_MODE_ON: return "AP Mode: ON";
                 case TXT_AP_MODE_OFF: return "AP Mode: OFF";
                 case TXT_WIFI_CONFIG: return "WiFi Config";
-                case TXT_HC12_CONFIG: return "HC12 Config";
+                case TXT_HC12_CONFIG: return "Radio Config";
                 case TXT_STYLE: return "Style";
                 case TXT_MQTT_CONFIG: return "MQTT Config";
                 case TXT_MQTT_CONTROLS: return "MQTT Controls";
@@ -5055,8 +5378,8 @@ static const char *tr(UiTextId id)
                 case TXT_RGB_LED: return "RGB LED";
                 case TXT_SELECT_DISPLAY_LANGUAGE: return "Select display language";
                 case TXT_LANGUAGE_SAVED: return "Language saved";
-                case TXT_HC12_TERMINAL: return "HC12 Terminal";
-                case TXT_HC12_INFO: return "HC12 Info";
+                case TXT_HC12_TERMINAL: return "Radio Terminal";
+                case TXT_HC12_INFO: return "Radio Info";
                 case TXT_CHECKERS: return "Checkers";
                 case TXT_SNAKE_3D: return "Snake 3D";
                 case TXT_SCREEN:
@@ -5115,6 +5438,7 @@ static void lvglRefreshPrimaryMenuButtonIcons()
     lvglSetMenuButtonIconMode(lvglHomeInfoBtn, tr(TXT_INFO), LV_SYMBOL_WARNING, &img_info_small_icon);
     lvglSetMenuButtonIconMode(lvglHomeGamesBtn, tr(TXT_GAMES), LV_SYMBOL_PLAY, &img_games_small_icon);
     lvglSetMenuButtonIconMode(lvglHomeConfigBtn, tr(TXT_CONFIG), LV_SYMBOL_SETTINGS, &img_config_small_icon);
+    lvglSetMenuButtonIconMode(lvglHomePowerBtn, "Power", LV_SYMBOL_POWER, &img_power_small_icon);
 
     lvglSetMenuButtonIconMode(lvglAirplaneBtn,
                               airplaneModeEnabled ? tr(TXT_AIRPLANE_ON) : tr(TXT_AIRPLANE_OFF),
@@ -6319,7 +6643,7 @@ static bool chatSendRawReliableMessage(const String &peerKey, const String &text
     if (storeVisible) {
         const ChatTransport storedTransport = sentGlobal ? CHAT_TRANSPORT_MQTT
                                                          : (sentLan ? CHAT_TRANSPORT_WIFI
-                                                                    : (sentRadio ? CHAT_TRANSPORT_HC12 : CHAT_TRANSPORT_WIFI));
+                                                                    : (sentRadio ? radioSelectedChatTransport() : CHAT_TRANSPORT_WIFI));
         chatStoreMessage(peerKey, "Me", text, true, storedTransport, messageId);
         if (lvglReady) {
             if (uiScreen == UI_CHAT) lvglRefreshChatUi();
@@ -6710,9 +7034,18 @@ void lvglStyleTimezoneEvent(lv_event_t *e);
 void lvglLanguageDropdownEvent(lv_event_t *e);
 void lvglVibrationDropdownEvent(lv_event_t *e);
 void lvglMessageToneDropdownEvent(lv_event_t *e);
+void lvglSoundPopupBackdropEvent(lv_event_t *e);
+void lvglSoundPopupVolumeEvent(lv_event_t *e);
+void lvglSoundPopupVibrationEvent(lv_event_t *e);
+void lvglSoundPopupDisableVibrationEvent(lv_event_t *e);
+void lvglRadioModuleDropdownEvent(lv_event_t *e);
+void lvglHc12PrevExtraEvent(lv_event_t *e);
+void lvglHc12NextExtraEvent(lv_event_t *e);
+void lvglRadioModeWarningEvent(lv_event_t *e);
 void lvglStyleTopCenterNameEvent(lv_event_t *e);
 void lvglStyleTopCenterTimeEvent(lv_event_t *e);
 void lvglStyleTimeoutEvent(lv_event_t *e);
+void lvglStylePowerOffEvent(lv_event_t *e);
 void lvglRefreshStyleUi();
 void lvglRefreshLanguageUi();
 void lvglRefreshLocalizedUi();
@@ -6723,7 +7056,10 @@ void lvglAirplaneToggleEvent(lv_event_t *e);
 void lvglChatAirplanePromptEvent(lv_event_t *e);
 void lvglShowChatAirplanePrompt();
 bool lvglChatPromptIfAirplaneBlocked();
+void lvglPowerButtonEvent(lv_event_t *e);
+void lvglPowerConfirmEvent(lv_event_t *e);
 void lvglScreenshotEvent(lv_event_t *e);
+void lvglStatusPush(const String &line);
 void lvglBrightnessEvent(lv_event_t *e);
 void lvglConfigVolumeEvent(lv_event_t *e);
 void lvglRgbLedEvent(lv_event_t *e);
@@ -6738,6 +7074,8 @@ static bool hc12ApplyChannel(int channel);
 static bool hc12ApplyBaudIndex(int index);
 static bool hc12ApplyModeIndex(int index);
 static bool hc12ApplyPowerLevel(int level);
+static void loadPersistedRadioSettings();
+static void savePersistedRadioSettings();
 static bool hc12FactoryReset();
 static String hc12CompactResponse(String raw);
 static String hc12FieldValue(const String &raw, const char *prefix);
@@ -6933,6 +7271,9 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglHomeInfoBtn = lvglCreateMenuButton(homeWrap, tr(TXT_INFO), lv_color_hex(0x7750A0), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_INFO)));
             lvglHomeGamesBtn = lvglCreateMenuButton(homeWrap, tr(TXT_GAMES), lv_color_hex(0x2B7D7D), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_GAMES)));
             lvglHomeConfigBtn = lvglCreateMenuButton(homeWrap, tr(TXT_CONFIG), lv_color_hex(0x925A73), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CONFIG)));
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+            lvglHomePowerBtn = lvglCreateMenuButton(homeWrap, "Power", lv_color_hex(0xA33F3F), lvglPowerButtonEvent, nullptr);
+#endif
             lvglAirplaneBtn = lvglCreateMenuButton(homeWrap, tr(TXT_AIRPLANE_OFF), lv_color_hex(0x8A5A25), lvglAirplaneToggleEvent, nullptr);
             if (lvglAirplaneBtn) {
                 lvglAirplaneBtnLabel = lv_obj_get_child(lvglAirplaneBtn, 0);
@@ -6949,6 +7290,9 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglRegisterReorderableItem(lvglHomeInfoBtn, "ord_home", "info");
             lvglRegisterReorderableItem(lvglHomeGamesBtn, "ord_home", "games");
             lvglRegisterReorderableItem(lvglHomeConfigBtn, "ord_home", "config");
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+            lvglRegisterReorderableItem(lvglHomePowerBtn, "ord_home", "power");
+#endif
             lvglRegisterReorderableItem(lvglAirplaneBtn, "ord_home", "air");
             lvglRegisterReorderableItem(lvglApModeBtn, "ord_home", "ap");
             lvglApplySavedOrder(homeWrap, "ord_home");
@@ -7247,7 +7591,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
                                                     &lvglInfoWifiValueLabel, &lvglInfoWifiSubLabel, &tmp);
                 lvglRegisterReorderableItem(card, "ord_info", "wifi");
             }
-            lv_obj_t *hc12InfoCard = lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_SETTINGS, "HC-12 Info", lv_color_hex(0x7A5C2E),
+            lv_obj_t *hc12InfoCard = lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_SETTINGS, "Radio Info", lv_color_hex(0x7A5C2E),
                                                         &lvglInfoHc12ValueLabel, &lvglInfoHc12SubLabel);
             lvglRegisterReorderableItem(hc12InfoCard, "ord_info", "hc12");
             {
@@ -7785,11 +8129,37 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_add_event_cb(lvglStyleTimeoutSlider, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
             lvglApplyStyleScreenControlStyles();
 
+            lv_obj_t *powerWrap = lv_obj_create(timeWrap);
+            lv_obj_set_size(powerWrap, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(powerWrap, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(powerWrap, 0, 0);
+            lv_obj_set_style_pad_all(powerWrap, 0, 0);
+            lv_obj_set_style_pad_row(powerWrap, 6, 0);
+            lv_obj_set_flex_flow(powerWrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_clear_flag(powerWrap, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *powerHdr = lv_label_create(powerWrap);
+            lv_label_set_text(powerHdr, "Power Off");
+            lv_obj_set_style_text_color(powerHdr, lv_color_hex(0xE5ECF3), 0);
+
+            lvglStylePowerOffDropdown = lv_dropdown_create(powerWrap);
+            lv_obj_set_width(lvglStylePowerOffDropdown, lv_pct(100));
+            lv_dropdown_set_options(lvglStylePowerOffDropdown, buildPowerOffTimeoutDropdownOptions().c_str());
+            lv_obj_set_style_bg_color(lvglStylePowerOffDropdown, lv_color_hex(0x111922), 0);
+            lv_obj_set_style_text_color(lvglStylePowerOffDropdown, lv_color_hex(0xE5ECF3), 0);
+            lv_obj_set_style_border_color(lvglStylePowerOffDropdown, lv_color_hex(0x2F4658), 0);
+            lv_obj_set_style_border_width(lvglStylePowerOffDropdown, 1, 0);
+            lv_obj_set_style_radius(lvglStylePowerOffDropdown, 8, 0);
+            lv_obj_add_event_cb(lvglStylePowerOffDropdown, lvglStylePowerOffEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+            lv_obj_add_event_cb(lvglStylePowerOffDropdown, lvglGestureBlockEvent, LV_EVENT_PRESSED, nullptr);
+            lv_obj_add_event_cb(lvglStylePowerOffDropdown, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
+            lv_obj_add_event_cb(lvglStylePowerOffDropdown, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
+
             lv_obj_t *hint = lv_label_create(timeWrap);
             lv_obj_set_width(hint, lv_pct(100));
             lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
             lv_obj_set_style_text_color(hint, lv_color_hex(0x9FB0C2), 0);
-            lv_label_set_text(hint, "Idle timeout can switch to a centered robot-eye screensaver inspired by esp32-eyes. Touch anywhere to return.");
+            lv_label_set_text(hint, "Screen Timeoff controls sleep/screensaver. Power Off can send a hardware shutdown signal after longer inactivity to save battery.");
             lvglRefreshStyleUi();
             break;
         }
@@ -7905,7 +8275,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             break;
         }
         case UI_CONFIG_HC12: {
-            lvglScrHc12 = lvglCreateScreenBase("HC12 Config", false);
+            lvglScrHc12 = lvglCreateScreenBase("Radio Config", false);
             lv_obj_t *wrap = lv_obj_create(lvglScrHc12);
             lv_obj_set_size(wrap, lv_pct(100), UI_CONTENT_H);
             lv_obj_align(wrap, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
@@ -7921,6 +8291,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
                                        lv_color_t accent,
                                        lv_event_cb_t prevCb,
                                        lv_event_cb_t nextCb,
+                                       lv_obj_t **titleOut,
                                        lv_obj_t **valueOut,
                                        lv_obj_t **subOut) -> lv_obj_t * {
                 lv_obj_t *card = lv_obj_create(wrap);
@@ -7938,6 +8309,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
                 lv_obj_t *titleLbl = lv_label_create(card);
                 lv_label_set_text(titleLbl, title);
                 lv_obj_set_style_text_color(titleLbl, lv_color_hex(0x9FB0C2), 0);
+                if (titleOut) *titleOut = titleLbl;
 
                 lv_obj_t *row = lv_obj_create(card);
                 lv_obj_set_width(row, lv_pct(100));
@@ -7979,14 +8351,33 @@ void lvglEnsureScreenBuilt(UiScreen screen)
                 return card;
             };
 
+            lvglRadioModuleHeader = lv_label_create(wrap);
+            lv_label_set_text(lvglRadioModuleHeader, "Radio Module");
+            lv_obj_set_style_text_color(lvglRadioModuleHeader, lv_color_hex(0xE5ECF3), 0);
+
+            lvglRadioModuleDropdown = lv_dropdown_create(wrap);
+            lv_obj_set_width(lvglRadioModuleDropdown, lv_pct(100));
+            lv_dropdown_set_options(lvglRadioModuleDropdown, buildRadioModuleDropdownOptions().c_str());
+            lv_obj_set_style_bg_color(lvglRadioModuleDropdown, lv_color_hex(0x111922), 0);
+            lv_obj_set_style_text_color(lvglRadioModuleDropdown, lv_color_hex(0xE5ECF3), 0);
+            lv_obj_set_style_border_color(lvglRadioModuleDropdown, lv_color_hex(0x2F4658), 0);
+            lv_obj_set_style_border_width(lvglRadioModuleDropdown, 1, 0);
+            lv_obj_set_style_radius(lvglRadioModuleDropdown, 8, 0);
+            lv_obj_add_event_cb(lvglRadioModuleDropdown, lvglRadioModuleDropdownEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+            lv_obj_add_event_cb(lvglRadioModuleDropdown, lvglGestureBlockEvent, LV_EVENT_PRESSED, nullptr);
+            lv_obj_add_event_cb(lvglRadioModuleDropdown, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
+            lv_obj_add_event_cb(lvglRadioModuleDropdown, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
+
             lv_obj_t *hc12ChannelCard = makeSelectorRow("Channel", lv_color_hex(0x7A5C2E), lvglHc12PrevChannelEvent, lvglHc12NextChannelEvent,
-                                                        &lvglHc12ChannelValueLabel, &lvglHc12ChannelSubLabel);
+                                                        &lvglRadioChannelTitleLabel, &lvglHc12ChannelValueLabel, &lvglHc12ChannelSubLabel);
             lv_obj_t *hc12BaudCard = makeSelectorRow("Baud Rate", lv_color_hex(0x2F6D86), lvglHc12PrevBaudEvent, lvglHc12NextBaudEvent,
-                                                     &lvglHc12BaudValueLabel, &lvglHc12BaudSubLabel);
+                                                     &lvglRadioBaudTitleLabel, &lvglHc12BaudValueLabel, &lvglHc12BaudSubLabel);
             lv_obj_t *hc12ModeCard = makeSelectorRow("Transmission Mode", lv_color_hex(0x355E8A), lvglHc12PrevModeEvent, lvglHc12NextModeEvent,
-                                                     &lvglHc12ModeValueLabel, &lvglHc12ModeSubLabel);
+                                                     &lvglRadioModeTitleLabel, &lvglHc12ModeValueLabel, &lvglHc12ModeSubLabel);
             lv_obj_t *hc12PowerCard = makeSelectorRow("Transmission Power", lv_color_hex(0xA35757), lvglHc12PrevPowerEvent, lvglHc12NextPowerEvent,
-                                                      &lvglHc12PowerValueLabel, &lvglHc12PowerSubLabel);
+                                                      &lvglRadioPowerTitleLabel, &lvglHc12PowerValueLabel, &lvglHc12PowerSubLabel);
+            lvglRadioExtraCard = makeSelectorRow("Transfer Mode", lv_color_hex(0x5E7B35), lvglHc12PrevExtraEvent, lvglHc12NextExtraEvent,
+                                                 &lvglRadioExtraTitleLabel, &lvglRadioExtraValueLabel, &lvglRadioExtraSubLabel);
 
             lv_obj_t *hc12DefaultBtn = lvglCreateMenuButton(wrap, lvglSymbolText(LV_SYMBOL_REFRESH, "Default").c_str(), lv_color_hex(0xA35757), lvglHc12DefaultEvent, nullptr);
             lvglHc12ConfigStatusLabel = lv_label_create(wrap);
@@ -7997,8 +8388,8 @@ void lvglEnsureScreenBuilt(UiScreen screen)
                 lv_obj_set_style_text_color(lvglHc12ConfigStatusLabel, lv_color_hex(0xA8BACB), 0);
             }
 
-            lv_obj_t *hc12TerminalBtn = lvglCreateMenuButton(wrap, lvglSymbolText(LV_SYMBOL_KEYBOARD, "Serial Terminal").c_str(), lv_color_hex(0x2F6D86), lvglOpenHc12TerminalEvent, nullptr);
-            lv_obj_t *hc12InfoBtn = lvglCreateMenuButton(wrap, lvglSymbolText(LV_SYMBOL_LIST, "Info").c_str(), lv_color_hex(0x7A5C2E), lvglOpenHc12InfoEvent, nullptr);
+            lv_obj_t *hc12TerminalBtn = lvglCreateMenuButton(wrap, lvglSymbolText(LV_SYMBOL_KEYBOARD, "Radio Terminal").c_str(), lv_color_hex(0x2F6D86), lvglOpenHc12TerminalEvent, nullptr);
+            lv_obj_t *hc12InfoBtn = lvglCreateMenuButton(wrap, lvglSymbolText(LV_SYMBOL_LIST, "Radio Info").c_str(), lv_color_hex(0x7A5C2E), lvglOpenHc12InfoEvent, nullptr);
 
             lv_obj_t *hintCard = lv_obj_create(wrap);
             lv_obj_set_width(hintCard, lv_pct(100));
@@ -8010,17 +8401,18 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_style_pad_all(hintCard, 10, 0);
             lv_obj_clear_flag(hintCard, LV_OBJ_FLAG_SCROLLABLE);
 
-            lv_obj_t *hintLbl = lv_label_create(hintCard);
-            lv_obj_set_width(hintLbl, lv_pct(100));
-            lv_label_set_long_mode(hintLbl, LV_LABEL_LONG_WRAP);
-            lv_obj_set_style_text_color(hintLbl, lv_color_hex(0xC8D3DD), 0);
-            lv_label_set_text_fmt(hintLbl,
-                                  "HC12 RXD %d  |  TXD %d  |  SET %d  |  default 9600 baud\nOpen Serial Terminal for manual commands or Info to read the current module settings.",
-                                  HC12_TX_PIN, HC12_RX_PIN, HC12_SET_PIN);
+            lvglRadioHintLabel = lv_label_create(hintCard);
+            lv_obj_set_width(lvglRadioHintLabel, lv_pct(100));
+            lv_label_set_long_mode(lvglRadioHintLabel, LV_LABEL_LONG_WRAP);
+            lv_obj_set_style_text_color(lvglRadioHintLabel, lv_color_hex(0xC8D3DD), 0);
+            lv_label_set_text(lvglRadioHintLabel, "");
+            if (lvglRadioModuleHeader) lvglRegisterReorderableItem(lvglRadioModuleHeader, "ord_hc12", "module_hdr");
+            if (lvglRadioModuleDropdown) lvglRegisterReorderableItem(lvglRadioModuleDropdown, "ord_hc12", "module_dd");
             lvglRegisterReorderableItem(hc12ChannelCard, "ord_hc12", "chan");
             lvglRegisterReorderableItem(hc12BaudCard, "ord_hc12", "baud");
             lvglRegisterReorderableItem(hc12ModeCard, "ord_hc12", "mode");
             lvglRegisterReorderableItem(hc12PowerCard, "ord_hc12", "power");
+            lvglRegisterReorderableItem(lvglRadioExtraCard, "ord_hc12", "extra");
             lvglRegisterReorderableItem(hc12DefaultBtn, "ord_hc12", "default");
             lvglRegisterReorderableItem(lvglHc12ConfigStatusLabel, "ord_hc12", "status");
             lvglRegisterReorderableItem(hc12TerminalBtn, "ord_hc12", "term");
@@ -8031,7 +8423,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             break;
         }
         case UI_CONFIG_HC12_TERMINAL: {
-            lvglScrHc12Terminal = lvglCreateScreenBase("HC12 Terminal", false);
+            lvglScrHc12Terminal = lvglCreateScreenBase("Radio Terminal", false);
             lv_obj_t *wrap = lv_obj_create(lvglScrHc12Terminal);
             lv_obj_set_size(wrap, lv_pct(100), UI_CONTENT_H);
             lv_obj_align(wrap, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
@@ -8052,12 +8444,12 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_flex_flow(topRow, LV_FLEX_FLOW_ROW);
             lv_obj_clear_flag(topRow, LV_OBJ_FLAG_SCROLLABLE);
 
-            makeSmallBtn(topRow, "SET: OFF", 96, 34, lv_color_hex(0x7A5C2E), lvglHc12ToggleSetEvent, nullptr);
+            makeSmallBtn(topRow, "CFG: OFF", 96, 34, lv_color_hex(0x7A5C2E), lvglHc12ToggleSetEvent, nullptr);
 
             lv_obj_t *pinLbl = lv_label_create(topRow);
             lv_obj_set_flex_grow(pinLbl, 1);
             lv_obj_set_style_text_color(pinLbl, lv_color_hex(0xC9D7E3), 0);
-            lv_label_set_text_fmt(pinLbl, "HC12 RXD %d  TXD %d  SET %d  9600 baud", HC12_TX_PIN, HC12_RX_PIN, HC12_SET_PIN);
+            lv_label_set_text(pinLbl, "Radio serial pins");
 
             lv_obj_t *terminalTa = lv_textarea_create(wrap);
             lv_obj_set_width(terminalTa, lv_pct(100));
@@ -8098,7 +8490,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             break;
         }
         case UI_CONFIG_HC12_INFO: {
-            lvglScrHc12Info = lvglCreateScreenBase("HC12 Info", false);
+            lvglScrHc12Info = lvglCreateScreenBase("Radio Info", false);
             lv_obj_t *wrap = lv_obj_create(lvglScrHc12Info);
             lv_obj_set_size(wrap, lv_pct(100), UI_CONTENT_H);
             lv_obj_align(wrap, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
@@ -8887,6 +9279,78 @@ void lvglShowChatAirplanePrompt()
     lv_obj_add_event_cb(m, lvglChatAirplanePromptEvent, LV_EVENT_VALUE_CHANGED, nullptr);
 }
 
+void lvglRadioModeWarningEvent(lv_event_t *e)
+{
+    lv_obj_t *msgbox = lv_event_get_current_target(e);
+    lv_msgbox_close(msgbox);
+}
+
+static void lvglShowE220FixedModeWarning()
+{
+    static const char *btns[] = {"OK", ""};
+    lv_obj_t *m = lv_msgbox_create(nullptr,
+                                   "E220 Fixed Mode",
+                                   "E220 Fixed mode disables current radio chat and discovery.\nUse Transparent mode for encrypted radio messaging.",
+                                   btns,
+                                   false);
+    if (!m) return;
+    lv_obj_center(m);
+    lv_obj_set_width(m, min<int16_t>(DISPLAY_WIDTH - 24, 270));
+    lv_obj_add_event_cb(m, lvglRadioModeWarningEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+}
+
+static void powerOffSignalPulse()
+{
+    if (POWER_OFF_SIGNAL_PIN < 0) return;
+    pinMode(POWER_OFF_SIGNAL_PIN, OUTPUT);
+    digitalWrite(POWER_OFF_SIGNAL_PIN, HIGH);
+    delay(10);
+    digitalWrite(POWER_OFF_SIGNAL_PIN, LOW);
+    delay(POWER_OFF_PULSE_MS);
+    digitalWrite(POWER_OFF_SIGNAL_PIN, HIGH);
+    delay(POWER_OFF_GAP_MS);
+    digitalWrite(POWER_OFF_SIGNAL_PIN, LOW);
+    delay(POWER_OFF_PULSE_MS);
+    digitalWrite(POWER_OFF_SIGNAL_PIN, HIGH);
+}
+
+void lvglPowerConfirmEvent(lv_event_t *e)
+{
+    lv_obj_t *msgbox = lv_event_get_current_target(e);
+    const char *txt = lv_msgbox_get_active_btn_text(msgbox);
+    lv_msgbox_close(msgbox);
+    if (!txt) return;
+    if (strcmp(txt, "Power Off") != 0) return;
+    uiStatusLine = "Power-off signal sent";
+    if (lvglReady) lvglSyncStatusLine();
+    powerOffSignalPulse();
+}
+
+void lvglPowerButtonEvent(lv_event_t *e)
+{
+    (void)e;
+    if (POWER_OFF_SIGNAL_PIN < 0) {
+        lvglStatusPush("Power signal unavailable");
+        return;
+    }
+    static const char *btns[] = {"Cancel", "Power Off", ""};
+    lv_obj_t *m = lv_msgbox_create(nullptr,
+                                   "Power Off",
+                                   "Send power-off signal on GPIO21?",
+                                   btns,
+                                   false);
+    if (!m) return;
+    lv_obj_center(m);
+    lv_obj_set_width(m, min<int16_t>(DISPLAY_WIDTH - 24, 270));
+    lv_obj_add_event_cb(m, lvglPowerConfirmEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+    lv_obj_t *btnMatrix = lv_msgbox_get_btns(m);
+    if (btnMatrix) {
+        lv_btnmatrix_set_btn_ctrl(btnMatrix, 1, LV_BTNMATRIX_CTRL_CHECKABLE);
+        lv_obj_set_style_bg_color(btnMatrix, lv_color_hex(0xA33F3F), LV_PART_ITEMS | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(btnMatrix, lv_color_hex(0x7F2D2D), LV_PART_ITEMS | LV_STATE_PRESSED);
+    }
+}
+
 bool lvglChatPromptIfAirplaneBlocked()
 {
     if (!airplaneModeEnabled) return false;
@@ -9151,12 +9615,13 @@ void lvglMediaVolumeEvent(lv_event_t *e)
     if (v < 0) v = 0;
     if (v > 100) v = 100;
     mediaVolumePercent = static_cast<uint8_t>(v);
-    uiPrefs.begin("ui", false);
-    uiPrefs.putUChar("sys_vol", mediaVolumePercent);
-    uiPrefs.end();
+    saveSoundPrefs();
     if (audioBackendReady && audio) audioSetVolumeImmediate(audioVolumeLevelFromPercent(mediaVolumePercent));
     lvglRefreshMediaPlayerUi();
     lvglRefreshConfigUi();
+    lvglRefreshSoundPopupUi();
+    lvglTopIndicatorStateValid = false;
+    lvglRefreshTopIndicators();
 }
 
 void lvglMediaVolumeStepEvent(lv_event_t *e)
@@ -9167,12 +9632,13 @@ void lvglMediaVolumeStepEvent(lv_event_t *e)
     if (v > 100) v = 100;
     mediaVolumePercent = static_cast<uint8_t>(v);
     if (lvglMediaVolSlider) lv_slider_set_value(lvglMediaVolSlider, static_cast<int32_t>(mediaVolumePercent), LV_ANIM_OFF);
-    uiPrefs.begin("ui", false);
-    uiPrefs.putUChar("sys_vol", mediaVolumePercent);
-    uiPrefs.end();
+    saveSoundPrefs();
     if (audioBackendReady && audio) audioSetVolumeImmediate(audioVolumeLevelFromPercent(mediaVolumePercent));
     lvglRefreshMediaPlayerUi();
     lvglRefreshConfigUi();
+    lvglRefreshSoundPopupUi();
+    lvglTopIndicatorStateValid = false;
+    lvglRefreshTopIndicators();
 }
 
 void lvglRefreshMediaPlayerUi()
@@ -11020,12 +11486,31 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
 
 static void hc12InitIfNeeded()
 {
+    if (radioModuleType == RADIO_MODULE_E220 && (E220_RX_PIN < 0 || E220_TX_PIN < 0 || E220_M0_PIN < 0 || E220_M1_PIN < 0)) {
+        hc12ConfigStatusText = "E220 is only wired on the ESP32-S3 build";
+        return;
+    }
     if (hc12TerminalLog) return;
-    pinMode(HC12_SET_PIN, OUTPUT);
-    digitalWrite(HC12_SET_PIN, HIGH);
-    Serial1.begin(HC12_BAUD, SERIAL_8N1, HC12_RX_PIN, HC12_TX_PIN);
-    String banner = String("[HC12] Serial1 ready on ESP RX") + HC12_RX_PIN + " TX" + HC12_TX_PIN + "\n";
-    banner += String("[HC12] HC12 RXD->GPIO") + HC12_TX_PIN + " TXD->GPIO" + HC12_RX_PIN + " SET->GPIO" + HC12_SET_PIN + "\n";
+    if (radioModuleType == RADIO_MODULE_HC12) {
+        pinMode(HC12_SET_PIN, OUTPUT);
+        digitalWrite(HC12_SET_PIN, HIGH);
+        Serial1.begin(HC12_BAUD, SERIAL_8N1, HC12_RX_PIN, HC12_TX_PIN);
+    } else {
+        pinMode(E220_M0_PIN, OUTPUT);
+        pinMode(E220_M1_PIN, OUTPUT);
+        digitalWrite(E220_M0_PIN, LOW);
+        digitalWrite(E220_M1_PIN, LOW);
+        Serial1.begin(E220_AT_BAUD, SERIAL_8N1, E220_RX_PIN, E220_TX_PIN);
+    }
+    String banner = String("[RADIO] Serial1 ready on ESP RX") +
+                    (radioModuleType == RADIO_MODULE_HC12 ? HC12_RX_PIN : E220_RX_PIN) +
+                    " TX" +
+                    (radioModuleType == RADIO_MODULE_HC12 ? HC12_TX_PIN : E220_TX_PIN) + "\n";
+    if (radioModuleType == RADIO_MODULE_HC12) {
+        banner += String("[HC12] HC12 RXD->GPIO") + HC12_TX_PIN + " TXD->GPIO" + HC12_RX_PIN + " SET->GPIO" + HC12_SET_PIN + "\n";
+    } else {
+        banner += String("[E220] RX->GPIO") + E220_TX_PIN + " TX->GPIO" + E220_RX_PIN + " M1->GPIO" + E220_M0_PIN + " M2->GPIO" + E220_M1_PIN + "\n";
+    }
     hc12AppendTerminal(banner.c_str());
 }
 
@@ -11056,7 +11541,9 @@ static lv_obj_t *hc12CmdTaObj()
 
 static bool hc12SetIsAsserted()
 {
-    return hc12TerminalLog && digitalRead(HC12_SET_PIN) == LOW;
+    if (!hc12TerminalLog) return false;
+    if (radioModuleType == RADIO_MODULE_HC12) return digitalRead(HC12_SET_PIN) == LOW;
+    return digitalRead(E220_M0_PIN) == HIGH && digitalRead(E220_M1_PIN) == HIGH;
 }
 
 static String &hc12LogBuffer()
@@ -11093,6 +11580,7 @@ static void hc12SendLine(const String &line)
     hc12InitIfNeeded();
     while (Serial1.available() > 0) Serial1.read();
     Serial1.print(line);
+    if (radioModuleType == RADIO_MODULE_E220) Serial1.print("\r\n");
     Serial1.flush();
     String echoed = String("> ") + line + "\n";
     hc12AppendTerminal(echoed.c_str());
@@ -11127,19 +11615,89 @@ static String hc12QueryCommand(const char *line, unsigned long totalTimeoutMs = 
     return response;
 }
 
+static String e220QueryCommand(const char *line, unsigned long totalTimeoutMs = 220UL, unsigned long quietTimeoutMs = 48UL)
+{
+    hc12InitIfNeeded();
+    while (Serial1.available() > 0) Serial1.read();
+    if (line && *line) {
+        Serial1.print(line);
+        Serial1.print("\r\n");
+    }
+    Serial1.flush();
+
+    String response;
+    unsigned long deadline = millis() + totalTimeoutMs;
+    unsigned long quietDeadline = millis() + quietTimeoutMs;
+    bool receivedAny = false;
+    while (static_cast<long>(millis() - deadline) < 0) {
+        bool gotByte = false;
+        while (Serial1.available() > 0) {
+            const int ch = Serial1.read();
+            if (ch < 0) break;
+            if (ch == '\r') continue;
+            response += static_cast<char>(ch);
+            gotByte = true;
+            receivedAny = true;
+        }
+        if (gotByte) quietDeadline = millis() + quietTimeoutMs;
+        if (receivedAny && static_cast<long>(millis() - quietDeadline) >= 0) break;
+        delay(2);
+    }
+    response.trim();
+    return response;
+}
+
 static void hc12EnterAtMode()
 {
     hc12InitIfNeeded();
     while (Serial1.available() > 0) Serial1.read();
-    digitalWrite(HC12_SET_PIN, LOW);
+    if (radioModuleType == RADIO_MODULE_HC12) {
+        digitalWrite(HC12_SET_PIN, LOW);
+    } else {
+        digitalWrite(E220_M0_PIN, HIGH);
+        digitalWrite(E220_M1_PIN, HIGH);
+    }
     delay(80);
 }
 
 static void hc12ExitAtMode()
 {
-    digitalWrite(HC12_SET_PIN, HIGH);
+    if (radioModuleType == RADIO_MODULE_HC12) {
+        digitalWrite(HC12_SET_PIN, HIGH);
+    } else {
+        digitalWrite(E220_M0_PIN, LOW);
+        digitalWrite(E220_M1_PIN, LOW);
+    }
     delay(40);
     uiDeferredFlags &= static_cast<uint8_t>(~(UI_DEFERRED_HC12_SETTLE_PENDING | UI_DEFERRED_HC12_TARGET_ASSERTED));
+}
+
+static int e220FindBaudIndexFromCode(int code)
+{
+    for (int i = 0; i < static_cast<int>(sizeof(E220_UART_BAUD_OPTIONS) / sizeof(E220_UART_BAUD_OPTIONS[0])); ++i) {
+        if (E220_UART_BAUD_OPTIONS[i] == code) return i;
+    }
+    return 3;
+}
+
+static int e220FindAirRateIndexFromCode(int code)
+{
+    for (int i = 0; i < static_cast<int>(sizeof(E220_AIR_RATE_OPTIONS) / sizeof(E220_AIR_RATE_OPTIONS[0])); ++i) {
+        if (E220_AIR_RATE_OPTIONS[i] == code) return i;
+    }
+    return 2;
+}
+
+static String e220ValueAfterEquals(String raw)
+{
+    raw.trim();
+    const int eq = raw.indexOf('=');
+    if (eq < 0) return raw;
+    String value = raw.substring(eq + 1);
+    const int nl = value.indexOf('\n');
+    if (nl >= 0) value.remove(nl);
+    value.trim();
+    return value;
 }
 
 static int hc12FindBaudIndex(unsigned long baud)
@@ -11163,8 +11721,77 @@ static int hc12FindPowerLevelFromResponse(const String &raw)
     return hc12CurrentPowerLevel;
 }
 
+static void loadPersistedRadioSettings()
+{
+    hc12CurrentChannel = constrain(uiPrefs.getInt("hc12_ch", HC12_MIN_CHANNEL), HC12_MIN_CHANNEL, HC12_MAX_CHANNEL);
+    hc12CurrentBaudIndex = constrain(uiPrefs.getInt("hc12_baud", 3), 0, static_cast<int>(sizeof(HC12_SUPPORTED_BAUDS) / sizeof(HC12_SUPPORTED_BAUDS[0])) - 1);
+    hc12CurrentModeIndex = constrain(uiPrefs.getInt("hc12_mode", 2), 0, 3);
+    hc12CurrentPowerLevel = constrain(uiPrefs.getInt("hc12_pwr", 8), 1, 8);
+
+    e220CurrentChannel = constrain(uiPrefs.getInt("e220_ch", 23), E220_MIN_CHANNEL, E220_MAX_CHANNEL);
+    e220CurrentBaudIndex = constrain(uiPrefs.getInt("e220_baud", 3), 0, static_cast<int>(sizeof(E220_UART_BAUD_VALUES) / sizeof(E220_UART_BAUD_VALUES[0])) - 1);
+    e220CurrentAirRateIndex = constrain(uiPrefs.getInt("e220_rate", 2), 0, static_cast<int>(sizeof(E220_AIR_RATE_OPTIONS) / sizeof(E220_AIR_RATE_OPTIONS[0])) - 1);
+    e220CurrentPowerIndex = constrain(uiPrefs.getInt("e220_pwr", 0), 0, 3);
+    e220CurrentFixedTransmission = uiPrefs.getBool("e220_fix", false);
+}
+
+static void savePersistedRadioSettings()
+{
+    uiPrefs.putInt("hc12_ch", hc12CurrentChannel);
+    uiPrefs.putInt("hc12_baud", hc12CurrentBaudIndex);
+    uiPrefs.putInt("hc12_mode", hc12CurrentModeIndex);
+    uiPrefs.putInt("hc12_pwr", hc12CurrentPowerLevel);
+
+    uiPrefs.putInt("e220_ch", e220CurrentChannel);
+    uiPrefs.putInt("e220_baud", e220CurrentBaudIndex);
+    uiPrefs.putInt("e220_rate", e220CurrentAirRateIndex);
+    uiPrefs.putInt("e220_pwr", e220CurrentPowerIndex);
+    uiPrefs.putBool("e220_fix", e220CurrentFixedTransmission);
+}
+
 static bool hc12ReadConfigSelection()
 {
+    if (radioModuleType == RADIO_MODULE_E220) {
+        hc12EnterAtMode();
+        const String uartRaw = e220QueryCommand("AT+UART=?");
+        const String channelRaw = e220QueryCommand("AT+CHANNEL=?");
+        const String rateRaw = e220QueryCommand("AT+RATE=?");
+        const String powerRaw = e220QueryCommand("AT+POWER=?");
+        const String transRaw = e220QueryCommand("AT+TRANS=?");
+        hc12ExitAtMode();
+
+        bool ok = false;
+        const String uartValue = e220ValueAfterEquals(uartRaw);
+        if (uartValue.length() > 0) {
+            const int code = uartValue.substring(0, uartValue.indexOf(',') >= 0 ? uartValue.indexOf(',') : uartValue.length()).toInt();
+            e220CurrentBaudIndex = e220FindBaudIndexFromCode(code);
+            ok = true;
+        }
+        const String channelValue = e220ValueAfterEquals(channelRaw);
+        if (channelValue.length() > 0) {
+            e220CurrentChannel = constrain(channelValue.toInt(), E220_MIN_CHANNEL, E220_MAX_CHANNEL);
+            ok = true;
+        }
+        const String rateValue = e220ValueAfterEquals(rateRaw);
+        if (rateValue.length() > 0) {
+            e220CurrentAirRateIndex = e220FindAirRateIndexFromCode(rateValue.toInt());
+            ok = true;
+        }
+        const String powerValue = e220ValueAfterEquals(powerRaw);
+        if (powerValue.length() > 0) {
+            e220CurrentPowerIndex = constrain(powerValue.toInt(), 0, 3);
+            ok = true;
+        }
+        const String transValue = e220ValueAfterEquals(transRaw);
+        if (transValue.length() > 0) {
+            e220CurrentFixedTransmission = transValue.toInt() != 0;
+            ok = true;
+        }
+        if (ok) savePersistedRadioSettings();
+        hc12ConfigStatusText = ok ? "E220 settings loaded" : "E220 did not return settings";
+        return ok;
+    }
+
     hc12EnterAtMode();
     const String baudRaw = hc12QueryCommand("AT+RB");
     const String channelRaw = hc12QueryCommand("AT+RC");
@@ -11203,12 +11830,27 @@ static bool hc12ReadConfigSelection()
     hc12CurrentPowerLevel = hc12FindPowerLevelFromResponse(powerRaw);
     ok = true;
 
+    if (ok) savePersistedRadioSettings();
     hc12ConfigStatusText = ok ? "Module settings loaded" : "HC-12 did not return settings";
     return ok;
 }
 
 static bool hc12ApplyChannel(int channel)
 {
+    if (radioModuleType == RADIO_MODULE_E220) {
+        channel = constrain(channel, E220_MIN_CHANNEL, E220_MAX_CHANNEL);
+        hc12EnterAtMode();
+        const String resp = e220QueryCommand((String("AT+CHANNEL=") + channel).c_str());
+        hc12ExitAtMode();
+        if (resp.indexOf("OK") >= 0) {
+            e220CurrentChannel = channel;
+            savePersistedRadioSettings();
+            hc12ConfigStatusText = "Channel set to CH" + String(channel);
+            return true;
+        }
+        hc12ConfigStatusText = resp.isEmpty() ? "Channel change failed" : resp;
+        return false;
+    }
     channel = constrain(channel, HC12_MIN_CHANNEL, HC12_MAX_CHANNEL);
     char cmd[12];
     snprintf(cmd, sizeof(cmd), "AT+C%03d", channel);
@@ -11217,6 +11859,7 @@ static bool hc12ApplyChannel(int channel)
     hc12ExitAtMode();
     if (resp.startsWith("OK+C")) {
         hc12CurrentChannel = channel;
+        savePersistedRadioSettings();
         hc12ConfigStatusText = "Channel set to CH" + String(channel);
         return true;
     }
@@ -11226,6 +11869,22 @@ static bool hc12ApplyChannel(int channel)
 
 static bool hc12ApplyBaudIndex(int index)
 {
+    if (radioModuleType == RADIO_MODULE_E220) {
+        const int count = static_cast<int>(sizeof(E220_UART_BAUD_OPTIONS) / sizeof(E220_UART_BAUD_OPTIONS[0]));
+        if (count <= 0) return false;
+        index = constrain(index, 0, count - 1);
+        hc12EnterAtMode();
+        const String resp = e220QueryCommand((String("AT+UART=") + E220_UART_BAUD_OPTIONS[index] + ",0").c_str());
+        hc12ExitAtMode();
+        if (resp.indexOf("OK") >= 0) {
+            e220CurrentBaudIndex = index;
+            savePersistedRadioSettings();
+            hc12ConfigStatusText = "UART baud set to " + String(E220_UART_BAUD_VALUES[index]) + " bps";
+            return true;
+        }
+        hc12ConfigStatusText = resp.isEmpty() ? "Baud change failed" : resp;
+        return false;
+    }
     const int count = static_cast<int>(sizeof(HC12_SUPPORTED_BAUDS) / sizeof(HC12_SUPPORTED_BAUDS[0]));
     if (count <= 0) return false;
     index = constrain(index, 0, count - 1);
@@ -11236,6 +11895,7 @@ static bool hc12ApplyBaudIndex(int index)
     hc12ExitAtMode();
     if (resp.startsWith("OK+B")) {
         hc12CurrentBaudIndex = index;
+        savePersistedRadioSettings();
         hc12ConfigStatusText = "Baud set to " + String(HC12_SUPPORTED_BAUDS[index]) + " bps";
         return true;
     }
@@ -11245,6 +11905,21 @@ static bool hc12ApplyBaudIndex(int index)
 
 static bool hc12ApplyModeIndex(int index)
 {
+    if (radioModuleType == RADIO_MODULE_E220) {
+        const int count = static_cast<int>(sizeof(E220_AIR_RATE_OPTIONS) / sizeof(E220_AIR_RATE_OPTIONS[0]));
+        index = constrain(index, 0, count - 1);
+        hc12EnterAtMode();
+        const String resp = e220QueryCommand((String("AT+RATE=") + E220_AIR_RATE_OPTIONS[index]).c_str());
+        hc12ExitAtMode();
+        if (resp.indexOf("OK") >= 0) {
+            e220CurrentAirRateIndex = index;
+            savePersistedRadioSettings();
+            hc12ConfigStatusText = String("Air rate set to ") + E220_AIR_RATE_LABELS[index] + " bps";
+            return true;
+        }
+        hc12ConfigStatusText = resp.isEmpty() ? "Air rate change failed" : resp;
+        return false;
+    }
     index = constrain(index, 0, 3);
     char cmd[12];
     snprintf(cmd, sizeof(cmd), "AT+FU%d", index + 1);
@@ -11253,6 +11928,7 @@ static bool hc12ApplyModeIndex(int index)
     hc12ExitAtMode();
     if (resp.startsWith("OK+FU")) {
         hc12CurrentModeIndex = index;
+        savePersistedRadioSettings();
         hc12ConfigStatusText = String("Mode set to ") + HC12_MODE_LABELS[index];
         return true;
     }
@@ -11262,6 +11938,20 @@ static bool hc12ApplyModeIndex(int index)
 
 static bool hc12ApplyPowerLevel(int level)
 {
+    if (radioModuleType == RADIO_MODULE_E220) {
+        level = constrain(level, 0, 3);
+        hc12EnterAtMode();
+        const String resp = e220QueryCommand((String("AT+POWER=") + level).c_str());
+        hc12ExitAtMode();
+        if (resp.indexOf("OK") >= 0) {
+            e220CurrentPowerIndex = level;
+            savePersistedRadioSettings();
+            hc12ConfigStatusText = String("Power set to ") + E220_POWER_DBM[level] + " dBm";
+            return true;
+        }
+        hc12ConfigStatusText = resp.isEmpty() ? "Power change failed" : resp;
+        return false;
+    }
     level = constrain(level, 1, 8);
     char cmd[12];
     snprintf(cmd, sizeof(cmd), "AT+P%d", level);
@@ -11270,6 +11960,7 @@ static bool hc12ApplyPowerLevel(int level)
     hc12ExitAtMode();
     if (resp.startsWith("OK+P")) {
         hc12CurrentPowerLevel = level;
+        savePersistedRadioSettings();
         hc12ConfigStatusText = String("Power set to ") + HC12_POWER_DBM[level - 1] + " dBm";
         return true;
     }
@@ -11277,14 +11968,50 @@ static bool hc12ApplyPowerLevel(int level)
     return false;
 }
 
+static bool e220ApplyTransferMode(bool fixedTransmission)
+{
+    hc12EnterAtMode();
+    const String resp = e220QueryCommand((String("AT+TRANS=") + (fixedTransmission ? 1 : 0)).c_str());
+    hc12ExitAtMode();
+    if (resp.indexOf("OK") >= 0) {
+        e220CurrentFixedTransmission = fixedTransmission;
+        savePersistedRadioSettings();
+        hc12ConfigStatusText = String("Transfer mode set to ") + (fixedTransmission ? "Fixed" : "Transparent");
+        if (fixedTransmission && lvglReady) lvglShowE220FixedModeWarning();
+        return true;
+    }
+    hc12ConfigStatusText = resp.isEmpty() ? "Transfer mode change failed" : resp;
+    return false;
+}
+
 static bool hc12FactoryReset()
 {
+    if (radioModuleType == RADIO_MODULE_E220) {
+        hc12EnterAtMode();
+        const String resp = e220QueryCommand("AT+CFGTF");
+        hc12ExitAtMode();
+        if (resp.indexOf("OK") >= 0) {
+            e220CurrentChannel = 23;
+            e220CurrentBaudIndex = 3;
+            e220CurrentAirRateIndex = 2;
+            e220CurrentPowerIndex = 0;
+            e220CurrentFixedTransmission = false;
+            savePersistedRadioSettings();
+            hc12ConfigStatusText = "Factory defaults restored";
+            return true;
+        }
+        hc12ConfigStatusText = resp.isEmpty() ? "Factory reset failed" : resp;
+        return false;
+    }
     hc12EnterAtMode();
     const String resp = hc12QueryCommand("AT+DEFAULT", 260UL, 48UL);
     hc12ExitAtMode();
     if (resp.startsWith("OK+DEFAULT")) {
         hc12CurrentChannel = 1;
         hc12CurrentBaudIndex = hc12FindBaudIndex(9600UL);
+        hc12CurrentModeIndex = 2;
+        hc12CurrentPowerLevel = 8;
+        savePersistedRadioSettings();
         hc12ConfigStatusText = "Factory defaults restored";
         return true;
     }
@@ -11294,6 +12021,34 @@ static bool hc12FactoryReset()
 
 static void hc12RefreshInfoSnapshot()
 {
+    if (radioModuleType == RADIO_MODULE_E220) {
+        hc12InitIfNeeded();
+        hc12InfoValueText = "Querying...";
+        hc12InfoSubText = "Entering config mode...";
+        hc12EnterAtMode();
+        const String modelRaw = e220QueryCommand("AT+DEVTYPE=?");
+        const String fwRaw = e220QueryCommand("AT+FWCODE=?");
+        const String uartRaw = e220QueryCommand("AT+UART=?");
+        const String channelRaw = e220QueryCommand("AT+CHANNEL=?");
+        const String rateRaw = e220QueryCommand("AT+RATE=?");
+        const String powerRaw = e220QueryCommand("AT+POWER=?");
+        const String transRaw = e220QueryCommand("AT+TRANS=?");
+        hc12ExitAtMode();
+        hc12InfoValueText = e220ValueAfterEquals(modelRaw);
+        if (hc12InfoValueText.isEmpty()) hc12InfoValueText = "No Reply";
+        hc12InfoSubText = "FW " + e220ValueAfterEquals(fwRaw);
+        if (lvglHc12InfoVersionLabel) lv_label_set_text(lvglHc12InfoVersionLabel, hc12InfoValueText.c_str());
+        if (lvglHc12InfoBaudLabel) lv_label_set_text(lvglHc12InfoBaudLabel, e220ValueAfterEquals(uartRaw).c_str());
+        if (lvglHc12InfoChannelLabel) lv_label_set_text(lvglHc12InfoChannelLabel, e220ValueAfterEquals(channelRaw).c_str());
+        if (lvglHc12InfoFuModeLabel) lv_label_set_text(lvglHc12InfoFuModeLabel, e220ValueAfterEquals(transRaw).c_str());
+        if (lvglHc12InfoPowerLabel) lv_label_set_text(lvglHc12InfoPowerLabel, e220ValueAfterEquals(powerRaw).c_str());
+        if (lvglHc12InfoRawLabel) {
+            String raw = String("UART ") + e220ValueAfterEquals(uartRaw) + " | RATE " + e220ValueAfterEquals(rateRaw) +
+                         " | TRANS " + e220ValueAfterEquals(transRaw);
+            lv_label_set_text(lvglHc12InfoRawLabel, raw.c_str());
+        }
+        return;
+    }
     hc12InitIfNeeded();
     hc12InfoValueText = "Querying...";
     hc12InfoSubText = "Entering AT mode...";
@@ -11344,10 +12099,27 @@ static String hc12FieldValue(const String &raw, const char *prefix)
     return value.isEmpty() ? String("--") : value;
 }
 
+static ChatTransport radioSelectedChatTransport()
+{
+    return radioModuleType == RADIO_MODULE_E220 ? CHAT_TRANSPORT_E220 : CHAT_TRANSPORT_HC12;
+}
+
+static bool radioModuleCanCarryChat()
+{
+    if (radioModuleType == RADIO_MODULE_HC12) return true;
+    if (radioModuleType == RADIO_MODULE_E220) return !e220CurrentFixedTransmission;
+    return false;
+}
+
+static const char *radioModuleChatLabel()
+{
+    return radioModuleType == RADIO_MODULE_E220 ? "E220" : "HC-12";
+}
+
 static bool hc12SendRadioDocument(JsonDocument &doc)
 {
     hc12InitIfNeeded();
-    if (hc12SetIsAsserted()) return false;
+    if (hc12SetIsAsserted() || !radioModuleCanCarryChat()) return false;
     char payload[HC12_RADIO_MAX_LINE] = {0};
     const size_t len = serializeJson(doc, payload, sizeof(payload));
     if (len == 0 || len >= sizeof(payload)) return false;
@@ -11361,7 +12133,7 @@ static bool hc12SendRadioDocument(JsonDocument &doc)
 static bool hc12SendRadioPayload(const char *payload, size_t len)
 {
     hc12InitIfNeeded();
-    if (hc12SetIsAsserted() || !payload || len == 0 || len >= HC12_RADIO_MAX_LINE) return false;
+    if (hc12SetIsAsserted() || !radioModuleCanCarryChat() || !payload || len == 0 || len >= HC12_RADIO_MAX_LINE) return false;
     Serial1.print(HC12_RADIO_FRAME_PREFIX);
     Serial1.write(reinterpret_cast<const uint8_t *>(payload), len);
     Serial1.write('\n');
@@ -11410,7 +12182,7 @@ static bool hc12BroadcastDiscoveryFrame(const char *kind)
 
 static void hc12DiscoveryService()
 {
-    if (hc12SetIsAsserted()) return;
+    if (hc12SetIsAsserted() || !radioModuleCanCarryChat()) return;
     const unsigned long now = millis();
     if (static_cast<unsigned long>(now - hc12LastDiscoveryAnnounceMs) < HC12_DISCOVERY_INTERVAL_MS) return;
     hc12LastDiscoveryAnnounceMs = now;
@@ -11471,6 +12243,7 @@ bool hc12SendConversationDelete(const String &peerKey)
 static void hc12HandleIncomingRadioLine(const String &line)
 {
     if (!line.startsWith(HC12_RADIO_FRAME_PREFIX)) return;
+    const ChatTransport radioTransport = radioSelectedChatTransport();
 
     JsonDocument outerDoc;
     if (deserializeJson(outerDoc, line.substring(strlen(HC12_RADIO_FRAME_PREFIX))) != DeserializationError::Ok) return;
@@ -11513,15 +12286,15 @@ static void hc12HandleIncomingRadioLine(const String &line)
         const String text = String(static_cast<const char *>(doc["text"] | ""));
         if (text.isEmpty()) return;
         wakeDisplayForIncomingNotification();
-        if (checkersHandleIncomingChatPayload(senderPubHex, author, text, CHAT_TRANSPORT_HC12, messageId)) {
+        if (checkersHandleIncomingChatPayload(senderPubHex, author, text, radioTransport, messageId)) {
             if (lvglReady) {
                 lvglSyncStatusLine();
                 if (uiScreen == UI_CHAT) lvglRefreshChatUi();
             }
         } else if (messageId.isEmpty() || !chatHasLoggedMessageId(senderPubHex, messageId)) {
-            chatStoreMessage(senderPubHex, author, text, false, CHAT_TRANSPORT_HC12, messageId);
+            chatStoreMessage(senderPubHex, author, text, false, radioTransport, messageId);
             chatQueueIncomingMessageBeep();
-            uiStatusLine = "Radio chat from " + author;
+            uiStatusLine = String(radioModuleChatLabel()) + " chat from " + author;
             if (lvglReady) {
                 lvglSyncStatusLine();
                 if (uiScreen == UI_CHAT) lvglRefreshChatUi();
@@ -11551,7 +12324,12 @@ void lvglHc12ToggleSetEvent(lv_event_t *e)
     (void)e;
     hc12InitIfNeeded();
     const bool setAsserted = !hc12SetIsAsserted();
-    digitalWrite(HC12_SET_PIN, setAsserted ? LOW : HIGH);
+    if (radioModuleType == RADIO_MODULE_HC12) {
+        digitalWrite(HC12_SET_PIN, setAsserted ? LOW : HIGH);
+    } else {
+        digitalWrite(E220_M0_PIN, setAsserted ? HIGH : LOW);
+        digitalWrite(E220_M1_PIN, setAsserted ? HIGH : LOW);
+    }
     uiDeferredFlags |= UI_DEFERRED_HC12_SETTLE_PENDING;
     if (setAsserted) uiDeferredFlags |= UI_DEFERRED_HC12_TARGET_ASSERTED;
     else uiDeferredFlags &= static_cast<uint8_t>(~UI_DEFERRED_HC12_TARGET_ASSERTED);
@@ -11566,7 +12344,7 @@ void lvglHc12SendEvent(lv_event_t *e)
     if (!cmdTa) return;
     if ((uiDeferredFlags & UI_DEFERRED_HC12_SETTLE_PENDING) &&
         static_cast<int16_t>(static_cast<uint16_t>(millis()) - hc12SettleUntilTick) < 0) {
-        lvglStatusPush("HC12 settling...");
+        lvglStatusPush("Radio settling...");
         return;
     }
     String line = lv_textarea_get_text(cmdTa);
@@ -11583,8 +12361,13 @@ static void hc12Service()
         static_cast<int16_t>(static_cast<uint16_t>(millis()) - hc12SettleUntilTick) >= 0) {
         const bool setAsserted = (uiDeferredFlags & UI_DEFERRED_HC12_TARGET_ASSERTED) != 0;
         uiDeferredFlags &= static_cast<uint8_t>(~UI_DEFERRED_HC12_SETTLE_PENDING);
-        hc12AppendTerminal(setAsserted ? "[HC12] SET asserted, AT mode requested\n"
-                                       : "[HC12] SET released, normal radio mode\n");
+        if (radioModuleType == RADIO_MODULE_HC12) {
+            hc12AppendTerminal(setAsserted ? "[HC12] SET asserted, AT mode requested\n"
+                                           : "[HC12] SET released, normal radio mode\n");
+        } else {
+            hc12AppendTerminal(setAsserted ? "[E220] CFG mode asserted\n"
+                                           : "[E220] Normal mode restored\n");
+        }
     }
     hc12DiscoveryService();
     while (Serial1.available() > 0) {
@@ -11602,7 +12385,7 @@ static void hc12Service()
             rxLine = "";
             line.trim();
             if (line.isEmpty()) continue;
-            if (line.startsWith(HC12_RADIO_FRAME_PREFIX)) {
+            if (line.startsWith(HC12_RADIO_FRAME_PREFIX) && radioModuleCanCarryChat()) {
                 hc12HandleIncomingRadioLine(line);
             } else if (uiScreen == UI_CONFIG_HC12_TERMINAL) {
                 hc12AppendTerminal((line + "\n").c_str());
@@ -12964,6 +13747,31 @@ void lvglStyleTimezoneEvent(lv_event_t *e)
     lvglRefreshStyleUi();
 }
 
+void lvglRadioModuleDropdownEvent(lv_event_t *e)
+{
+    (void)e;
+    if (!lvglRadioModuleDropdown) return;
+    uint16_t selected = lv_dropdown_get_selected(lvglRadioModuleDropdown);
+#if !defined(BOARD_ESP32S3_3248S035_N16R8)
+    selected = 0;
+#endif
+    if (selected >= static_cast<uint16_t>(RADIO_MODULE_COUNT)) return;
+    if (radioModuleType == static_cast<RadioModuleType>(selected)) return;
+    radioModuleType = static_cast<RadioModuleType>(selected);
+    uiPrefs.begin("ui", false);
+    uiPrefs.putUChar("radio_mod", static_cast<uint8_t>(radioModuleType));
+    uiPrefs.end();
+    delete hc12TerminalLog;
+    hc12TerminalLog = nullptr;
+    delete hc12RadioRxLine;
+    hc12RadioRxLine = nullptr;
+    hc12ConfigStatusText = String("Active module: ") + radioModuleLabel(radioModuleType);
+    hc12ReadConfigSelection();
+    lvglRefreshHc12ConfigUi();
+    lvglRefreshHc12Ui();
+    lvglRefreshHc12InfoUi();
+}
+
 void lvglLanguageDropdownEvent(lv_event_t *e)
 {
     (void)e;
@@ -12986,15 +13794,17 @@ void lvglVibrationDropdownEvent(lv_event_t *e)
     const uint16_t selected = lv_dropdown_get_selected(lvglVibrationDropdown);
     if (selected >= static_cast<uint16_t>(VIBRATION_INTENSITY_COUNT)) return;
     vibrationIntensity = static_cast<VibrationIntensity>(selected);
-    uiPrefs.begin("ui", false);
-    uiPrefs.putUChar("vib_int", static_cast<uint8_t>(vibrationIntensity));
-    uiPrefs.end();
+    vibrationEnabled = true;
+    saveSoundPrefs();
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
     chatMessageVibrationPreview();
 #endif
     uiStatusLine = String("Vibration: ") + vibrationIntensityLabel(vibrationIntensity);
     lvglSyncStatusLine();
     lvglRefreshConfigUi();
+    lvglRefreshSoundPopupUi();
+    lvglTopIndicatorStateValid = false;
+    lvglRefreshTopIndicators();
 }
 
 void lvglMessageToneDropdownEvent(lv_event_t *e)
@@ -13047,6 +13857,19 @@ void lvglStyleTimeoutEvent(lv_event_t *e)
     displayIdleTimeoutMs = clampIdleTimeoutMs(stepValue * LCD_IDLE_TIMEOUT_STEP_MS);
     uiPrefs.begin("ui", false);
     uiPrefs.putULong("disp_idle", displayIdleTimeoutMs);
+    uiPrefs.end();
+    lvglRefreshStyleUi();
+}
+
+void lvglStylePowerOffEvent(lv_event_t *e)
+{
+    (void)e;
+    if (lvglStyleUiSyncing || !lvglStylePowerOffDropdown) return;
+    const uint16_t selected = lv_dropdown_get_selected(lvglStylePowerOffDropdown);
+    if (selected >= (sizeof(POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS) / sizeof(POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS[0]))) return;
+    powerOffIdleTimeoutMs = POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS[selected];
+    uiPrefs.begin("ui", false);
+    uiPrefs.putULong("pwr_idle", powerOffIdleTimeoutMs);
     uiPrefs.end();
     lvglRefreshStyleUi();
 }
@@ -13115,6 +13938,12 @@ void lvglRefreshStyleUi()
     }
     if (lvglStyleTimeoutValueLabel) {
         lvglLabelSetTextIfChanged(lvglStyleTimeoutValueLabel, formatIdleTimeoutLabel(displayIdleTimeoutMs));
+    }
+    if (lvglStylePowerOffDropdown) {
+        const uint16_t selected = static_cast<uint16_t>(powerOffTimeoutOptionIndex(powerOffIdleTimeoutMs));
+        if (lv_dropdown_get_selected(lvglStylePowerOffDropdown) != selected) {
+            lv_dropdown_set_selected(lvglStylePowerOffDropdown, selected);
+        }
     }
     if (lvglStyleTimezoneDd) {
         lv_dropdown_set_options(lvglStyleTimezoneDd, buildGmtOffsetDropdownOptions().c_str());
@@ -13194,12 +14023,69 @@ void lvglConfigVolumeEvent(lv_event_t *e)
     (void)e;
     if (!lvglVolumeSlider) return;
     mediaVolumePercent = static_cast<uint8_t>(lv_slider_get_value(lvglVolumeSlider));
-    uiPrefs.begin("ui", false);
-    uiPrefs.putUChar("sys_vol", mediaVolumePercent);
-    uiPrefs.end();
+    saveSoundPrefs();
     if (audioBackendReady && audio) audioSetVolumeImmediate(audioVolumeLevelFromPercent(mediaVolumePercent));
     lvglRefreshMediaPlayerUi();
     lvglRefreshConfigUi();
+    lvglRefreshSoundPopupUi();
+    lvglTopIndicatorStateValid = false;
+    lvglRefreshTopIndicators();
+}
+
+void lvglSoundPopupBackdropEvent(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    if (lv_event_get_target(e) != lvglSoundPopup) return;
+    lvglHideSoundPopup();
+}
+
+void lvglSoundPopupVolumeEvent(lv_event_t *e)
+{
+    lv_obj_t *obj = lv_event_get_target(e);
+    if (!obj || obj != lvglSoundPopupVolumeSlider) return;
+    int v = lv_slider_get_value(obj);
+    if (v < 0) v = 0;
+    if (v > 100) v = 100;
+    mediaVolumePercent = static_cast<uint8_t>(v);
+    saveSoundPrefs();
+    if (audioBackendReady && audio) audioSetVolumeImmediate(audioVolumeLevelFromPercent(mediaVolumePercent));
+    lvglRefreshMediaPlayerUi();
+    lvglRefreshConfigUi();
+    lvglRefreshSoundPopupUi();
+    lvglTopIndicatorStateValid = false;
+    lvglRefreshTopIndicators();
+}
+
+void lvglSoundPopupVibrationEvent(lv_event_t *e)
+{
+    (void)e;
+    if (!lvglSoundPopupVibrationDropdown) return;
+    const uint16_t selected = lv_dropdown_get_selected(lvglSoundPopupVibrationDropdown);
+    if (selected >= static_cast<uint16_t>(VIBRATION_INTENSITY_COUNT)) return;
+    vibrationIntensity = static_cast<VibrationIntensity>(selected);
+    vibrationEnabled = true;
+    saveSoundPrefs();
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+    chatMessageVibrationPreview();
+#endif
+    lvglRefreshConfigUi();
+    lvglRefreshSoundPopupUi();
+    lvglTopIndicatorStateValid = false;
+    lvglRefreshTopIndicators();
+}
+
+void lvglSoundPopupDisableVibrationEvent(lv_event_t *e)
+{
+    (void)e;
+    vibrationEnabled = false;
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+    chatMessageVibrationStop(true);
+#endif
+    saveSoundPrefs();
+    lvglRefreshConfigUi();
+    lvglRefreshSoundPopupUi();
+    lvglTopIndicatorStateValid = false;
+    lvglRefreshTopIndicators();
 }
 
 void lvglRgbLedEvent(lv_event_t *e)
@@ -13290,6 +14176,7 @@ void lvglRefreshConfigUi()
     if (lvglRgbLedSlider && lv_slider_get_value(lvglRgbLedSlider) != rgbLedPercent) {
         lv_slider_set_value(lvglRgbLedSlider, rgbLedPercent, LV_ANIM_OFF);
     }
+    lvglRefreshSoundPopupUi();
 }
 
 void lvglRefreshLanguageUi()
@@ -14636,41 +15523,86 @@ void lvglRefreshHc12Ui()
     const bool setAsserted = hc12SetIsAsserted();
     lv_obj_t *setBtn = hc12SetBtnObj();
     lv_obj_t *setBtnLabel = setBtn ? lv_obj_get_child(setBtn, 0) : nullptr;
-    if (setBtnLabel) lv_label_set_text(setBtnLabel, setAsserted ? "SET: ON" : "SET: OFF");
+    if (setBtnLabel) lv_label_set_text(setBtnLabel, setAsserted ? "CFG: ON" : "CFG: OFF");
     if (setBtn) {
         lvglRegisterStyledButton(setBtn, setAsserted ? lv_color_hex(0xC06C2B) : lv_color_hex(0x7A5C2E), true);
+    }
+    lv_obj_t *wrap = hc12WrapObj();
+    lv_obj_t *topRow = wrap ? lv_obj_get_child(wrap, 0) : nullptr;
+    lv_obj_t *pinLbl = topRow ? lv_obj_get_child(topRow, 1) : nullptr;
+    if (pinLbl) {
+        if (radioModuleType == RADIO_MODULE_HC12) {
+            lv_label_set_text_fmt(pinLbl, "HC-12 RXD %d  TXD %d  SET %d  9600 baud", HC12_TX_PIN, HC12_RX_PIN, HC12_SET_PIN);
+        } else {
+            lv_label_set_text_fmt(pinLbl, "E220 RX %d  TX %d  M1 %d  M2 %d  9600 baud", E220_TX_PIN, E220_RX_PIN, E220_M0_PIN, E220_M1_PIN);
+        }
     }
     lv_obj_t *terminalTa = hc12TerminalObj();
     if (terminalTa) {
         lv_textarea_set_text(terminalTa, hc12TerminalLog ? hc12TerminalLog->c_str() : "");
         lv_textarea_set_cursor_pos(terminalTa, LV_TEXTAREA_CURSOR_LAST);
+        lv_textarea_set_placeholder_text(terminalTa, radioModuleType == RADIO_MODULE_HC12 ? "HC-12 terminal output" : "E220 terminal output");
     }
 }
 
 void lvglRefreshHc12ConfigUi()
 {
-    if (lvglHc12ChannelValueLabel) lv_label_set_text_fmt(lvglHc12ChannelValueLabel, "CH%03d", hc12CurrentChannel);
-    if (lvglHc12ChannelSubLabel) {
-        String spacing = String((hc12CurrentChannel - 1) * 400UL) + " kHz offset";
-        lv_label_set_text(lvglHc12ChannelSubLabel, spacing.c_str());
+    if (lvglRadioModuleDropdown) {
+        lv_dropdown_set_options(lvglRadioModuleDropdown, buildRadioModuleDropdownOptions().c_str());
+        const uint16_t selected = static_cast<uint16_t>(radioModuleType);
+        if (lv_dropdown_get_selected(lvglRadioModuleDropdown) != selected) lv_dropdown_set_selected(lvglRadioModuleDropdown, selected);
     }
-
-    const int baudCount = static_cast<int>(sizeof(HC12_SUPPORTED_BAUDS) / sizeof(HC12_SUPPORTED_BAUDS[0]));
-    const int baudIndex = constrain(hc12CurrentBaudIndex, 0, max(0, baudCount - 1));
-    if (lvglHc12BaudValueLabel) lv_label_set_text_fmt(lvglHc12BaudValueLabel, "%lu", HC12_SUPPORTED_BAUDS[baudIndex]);
-    if (lvglHc12BaudSubLabel) lv_label_set_text(lvglHc12BaudSubLabel, "bps");
-    if (lvglHc12ModeValueLabel) lv_label_set_text(lvglHc12ModeValueLabel, HC12_MODE_LABELS[constrain(hc12CurrentModeIndex, 0, 3)]);
-    if (lvglHc12ModeSubLabel) lv_label_set_text_fmt(lvglHc12ModeSubLabel, "FU%d", constrain(hc12CurrentModeIndex, 0, 3) + 1);
-    const int powerLevel = constrain(hc12CurrentPowerLevel, 1, 8);
-    if (lvglHc12PowerValueLabel) lv_label_set_text_fmt(lvglHc12PowerValueLabel, "P%d", powerLevel);
-    if (lvglHc12PowerSubLabel) lv_label_set_text_fmt(lvglHc12PowerSubLabel, "%d dBm", HC12_POWER_DBM[powerLevel - 1]);
+    if (lvglRadioChannelTitleLabel) lv_label_set_text(lvglRadioChannelTitleLabel, "Channel");
+    if (lvglRadioBaudTitleLabel) lv_label_set_text(lvglRadioBaudTitleLabel, radioModuleType == RADIO_MODULE_HC12 ? "Baud Rate" : "UART Baud");
+    if (lvglRadioModeTitleLabel) lv_label_set_text(lvglRadioModeTitleLabel, radioModuleType == RADIO_MODULE_HC12 ? "Transmission Mode" : "Air Data Rate");
+    if (lvglRadioPowerTitleLabel) lv_label_set_text(lvglRadioPowerTitleLabel, "Transmission Power");
+    if (radioModuleType == RADIO_MODULE_HC12) {
+        if (lvglRadioExtraCard) lv_obj_add_flag(lvglRadioExtraCard, LV_OBJ_FLAG_HIDDEN);
+        if (lvglHc12ChannelValueLabel) lv_label_set_text_fmt(lvglHc12ChannelValueLabel, "CH%03d", hc12CurrentChannel);
+        if (lvglHc12ChannelSubLabel) {
+            String spacing = String((hc12CurrentChannel - 1) * 400UL) + " kHz offset";
+            lv_label_set_text(lvglHc12ChannelSubLabel, spacing.c_str());
+        }
+        const int baudCount = static_cast<int>(sizeof(HC12_SUPPORTED_BAUDS) / sizeof(HC12_SUPPORTED_BAUDS[0]));
+        const int baudIndex = constrain(hc12CurrentBaudIndex, 0, max(0, baudCount - 1));
+        if (lvglHc12BaudValueLabel) lv_label_set_text_fmt(lvglHc12BaudValueLabel, "%lu", HC12_SUPPORTED_BAUDS[baudIndex]);
+        if (lvglHc12BaudSubLabel) lv_label_set_text(lvglHc12BaudSubLabel, "bps");
+        if (lvglHc12ModeValueLabel) lv_label_set_text(lvglHc12ModeValueLabel, HC12_MODE_LABELS[constrain(hc12CurrentModeIndex, 0, 3)]);
+        if (lvglHc12ModeSubLabel) lv_label_set_text_fmt(lvglHc12ModeSubLabel, "FU%d", constrain(hc12CurrentModeIndex, 0, 3) + 1);
+        const int powerLevel = constrain(hc12CurrentPowerLevel, 1, 8);
+        if (lvglHc12PowerValueLabel) lv_label_set_text_fmt(lvglHc12PowerValueLabel, "P%d", powerLevel);
+        if (lvglHc12PowerSubLabel) lv_label_set_text_fmt(lvglHc12PowerSubLabel, "%d dBm", HC12_POWER_DBM[powerLevel - 1]);
+        if (lvglRadioHintLabel) lv_label_set_text_fmt(lvglRadioHintLabel,
+                                                      "HC-12 RXD %d  |  TXD %d  |  SET %d  |  9600 baud\nSerial Terminal and Info use HC-12 AT mode. Radio chat/discovery is only active while HC-12 is selected.",
+                                                      HC12_TX_PIN, HC12_RX_PIN, HC12_SET_PIN);
+    } else {
+        if (lvglRadioExtraCard) lv_obj_clear_flag(lvglRadioExtraCard, LV_OBJ_FLAG_HIDDEN);
+        if (lvglHc12ChannelValueLabel) lv_label_set_text_fmt(lvglHc12ChannelValueLabel, "CH%02d", e220CurrentChannel);
+        if (lvglHc12ChannelSubLabel) lv_label_set_text(lvglHc12ChannelSubLabel, "410 MHz base + channel");
+        if (lvglHc12BaudValueLabel) lv_label_set_text_fmt(lvglHc12BaudValueLabel, "%lu", E220_UART_BAUD_VALUES[constrain(e220CurrentBaudIndex, 0, 7)]);
+        if (lvglHc12BaudSubLabel) lv_label_set_text(lvglHc12BaudSubLabel, "bps");
+        if (lvglHc12ModeValueLabel) lv_label_set_text(lvglHc12ModeValueLabel, E220_AIR_RATE_LABELS[constrain(e220CurrentAirRateIndex, 0, 7)]);
+        if (lvglHc12ModeSubLabel) lv_label_set_text(lvglHc12ModeSubLabel, "air rate");
+        if (lvglHc12PowerValueLabel) lv_label_set_text_fmt(lvglHc12PowerValueLabel, "P%d", e220CurrentPowerIndex);
+        if (lvglHc12PowerSubLabel) lv_label_set_text_fmt(lvglHc12PowerSubLabel, "%d dBm",
+                                                         E220_POWER_DBM[constrain(e220CurrentPowerIndex, 0, 3)]);
+        if (lvglRadioExtraTitleLabel) lv_label_set_text(lvglRadioExtraTitleLabel, "Transfer Mode");
+        if (lvglRadioExtraValueLabel) lv_label_set_text(lvglRadioExtraValueLabel, e220CurrentFixedTransmission ? "Fixed" : "Transparent");
+        if (lvglRadioExtraSubLabel) lv_label_set_text(lvglRadioExtraSubLabel, e220CurrentFixedTransmission ? "packet addressing, chat off" : "packet streaming, chat on");
+        if (lvglRadioHintLabel) lv_label_set_text_fmt(lvglRadioHintLabel,
+                                                      "E220 RX %d  |  TX %d  |  M1 %d  |  M2 %d  |  9600 baud in config mode\nEncrypted radio chat/discovery uses E220 Transparent mode; Fixed mode keeps config access but disables chat traffic.",
+                                                      E220_TX_PIN, E220_RX_PIN, E220_M0_PIN, E220_M1_PIN);
+    }
     if (lvglHc12ConfigStatusLabel) lv_label_set_text(lvglHc12ConfigStatusLabel, hc12ConfigStatusText.c_str());
 }
 
 void lvglHc12PrevChannelEvent(lv_event_t *e)
 {
     (void)e;
-    if (hc12ApplyChannel(hc12CurrentChannel <= HC12_MIN_CHANNEL ? HC12_MAX_CHANNEL : (hc12CurrentChannel - 1))) {
+    const int currentChannel = radioModuleType == RADIO_MODULE_HC12 ? hc12CurrentChannel : e220CurrentChannel;
+    const int minChannel = radioModuleType == RADIO_MODULE_HC12 ? HC12_MIN_CHANNEL : E220_MIN_CHANNEL;
+    const int maxChannel = radioModuleType == RADIO_MODULE_HC12 ? HC12_MAX_CHANNEL : E220_MAX_CHANNEL;
+    if (hc12ApplyChannel(currentChannel <= minChannel ? maxChannel : (currentChannel - 1))) {
         lvglRefreshHc12ConfigUi();
     } else {
         lvglRefreshHc12ConfigUi();
@@ -14680,7 +15612,10 @@ void lvglHc12PrevChannelEvent(lv_event_t *e)
 void lvglHc12NextChannelEvent(lv_event_t *e)
 {
     (void)e;
-    if (hc12ApplyChannel(hc12CurrentChannel >= HC12_MAX_CHANNEL ? HC12_MIN_CHANNEL : (hc12CurrentChannel + 1))) {
+    const int currentChannel = radioModuleType == RADIO_MODULE_HC12 ? hc12CurrentChannel : e220CurrentChannel;
+    const int minChannel = radioModuleType == RADIO_MODULE_HC12 ? HC12_MIN_CHANNEL : E220_MIN_CHANNEL;
+    const int maxChannel = radioModuleType == RADIO_MODULE_HC12 ? HC12_MAX_CHANNEL : E220_MAX_CHANNEL;
+    if (hc12ApplyChannel(currentChannel >= maxChannel ? minChannel : (currentChannel + 1))) {
         lvglRefreshHc12ConfigUi();
     } else {
         lvglRefreshHc12ConfigUi();
@@ -14690,8 +15625,10 @@ void lvglHc12NextChannelEvent(lv_event_t *e)
 void lvglHc12PrevBaudEvent(lv_event_t *e)
 {
     (void)e;
-    const int baudCount = static_cast<int>(sizeof(HC12_SUPPORTED_BAUDS) / sizeof(HC12_SUPPORTED_BAUDS[0]));
-    int next = hc12CurrentBaudIndex - 1;
+    const int baudCount = radioModuleType == RADIO_MODULE_HC12
+                              ? static_cast<int>(sizeof(HC12_SUPPORTED_BAUDS) / sizeof(HC12_SUPPORTED_BAUDS[0]))
+                              : static_cast<int>(sizeof(E220_UART_BAUD_VALUES) / sizeof(E220_UART_BAUD_VALUES[0]));
+    int next = (radioModuleType == RADIO_MODULE_HC12 ? hc12CurrentBaudIndex : e220CurrentBaudIndex) - 1;
     if (next < 0) next = baudCount - 1;
     hc12ApplyBaudIndex(next);
     lvglRefreshHc12ConfigUi();
@@ -14700,8 +15637,10 @@ void lvglHc12PrevBaudEvent(lv_event_t *e)
 void lvglHc12NextBaudEvent(lv_event_t *e)
 {
     (void)e;
-    const int baudCount = static_cast<int>(sizeof(HC12_SUPPORTED_BAUDS) / sizeof(HC12_SUPPORTED_BAUDS[0]));
-    int next = hc12CurrentBaudIndex + 1;
+    const int baudCount = radioModuleType == RADIO_MODULE_HC12
+                              ? static_cast<int>(sizeof(HC12_SUPPORTED_BAUDS) / sizeof(HC12_SUPPORTED_BAUDS[0]))
+                              : static_cast<int>(sizeof(E220_UART_BAUD_VALUES) / sizeof(E220_UART_BAUD_VALUES[0]));
+    int next = (radioModuleType == RADIO_MODULE_HC12 ? hc12CurrentBaudIndex : e220CurrentBaudIndex) + 1;
     if (next >= baudCount) next = 0;
     hc12ApplyBaudIndex(next);
     lvglRefreshHc12ConfigUi();
@@ -14710,8 +15649,9 @@ void lvglHc12NextBaudEvent(lv_event_t *e)
 void lvglHc12PrevModeEvent(lv_event_t *e)
 {
     (void)e;
-    int next = hc12CurrentModeIndex - 1;
-    if (next < 0) next = 3;
+    int maxIndex = radioModuleType == RADIO_MODULE_HC12 ? 3 : 7;
+    int next = (radioModuleType == RADIO_MODULE_HC12 ? hc12CurrentModeIndex : e220CurrentAirRateIndex) - 1;
+    if (next < 0) next = maxIndex;
     hc12ApplyModeIndex(next);
     lvglRefreshHc12ConfigUi();
 }
@@ -14719,8 +15659,9 @@ void lvglHc12PrevModeEvent(lv_event_t *e)
 void lvglHc12NextModeEvent(lv_event_t *e)
 {
     (void)e;
-    int next = hc12CurrentModeIndex + 1;
-    if (next > 3) next = 0;
+    int maxIndex = radioModuleType == RADIO_MODULE_HC12 ? 3 : 7;
+    int next = (radioModuleType == RADIO_MODULE_HC12 ? hc12CurrentModeIndex : e220CurrentAirRateIndex) + 1;
+    if (next > maxIndex) next = 0;
     hc12ApplyModeIndex(next);
     lvglRefreshHc12ConfigUi();
 }
@@ -14728,8 +15669,12 @@ void lvglHc12NextModeEvent(lv_event_t *e)
 void lvglHc12PrevPowerEvent(lv_event_t *e)
 {
     (void)e;
-    int next = hc12CurrentPowerLevel - 1;
-    if (next < 1) next = 8;
+    int next = (radioModuleType == RADIO_MODULE_HC12 ? hc12CurrentPowerLevel : e220CurrentPowerIndex) - 1;
+    if (radioModuleType == RADIO_MODULE_HC12) {
+        if (next < 1) next = 8;
+    } else {
+        if (next < 0) next = 3;
+    }
     hc12ApplyPowerLevel(next);
     lvglRefreshHc12ConfigUi();
 }
@@ -14737,9 +15682,29 @@ void lvglHc12PrevPowerEvent(lv_event_t *e)
 void lvglHc12NextPowerEvent(lv_event_t *e)
 {
     (void)e;
-    int next = hc12CurrentPowerLevel + 1;
-    if (next > 8) next = 1;
+    int next = (radioModuleType == RADIO_MODULE_HC12 ? hc12CurrentPowerLevel : e220CurrentPowerIndex) + 1;
+    if (radioModuleType == RADIO_MODULE_HC12) {
+        if (next > 8) next = 1;
+    } else {
+        if (next > 3) next = 0;
+    }
     hc12ApplyPowerLevel(next);
+    lvglRefreshHc12ConfigUi();
+}
+
+void lvglHc12PrevExtraEvent(lv_event_t *e)
+{
+    (void)e;
+    if (radioModuleType != RADIO_MODULE_E220) return;
+    e220ApplyTransferMode(!e220CurrentFixedTransmission);
+    lvglRefreshHc12ConfigUi();
+}
+
+void lvglHc12NextExtraEvent(lv_event_t *e)
+{
+    (void)e;
+    if (radioModuleType != RADIO_MODULE_E220) return;
+    e220ApplyTransferMode(!e220CurrentFixedTransmission);
     lvglRefreshHc12ConfigUi();
 }
 
@@ -14761,6 +15726,10 @@ void lvglRefreshHc12InfoUi()
     String summaryRaw;
 
     hc12InitIfNeeded();
+    if (radioModuleType == RADIO_MODULE_E220) {
+        hc12RefreshInfoSnapshot();
+        return;
+    }
     while (Serial1.available() > 0) Serial1.read();
     digitalWrite(HC12_SET_PIN, LOW);
     delay(80);
@@ -16351,6 +17320,7 @@ void chatQueueIncomingMessageBeep()
 void chatQueueIncomingMessageVibration()
 {
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
+    if (!vibrationEnabled) return;
     if (chatMessageVibrationQueue < VIBRATION_QUEUE_MAX) chatMessageVibrationQueue++;
 #endif
 }
@@ -16358,6 +17328,7 @@ void chatQueueIncomingMessageVibration()
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
 static uint32_t chatMessageVibrationDuty()
 {
+    if (!vibrationEnabled) return 0;
     switch (vibrationIntensity) {
         case VIBRATION_INTENSITY_LOW: return 96;
         case VIBRATION_INTENSITY_MEDIUM: return 168;
@@ -16399,6 +17370,10 @@ static void chatMessageVibrationStartOutput()
 
 static void chatMessageVibrationPreview()
 {
+    if (!vibrationEnabled) {
+        chatMessageVibrationStop(true);
+        return;
+    }
     chatMessageVibrationStop(true);
     chatMessageVibrationQueue = 1;
     chatMessageVibrationDeadlineMs = 0;
@@ -17105,6 +18080,7 @@ void appendUiSettings(JsonDocument &doc)
     doc["RecordTelemetry"] = uiPrefs.getBool("record_tel", recordTelemetryEnabled) ? 1 : 0;
     doc["SystemSounds"] = uiPrefs.getBool("sys_snd", systemSoundsEnabled) ? 1 : 0;
     doc["SystemVolume"] = uiPrefs.getUChar("sys_vol", mediaVolumePercent);
+    doc["VibrationEnabled"] = uiPrefs.getBool("vib_en", vibrationEnabled) ? 1 : 0;
     doc["DisplayBrightness"] = uiPrefs.getUChar("disp_bri", displayBrightnessPercent);
     doc["DeviceName"] = uiPrefs.getString("dev_name", deviceShortNameValue());
     doc["WsRebootOnDisconnect"] = uiPrefs.getBool("ws_reboot", wsRebootOnDisconnectEnabled) ? 1 : 0;
@@ -17113,8 +18089,19 @@ void appendUiSettings(JsonDocument &doc)
     doc["Menu3DIcons"] = uiPrefs.getBool("menu_3d_i", menuCustomIconsEnabled) ? 1 : 0;
     doc["DisplayLanguage"] = uiPrefs.getUChar("lang", static_cast<uint8_t>(uiLanguage));
     doc["VibrationIntensity"] = uiPrefs.getUChar("vib_int", static_cast<uint8_t>(vibrationIntensity));
+    doc["RadioModule"] = uiPrefs.getUChar("radio_mod", static_cast<uint8_t>(radioModuleType));
+    doc["Hc12Channel"] = uiPrefs.getInt("hc12_ch", hc12CurrentChannel);
+    doc["Hc12BaudIndex"] = uiPrefs.getInt("hc12_baud", hc12CurrentBaudIndex);
+    doc["Hc12ModeIndex"] = uiPrefs.getInt("hc12_mode", hc12CurrentModeIndex);
+    doc["Hc12PowerLevel"] = uiPrefs.getInt("hc12_pwr", hc12CurrentPowerLevel);
+    doc["E220Channel"] = uiPrefs.getInt("e220_ch", e220CurrentChannel);
+    doc["E220BaudIndex"] = uiPrefs.getInt("e220_baud", e220CurrentBaudIndex);
+    doc["E220AirRateIndex"] = uiPrefs.getInt("e220_rate", e220CurrentAirRateIndex);
+    doc["E220PowerIndex"] = uiPrefs.getInt("e220_pwr", e220CurrentPowerIndex);
+    doc["E220FixedMode"] = uiPrefs.getBool("e220_fix", e220CurrentFixedTransmission) ? 1 : 0;
     doc["TopBarCenter"] = uiPrefs.getUChar("top_mid", static_cast<uint8_t>(topBarCenterMode));
     doc["TopBarTimezone"] = uiPrefs.getInt("tz_gmt", static_cast<int>(topBarTimezoneGmtOffset));
+    doc["PowerOffIdleMs"] = uiPrefs.getULong("pwr_idle", powerOffIdleTimeoutMs);
     doc["TelemetryMaxKB"] = uiPrefs.getUInt("tele_kb", telemetryMaxKB);
     doc["IndicatorsVisible"] = uiPrefs.getBool("ind_v", true) ? 1 : 0;
     doc["ImuVisible"] = uiPrefs.getBool("imu_v", true) ? 1 : 0;
@@ -17161,6 +18148,15 @@ void loadUiRuntimeConfig()
     vibrationIntensity = static_cast<VibrationIntensity>(constrain(uiPrefs.getUChar("vib_int", static_cast<uint8_t>(VIBRATION_INTENSITY_MEDIUM)),
                                                                    static_cast<uint8_t>(VIBRATION_INTENSITY_LOW),
                                                                    static_cast<uint8_t>(VIBRATION_INTENSITY_HIGH)));
+    vibrationEnabled = uiPrefs.getBool("vib_en", true);
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+    radioModuleType = static_cast<RadioModuleType>(constrain(uiPrefs.getUChar("radio_mod", static_cast<uint8_t>(RADIO_MODULE_HC12)),
+                                                             static_cast<uint8_t>(RADIO_MODULE_HC12),
+                                                             static_cast<uint8_t>(RADIO_MODULE_COUNT - 1)));
+#else
+    radioModuleType = RADIO_MODULE_HC12;
+#endif
+    loadPersistedRadioSettings();
     messageBeepTone = static_cast<MessageBeepTone>(constrain(uiPrefs.getUChar("msg_tone", static_cast<uint8_t>(MESSAGE_BEEP_DOUBLE_SHORT)),
                                                              static_cast<uint8_t>(MESSAGE_BEEP_SINGLE),
                                                              static_cast<uint8_t>(MESSAGE_BEEP_TONE_COUNT - 1)));
@@ -17187,6 +18183,7 @@ void loadUiRuntimeConfig()
     serialLogKeepLines = static_cast<size_t>(uiPrefs.getUInt("ser_keep", SERIAL_LOG_RING_SIZE));
     screensaverEnabled = uiPrefs.getBool("scrsvr_en", false);
     displayIdleTimeoutMs = clampIdleTimeoutMs(uiPrefs.getULong("disp_idle", LCD_IDLE_TIMEOUT_MS_DEFAULT));
+    powerOffIdleTimeoutMs = POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS[powerOffTimeoutOptionIndex(uiPrefs.getULong("pwr_idle", 0UL))];
     copyTextToBuf(otaPendingPopupVersion, sizeof(otaPendingPopupVersion), uiPrefs.getString("ota_popup", ""));
     copyTextToBuf(otaLatestVersion, sizeof(otaLatestVersion), otaNormalizedVersion(uiPrefs.getString("ota_latest", "")));
     otaUpdateAvailable = uiPrefs.getBool("ota_avail", false);
@@ -17354,6 +18351,9 @@ bool handleUiSettingMessage(const char *msg)
         audioSetVolumeImmediate(audioVolumeLevelFromPercent(mediaVolumePercent));
         lvglRefreshMediaPlayerUi();
         lvglRefreshConfigUi();
+        lvglRefreshSoundPopupUi();
+        lvglTopIndicatorStateValid = false;
+        if (lvglReady) lvglRefreshTopIndicators();
     }
     else if (strcmp(key, "DisplayBrightness") == 0 && parseIntMessageValue(value, parsed)) {
         displayBrightnessPercent = static_cast<uint8_t>(max(5, min(100, parsed)));
@@ -17403,12 +18403,50 @@ bool handleUiSettingMessage(const char *msg)
         uiPrefs.putUChar("lang", static_cast<uint8_t>(uiLanguage));
         if (lvglReady) lvglRefreshLocalizedUi();
     }
+    else if (strcmp(key, "RadioModule") == 0 && parseIntMessageValue(value, parsed)) {
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+        radioModuleType = static_cast<RadioModuleType>(constrain(parsed,
+                                                                 static_cast<int>(RADIO_MODULE_HC12),
+                                                                 static_cast<int>(RADIO_MODULE_COUNT - 1)));
+#else
+        radioModuleType = RADIO_MODULE_HC12;
+#endif
+        uiPrefs.putUChar("radio_mod", static_cast<uint8_t>(radioModuleType));
+        if (lvglReady) {
+            lvglRefreshConfigUi();
+            lvglRefreshHc12ConfigUi();
+            lvglRefreshHc12Ui();
+            lvglRefreshHc12InfoUi();
+        }
+    }
+    else if (strcmp(key, "VibrationEnabled") == 0) {
+        vibrationEnabled = atoi(value) != 0;
+        uiPrefs.putBool("vib_en", vibrationEnabled);
+        if (!vibrationEnabled) {
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+            chatMessageVibrationStop(true);
+#endif
+        }
+        if (lvglReady) {
+            lvglRefreshConfigUi();
+            lvglRefreshSoundPopupUi();
+            lvglTopIndicatorStateValid = false;
+            lvglRefreshTopIndicators();
+        }
+    }
     else if (strcmp(key, "VibrationIntensity") == 0 && parseIntMessageValue(value, parsed)) {
         vibrationIntensity = static_cast<VibrationIntensity>(constrain(parsed,
                                                                        static_cast<int>(VIBRATION_INTENSITY_LOW),
                                                                        static_cast<int>(VIBRATION_INTENSITY_HIGH)));
+        vibrationEnabled = true;
         uiPrefs.putUChar("vib_int", static_cast<uint8_t>(vibrationIntensity));
-        if (lvglReady) lvglRefreshConfigUi();
+        uiPrefs.putBool("vib_en", vibrationEnabled);
+        if (lvglReady) {
+            lvglRefreshConfigUi();
+            lvglRefreshSoundPopupUi();
+            lvglTopIndicatorStateValid = false;
+            lvglRefreshTopIndicators();
+        }
     }
     else if (strcmp(key, "MessageTone") == 0 && parseIntMessageValue(value, parsed)) {
         messageBeepTone = static_cast<MessageBeepTone>(constrain(parsed,
@@ -21173,6 +22211,11 @@ void setup()
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step vibration pin init");
     pinMode(VIBRATION_MOTOR_PIN, OUTPUT);
     digitalWrite(VIBRATION_MOTOR_PIN, LOW);
+    if (POWER_OFF_SIGNAL_PIN >= 0) {
+        if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step power signal pin init");
+        pinMode(POWER_OFF_SIGNAL_PIN, OUTPUT);
+        digitalWrite(POWER_OFF_SIGNAL_PIN, HIGH);
+    }
 #endif
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step randomSeed");
     randomSeed(static_cast<unsigned long>(esp_random()));
@@ -21378,6 +22421,17 @@ void loop()
         lastUserActivityMs = millis();
         if (screensaverActive) screensaverSetActive(false);
         if (!displayAwake) displaySetAwake(true);
+    } else if (powerOffIdleTimeoutMs > 0 &&
+               POWER_OFF_SIGNAL_PIN >= 0 &&
+               !isDown &&
+               !batteryCharging &&
+               !mediaIsPlaying &&
+               !mediaPaused &&
+               (millis() - lastUserActivityMs >= powerOffIdleTimeoutMs)) {
+        uiStatusLine = "Idle power-off";
+        if (lvglReady) lvglSyncStatusLine();
+        powerOffSignalPulse();
+        lastUserActivityMs = millis();
     } else if (!displayAwake && (millis() - lastUserActivityMs >= displayIdleTimeoutMs)) {
         // Keep state as-is while sleeping.
     } else if (!screensaverActive && displayAwake && (millis() - lastUserActivityMs >= displayIdleTimeoutMs)) {

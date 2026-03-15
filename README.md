@@ -2,7 +2,7 @@
 
 Firmware for Sunton-style ESP32 touch display boards with an LVGL touch UI, Wi-Fi/AP management, SD-backed recovery tools, MQTT controls, and encrypted device-to-device chat.
 
-Current firmware version: **`0.2.13`**
+Current firmware version: **`0.2.14`**
 
 Supported boards:
 - `ESP32-2432S024C` (`240x320`, `ILI9341`, `CST820`)
@@ -19,8 +19,10 @@ Supported boards:
 - `Config` now includes a persisted `Language` screen with English, Russian, Chinese, French, Turkish, Italian, German, Japanese, and Korean UI selection
 - `Config` on the S3 build now includes persisted vibration intensity selection with `Low`, `Medium`, and `High`
 - `Config` on the S3 build now includes previewable incoming-message tone selection with multiple beep and melody patterns
+- Top bar now includes a persisted sound-mode indicator/editor with quick access to volume and vibration settings
 - Build output now includes an auto-generated multilingual LVGL font subset so non-Latin menu text renders correctly on-device
 - `Style` menu now includes a persisted `3D Icons` switch that toggles between custom embedded menu icons and LVGL built-in symbols
+- `Style` menu now includes an auto power-off timeout that can shut the device down after extended inactivity
 - LVGL touch/UI hot paths trimmed to reduce callback and off-screen refresh overhead
 - Swipe-back from an open conversation now previews the correct chat-list screen instead of showing a blank/white background
 - Style timezone selection is persisted and restored correctly after navigation and reboot
@@ -29,7 +31,9 @@ Supported boards:
 - Speaker volume now uses an exponential response curve for finer low-volume control
 - Brightness, volume, and RGB slider values are persisted in `Preferences`
 - `WiFi Config` screen with current network info, manual scan, saved-network actions, and editable AP SSID/password
-- `HC12 Config` submenu with live channel, baud, mode, power, default-reset, dedicated `Info`, and `Serial Terminal` pages for the HC-12 radio module
+- `Radio Config` submenu with selectable `HC-12` or `Ebyte E220-400T22D` module support, live settings, dedicated `Info`, and `Radio Terminal` pages
+- Encrypted radio chat/discovery can run over `HC-12` or `E220` in transparent mode, with a fixed-mode warning shown in the UI
+- S3 main menu includes a hardware power-off action that sends the configured shutdown pulse on `GPIO21`
 - `OTA Updates` screen with boot-time and periodic update checks, update-available indicator/popup, progress bar, and post-update confirmation
 - `MQTT Config` screen for broker settings, status, and connection control
 - Home and `Config` menu entries can use dedicated embedded icons, including custom `WiFi Config` and `MQTT Config` icons when `3D Icons` is enabled
@@ -238,13 +242,22 @@ Audio, LEDs, Sensors:
 | Light ADC | 34 | 6 |
 | Vibration motor | - | 2 |
 
-Optional HC-12 UART on the `ESP32-S3` build:
+Optional radio-module UART on the `ESP32-S3` build:
 
 | Signal | ESP32-S3 |
 |---|---:|
 | HC-12 `RXD` | 4 |
 | HC-12 `TXD` | 5 |
 | HC-12 `SET` | 3 |
+
+Optional `Ebyte E220-400T22D` wiring on the `ESP32-S3` build:
+
+| Signal | ESP32-S3 |
+|---|---:|
+| E220 `RX` | 4 |
+| E220 `TX` | 5 |
+| E220 `M1` | 11 |
+| E220 `M2` | 3 |
 
 Battery sense on the current `ESP32-S3` wiring expects a `470K / 220K` divider into `GPIO10`.
 Battery percentage uses the measured cell voltage range `3.30V` to `4.20V` and now supports persisted self-calibration so divider tolerance and ADC scaling can be learned over time.
@@ -354,19 +367,32 @@ Board-specific defaults:
 - Device name is shown in the top bar and shortened there when needed
 - `Style` includes button theme selection, top-bar center mode, GMT timezone selection, and a persisted `3D Icons` switch
 
-### HC-12
+### Radio Config
 
-- `Config -> HC12 Config` opens a submenu instead of dropping directly into the terminal
-- Main HC-12 page can read and change:
+- `Config -> Radio Config` opens a submenu instead of dropping directly into the terminal
+- The top selector chooses the active module:
+- `HC-12`
+- `Ebyte E220-400T22D` on the `ESP32-S3-3248S035-N16R8` build only
+- `HC-12` settings page can read and change:
 - channel (`CH001` to `CH100`)
 - baud rate (`1200` to `115200`)
 - transmission mode (`FU1` to `FU4`, shown as `Raw Mod`, `Fast`, `Norm`, `LoRa`)
 - transmission power (`P1` to `P8`, with dBm shown)
-- `Default` restores factory settings and then reloads current module values
-- `Serial Terminal` keeps the manual UART terminal and `SET` toggle
-- `Info` queries the module in AT mode and shows version, baud, channel, FU mode, power, and raw summary text
-- Chat discovery now also listens on HC-12 in normal radio mode, so devices on the same HC-12 channel appear in chat lists as radio contacts
-- The repository now includes an `ESP32-S3` pad wiring photo for HC-12 at [documents/HC-12_to_ESP32_S3.jpeg](documents/HC-12_to_ESP32_S3.jpeg)
+- `E220` settings page can read and change:
+- channel (`CH00` to `CH83`)
+- UART baud (`1200` to `115200`)
+- air data rate
+- transmission power
+- transfer mode (`Transparent` / `Fixed`)
+- Encrypted radio chat, discovery, ack, and delete traffic now follow the selected radio module
+- `HC-12` uses the existing radio chat transport
+- `E220` uses the same encrypted chat payload format in `Transparent` mode
+- `E220 Fixed` mode is still available for module configuration, but it disables the current chat/discovery transport
+- `Default` restores factory settings for the selected module and reloads current values
+- `Radio Terminal` keeps the manual UART terminal and config-mode toggle for the selected module
+- `Radio Info` queries the selected module in config mode and shows the reported settings
+- Radio encryption stays the same across both modules, so pairing, encrypted chat, ack, and delete flows use one shared payload format
+- The repository includes an `ESP32-S3` pad wiring photo for HC-12 at [documents/HC-12_to_ESP32_S3.jpeg](documents/HC-12_to_ESP32_S3.jpeg)
 
 ## Wi-Fi and AP
 
