@@ -2,7 +2,7 @@
 
 Firmware for Sunton-style ESP32 touch display boards with an LVGL touch UI, Wi-Fi/AP management, SD-backed recovery tools, MQTT controls, and encrypted device-to-device chat.
 
-Current firmware version: **`0.2.15`**
+Current firmware version: **`0.2.16`**
 
 Supported boards:
 - `ESP32-2432S024C` (`240x320`, `ILI9341`, `CST820`)
@@ -23,6 +23,7 @@ Supported boards:
 - Build output now includes an auto-generated multilingual LVGL font subset so non-Latin menu text renders correctly on-device
 - `Style` menu now includes a persisted `3D Icons` switch that toggles between custom embedded menu icons and LVGL built-in symbols
 - `Style` menu now includes an auto power-off timeout that can shut the device down after extended inactivity
+- `Config` now includes a `Train Battery` screen with manual reset, full-charge capture, discharge capture, and auto-calibration controls
 - LVGL touch/UI hot paths trimmed to reduce callback and off-screen refresh overhead
 - Swipe-back from an open conversation now previews the correct chat-list screen instead of showing a blank/white background
 - Style timezone selection is persisted and restored correctly after navigation and reboot
@@ -328,6 +329,7 @@ Board-specific defaults:
 - Full-charge calibration is learned when a charge session reaches a stable upper plateau
 - Low-battery calibration can be learned after a likely smart-BMS cutoff followed by next boot
 - Learned battery calibration is stored in NVS and blended over later cycles
+- Manual battery training can temporarily force `Power Off` to `Never`, store `FULL` and `EMPTY` anchors, and then restore the user's previous power-off timeout
 - Battery samples: `16`
 - Light samples: `8`
 - Display idle timeout: `120000 ms`
@@ -366,6 +368,7 @@ Board-specific defaults:
 - Device rename field with persistence
 - Device name is shown in the top bar and shortened there when needed
 - `Style` includes button theme selection, top-bar center mode, GMT timezone selection, and a persisted `3D Icons` switch
+- `Train Battery` shows live battery calibration values, supports manual `FULL` / `DISCHARGE` training, and keeps `Auto Calibration` available on the same screen
 
 ### Radio Config
 

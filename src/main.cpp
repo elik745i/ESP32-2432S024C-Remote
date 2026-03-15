@@ -44,6 +44,9 @@
 #include "generated/img_mqtt_conf_small_icon.h"
 #include "generated/img_mqtt_small_icon.h"
 #include "generated/img_ota_small_icon.h"
+#include "generated/img_auto_small_icon.h"
+#include "generated/img_disch_small_icon.h"
+#include "generated/img_full_small_icon.h"
 #include "generated/img_power_small_icon.h"
 #include "generated/img_radio_small_icon.h"
 #include "generated/img_screenshot_small_icon.h"
@@ -301,7 +304,7 @@ static constexpr uint8_t VIBRATION_QUEUE_MAX = 4;
 #endif
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.2.15";
+static constexpr const char *FW_VERSION = "0.2.16";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -478,6 +481,19 @@ struct BatteryCalibrationState {
     float observedEmptyRawV = 0.0f;
     bool hasFullAnchor = false;
     bool hasEmptyAnchor = false;
+};
+
+enum BatteryTrainingPhase : uint8_t {
+    BATTERY_TRAIN_IDLE = 0,
+    BATTERY_TRAIN_CHARGE,
+    BATTERY_TRAIN_DISCHARGE,
+};
+
+struct BatteryTrainingState {
+    bool active = false;
+    bool powerOverrideActive = false;
+    BatteryTrainingPhase phase = BATTERY_TRAIN_IDLE;
+    unsigned long savedPowerOffMs = 0;
 };
 
 TFT_eSPI tft;
@@ -659,12 +675,29 @@ void lvglApplyApModeButtonStyle();
 void lvglApplyChatDiscoveryButtonStyle();
 void lvglApplyWifiWebServerButtonStyle();
 static void lvglAttachMenuButtonImage(lv_obj_t *btn, const lv_img_dsc_t *imgSrc, lv_coord_t xOffset, lv_coord_t labelShiftX);
+static void lvglSetButtonImageZoom(lv_obj_t *btn, uint16_t zoom, lv_coord_t xOffset = 8, lv_coord_t labelShiftX = 10);
 static void lvglRefreshPrimaryMenuButtonIcons();
 static void lvglRegisterStyledButton(lv_obj_t *btn, lv_color_t baseColor, bool compact);
 static String topBarCenterText();
 static bool internetTimeValid();
 static void syncInternetTimeIfNeeded(bool force = false);
 static String buildGmtOffsetDropdownOptions();
+static void batteryCalibrationLearnFull(float rawV);
+static void batteryCalibrationReset();
+static void batteryTrainingLoad();
+static void batteryTrainingSave();
+static void batteryTrainingRestorePowerOff();
+static void batteryTrainingStartCharge();
+static void batteryTrainingStartDischarge();
+static void batteryTrainingStopManual();
+static const char *batteryTrainingPhaseLabel();
+static void lvglRefreshBatteryTrainButtonIcons();
+static void lvglRefreshBatteryTrainUi();
+void lvglBatteryTrainResetEvent(lv_event_t *e);
+void lvglBatteryTrainResetPromptEvent(lv_event_t *e);
+void lvglBatteryTrainFullEvent(lv_event_t *e);
+void lvglBatteryTrainDischargeEvent(lv_event_t *e);
+void lvglBatteryTrainAutoEvent(lv_event_t *e);
 void lvglHc12ToggleSetEvent(lv_event_t *e);
 void lvglHc12SendEvent(lv_event_t *e);
 void lvglSaveDeviceNameEvent(lv_event_t *e);
@@ -801,6 +834,7 @@ static lv_obj_t *lvglScrInfo = nullptr;
 static lv_obj_t *lvglScrGames = nullptr;
 static lv_obj_t *lvglScrConfig = nullptr;
 static lv_obj_t *lvglScrStyle = nullptr;
+static lv_obj_t *lvglScrBatteryTrain = nullptr;
 static lv_obj_t *lvglScrLanguage = nullptr;
 static lv_obj_t *lvglScrOta = nullptr;
 static lv_obj_t *lvglScrScreensaver = nullptr;
@@ -922,6 +956,7 @@ static lv_obj_t *lvglHomeConfigBtn = nullptr;
 static lv_obj_t *lvglConfigWifiBtn = nullptr;
 static lv_obj_t *lvglConfigHc12Btn = nullptr;
 static lv_obj_t *lvglConfigStyleBtn = nullptr;
+static lv_obj_t *lvglConfigBatteryBtn = nullptr;
 static lv_obj_t *lvglConfigMqttBtn = nullptr;
 static lv_obj_t *lvglConfigMqttControlsBtn = nullptr;
 static lv_obj_t *lvglConfigScreenshotBtn = nullptr;
@@ -952,6 +987,15 @@ static lv_obj_t *lvglOtaUpdateBtn = nullptr;
 static lv_obj_t *lvglOtaUpdateBtnLabel = nullptr;
 static lv_obj_t *lvglOtaProgressBar = nullptr;
 static lv_obj_t *lvglOtaProgressLabel = nullptr;
+static lv_obj_t *lvglBatteryTrainStatusLabel = nullptr;
+static lv_obj_t *lvglBatteryTrainCurrentLabel = nullptr;
+static lv_obj_t *lvglBatteryTrainFullLabel = nullptr;
+static lv_obj_t *lvglBatteryTrainEmptyLabel = nullptr;
+static lv_obj_t *lvglBatteryTrainFactorLabel = nullptr;
+static lv_obj_t *lvglBatteryTrainPowerLabel = nullptr;
+static lv_obj_t *lvglBatteryTrainFullBtn = nullptr;
+static lv_obj_t *lvglBatteryTrainDischargeBtn = nullptr;
+static lv_obj_t *lvglBatteryTrainAutoBtn = nullptr;
 static lv_obj_t *lvglConfigDeviceNameTa = nullptr;
 static lv_obj_t *lvglLanguageDropdown = nullptr;
 static lv_obj_t *lvglLanguageInfoLabel = nullptr;
@@ -1343,6 +1387,7 @@ enum UiScreen : uint8_t {
     UI_INFO,
     UI_GAMES,
     UI_CONFIG,
+    UI_CONFIG_BATTERY,
     UI_CONFIG_STYLE,
     UI_CONFIG_LANGUAGE,
     UI_CONFIG_OTA,
@@ -2191,6 +2236,7 @@ wifi_event_id_t wifiStaDisconnectedEventId = 0;
 unsigned long lastBatterySnapshotMs = 0;
 float lastBatterySnapshotVoltage = -1.0f;
 BatteryCalibrationState batteryCalState;
+BatteryTrainingState batteryTrainingState;
 unsigned long lvglNextHandlerDueMs = 0;
 unsigned long lastCarInputTelemetryMs = 0;
 bool rebootRequested = false;
@@ -3191,6 +3237,7 @@ static bool lvglGetSwipeBackPreviewTarget(UiScreen current, UiScreen &target)
             target = UI_CHAT;
             return true;
         case UI_WIFI_LIST:
+        case UI_CONFIG_BATTERY:
         case UI_CONFIG_STYLE:
         case UI_CONFIG_LANGUAGE:
         case UI_CONFIG_OTA:
@@ -4310,6 +4357,7 @@ static const char *uiScreenName(UiScreen screen)
         case UI_MEDIA: return tr(TXT_MEDIA);
         case UI_INFO: return tr(TXT_INFO);
         case UI_CONFIG: return tr(TXT_CONFIG);
+        case UI_CONFIG_BATTERY: return "Train Battery";
         case UI_CONFIG_STYLE: return tr(TXT_STYLE);
         case UI_CONFIG_LANGUAGE: return tr(TXT_LANGUAGE);
         case UI_CONFIG_OTA: return tr(TXT_OTA_UPDATES);
@@ -4340,6 +4388,7 @@ static bool lvglCanBuildScreen(UiScreen screen)
         case UI_MEDIA:
         case UI_INFO:
         case UI_CONFIG:
+        case UI_CONFIG_BATTERY:
         case UI_CONFIG_STYLE:
         case UI_CONFIG_LANGUAGE:
         case UI_CONFIG_OTA:
@@ -4379,6 +4428,7 @@ static void lvglWarmupScreensService(bool uiPriorityActive)
     if (!lvglReady || !displayAwake || uiPriorityActive || screensaverActive || lvglKeyboardVisible()) return;
     static const UiScreen warmupScreens[] = {
         UI_CONFIG,
+        UI_CONFIG_BATTERY,
         UI_CONFIG_STYLE,
         UI_CONFIG_LANGUAGE,
         UI_CONFIG_OTA,
@@ -5457,6 +5507,7 @@ static void lvglRefreshPrimaryMenuButtonIcons()
     lvglSetMenuButtonIconMode(lvglHomeGamesBtn, tr(TXT_GAMES), LV_SYMBOL_PLAY, &img_games_small_icon);
     lvglSetMenuButtonIconMode(lvglHomeConfigBtn, tr(TXT_CONFIG), LV_SYMBOL_SETTINGS, &img_config_small_icon);
     lvglSetMenuButtonIconMode(lvglHomePowerBtn, "Power", LV_SYMBOL_POWER, &img_power_small_icon);
+    if (menuCustomIconsEnabled) lvglSetButtonImageZoom(lvglHomePowerBtn, 205, 10, 12);
 
     lvglSetMenuButtonIconMode(lvglAirplaneBtn,
                               airplaneModeEnabled ? tr(TXT_AIRPLANE_ON) : tr(TXT_AIRPLANE_OFF),
@@ -5477,6 +5528,7 @@ static void lvglRefreshPrimaryMenuButtonIcons()
     lvglSetMenuButtonIconMode(lvglConfigScreenshotBtn, tr(TXT_SCREENSHOT), LV_SYMBOL_IMAGE, &img_screenshot_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(lvglConfigLanguageBtn, tr(TXT_LANGUAGE), LV_SYMBOL_EDIT, &img_styles_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(lvglConfigOtaBtn, tr(TXT_OTA_UPDATES), LV_SYMBOL_UPLOAD, &img_ota_small_icon, 8, 12);
+    lvglRefreshBatteryTrainButtonIcons();
 }
 
 static void lvglApplyMomentaryButtonStyle(lv_obj_t *btn, lv_obj_t *label, lv_color_t bodyCol, bool compact)
@@ -5621,6 +5673,18 @@ static void lvglAttachMenuButtonImage(lv_obj_t *btn, const lv_img_dsc_t *imgSrc,
     if (!img) return;
     lv_img_set_src(img, imgSrc);
     lv_obj_clear_flag(img, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(img, LV_ALIGN_LEFT_MID, xOffset, 0);
+
+    lv_obj_t *label = lv_obj_get_child(btn, 0);
+    if (label) lv_obj_align(label, LV_ALIGN_CENTER, labelShiftX, 0);
+}
+
+static void lvglSetButtonImageZoom(lv_obj_t *btn, uint16_t zoom, lv_coord_t xOffset, lv_coord_t labelShiftX)
+{
+    if (!btn || lv_obj_get_child_cnt(btn) < 2) return;
+    lv_obj_t *img = lv_obj_get_child(btn, 1);
+    if (!img) return;
+    lv_img_set_zoom(img, zoom);
     lv_obj_align(img, LV_ALIGN_LEFT_MID, xOffset, 0);
 
     lv_obj_t *label = lv_obj_get_child(btn, 0);
@@ -7196,6 +7260,7 @@ static bool uiScreenSupportsSwipeBack(UiScreen screen)
         case UI_INFO:
         case UI_GAMES:
         case UI_CONFIG:
+        case UI_CONFIG_BATTERY:
         case UI_CONFIG_STYLE:
         case UI_CONFIG_LANGUAGE:
         case UI_CONFIG_OTA:
@@ -7225,6 +7290,7 @@ lv_obj_t *lvglScreenForUi(UiScreen screen)
         case UI_INFO: return lvglScrInfo;
         case UI_GAMES: return lvglScrGames;
         case UI_CONFIG: return lvglScrConfig;
+        case UI_CONFIG_BATTERY: return lvglScrBatteryTrain;
         case UI_CONFIG_STYLE: return lvglScrStyle;
         case UI_CONFIG_LANGUAGE: return lvglScrLanguage;
         case UI_CONFIG_OTA: return lvglScrOta;
@@ -7699,6 +7765,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglConfigWifiBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_WIFI_CONFIG), lv_color_hex(0x3A8F4B), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_WIFI_LIST)));
             lvglConfigHc12Btn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_HC12_CONFIG), lv_color_hex(0x7A5C2E), lvglOpenHc12ScreenEvent, nullptr);
             lvglConfigStyleBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_STYLE), lv_color_hex(0x2D6D8E), lvglOpenStyleScreenEvent, nullptr);
+            lvglConfigBatteryBtn = lvglCreateMenuButton(lvglConfigWrap, "Train Battery", lv_color_hex(0x6C7E2C), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CONFIG_BATTERY)));
             lvglConfigMqttBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_MQTT_CONFIG), lv_color_hex(0x6D4B9A), lvglOpenMqttCfgEvent, nullptr);
             lvglConfigMqttControlsBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_MQTT_CONTROLS), lv_color_hex(0x2D6D8E), lvglOpenMqttCtrlEvent, nullptr);
             lvglConfigScreenshotBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_SCREENSHOT), lv_color_hex(0x6B5B2A), lvglScreenshotEvent, nullptr);
@@ -7918,6 +7985,93 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglRegisterReorderableItem(rgbWrap, "ord_cfg", "rgb");
             lvglApplySavedOrder(lvglConfigWrap, "ord_cfg");
             lvglRefreshConfigUi();
+            break;
+        }
+        case UI_CONFIG_BATTERY: {
+            lvglScrBatteryTrain = lvglCreateScreenBase("Train Battery", false);
+            lvglBatteryTrainStatusLabel = nullptr;
+            lvglBatteryTrainCurrentLabel = nullptr;
+            lvglBatteryTrainFullLabel = nullptr;
+            lvglBatteryTrainEmptyLabel = nullptr;
+            lvglBatteryTrainFactorLabel = nullptr;
+            lvglBatteryTrainPowerLabel = nullptr;
+            lvglBatteryTrainFullBtn = nullptr;
+            lvglBatteryTrainDischargeBtn = nullptr;
+            lvglBatteryTrainAutoBtn = nullptr;
+
+            lv_obj_t *wrap = lv_obj_create(lvglScrBatteryTrain);
+            lv_obj_set_size(wrap, lv_pct(100), UI_CONTENT_H);
+            lv_obj_align(wrap, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
+            lv_obj_set_style_bg_opa(wrap, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(wrap, 0, 0);
+            lv_obj_set_style_pad_all(wrap, 10, 0);
+            lv_obj_set_style_pad_row(wrap, 10, 0);
+            lv_obj_set_flex_flow(wrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_scrollbar_mode(wrap, LV_SCROLLBAR_MODE_OFF);
+
+            lv_obj_t *stateCard = lv_obj_create(wrap);
+            lv_obj_set_size(stateCard, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_color(stateCard, lv_color_hex(0x18222D), 0);
+            lv_obj_set_style_border_width(stateCard, 0, 0);
+            lv_obj_set_style_radius(stateCard, 12, 0);
+            lv_obj_set_style_pad_all(stateCard, 12, 0);
+            lv_obj_set_style_pad_row(stateCard, 7, 0);
+            lv_obj_set_flex_flow(stateCard, LV_FLEX_FLOW_COLUMN);
+            lv_obj_clear_flag(stateCard, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *stateTitle = lv_label_create(stateCard);
+            lv_label_set_text(stateTitle, "Stored Calibration");
+            lv_obj_set_style_text_color(stateTitle, lv_color_hex(0xE5ECF3), 0);
+
+            auto makeBatteryInfoLabel = [&](lv_obj_t **out, lv_color_t color) {
+                lv_obj_t *label = lv_label_create(stateCard);
+                lv_obj_set_width(label, lv_pct(100));
+                lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+                lv_obj_set_style_text_color(label, color, 0);
+                if (out) *out = label;
+            };
+
+            makeBatteryInfoLabel(&lvglBatteryTrainStatusLabel, lv_color_hex(0xE5ECF3));
+            makeBatteryInfoLabel(&lvglBatteryTrainCurrentLabel, lv_color_hex(0xB7C4D1));
+            makeBatteryInfoLabel(&lvglBatteryTrainFullLabel, lv_color_hex(0xB7C4D1));
+            makeBatteryInfoLabel(&lvglBatteryTrainEmptyLabel, lv_color_hex(0xB7C4D1));
+            makeBatteryInfoLabel(&lvglBatteryTrainFactorLabel, lv_color_hex(0xB7C4D1));
+            makeBatteryInfoLabel(&lvglBatteryTrainPowerLabel, lv_color_hex(0xB7C4D1));
+
+            lv_obj_t *hintCard = lv_obj_create(wrap);
+            lv_obj_set_size(hintCard, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_color(hintCard, lv_color_hex(0x18222D), 0);
+            lv_obj_set_style_border_width(hintCard, 0, 0);
+            lv_obj_set_style_radius(hintCard, 12, 0);
+            lv_obj_set_style_pad_all(hintCard, 12, 0);
+            lv_obj_set_style_pad_row(hintCard, 8, 0);
+            lv_obj_set_flex_flow(hintCard, LV_FLEX_FLOW_COLUMN);
+            lv_obj_clear_flag(hintCard, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *hint = lv_label_create(hintCard);
+            lv_obj_set_width(hint, lv_pct(100));
+            lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+            lv_obj_set_style_text_color(hint, lv_color_hex(0x9FB0C2), 0);
+            lv_label_set_text(hint,
+                              "Reset clears stored anchors and starts charge training. FULL stores the current top voltage and restores your power setting. "
+                              "DISCHARGE forces Power Off to Never until the next low-battery cutoff is learned. Auto Calibration exits manual training and keeps the existing auto-learning algorithm active.");
+
+            makeSmallBtn(wrap, "Reset", DISPLAY_WIDTH - 20, 40, lv_color_hex(0x8D5F1E), lvglBatteryTrainResetEvent, nullptr);
+
+            lv_obj_t *buttonRow = lv_obj_create(wrap);
+            lv_obj_set_size(buttonRow, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(buttonRow, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(buttonRow, 0, 0);
+            lv_obj_set_style_pad_all(buttonRow, 0, 0);
+            lv_obj_set_style_pad_column(buttonRow, 10, 0);
+            lv_obj_set_flex_flow(buttonRow, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(buttonRow, LV_OBJ_FLAG_SCROLLABLE);
+
+            lvglBatteryTrainFullBtn = makeSmallBtn(buttonRow, "FULL", (DISPLAY_WIDTH - 30) / 2, 42, lv_color_hex(0x2F7A45), lvglBatteryTrainFullEvent, nullptr);
+            lvglBatteryTrainDischargeBtn = makeSmallBtn(buttonRow, "DISCHARGE", (DISPLAY_WIDTH - 30) / 2, 42, lv_color_hex(0x8A3A2E), lvglBatteryTrainDischargeEvent, nullptr);
+            lvglBatteryTrainAutoBtn = makeSmallBtn(wrap, "Auto Calibration", DISPLAY_WIDTH - 20, 40, lv_color_hex(0x345D8A), lvglBatteryTrainAutoEvent, nullptr);
+            lvglRefreshBatteryTrainButtonIcons();
+            lvglRefreshBatteryTrainUi();
             break;
         }
         case UI_CONFIG_STYLE: {
@@ -9175,6 +9329,8 @@ void lvglOpenScreen(UiScreen screen, lv_scr_load_anim_t anim)
         lvglRefreshInfoPanel();
     } else if (screen == UI_CONFIG) {
         lvglRefreshConfigUi();
+    } else if (screen == UI_CONFIG_BATTERY) {
+        lvglRefreshBatteryTrainUi();
     } else if (screen == UI_CONFIG_STYLE) {
         lvglRefreshStyleUi();
     } else if (screen == UI_CONFIG_LANGUAGE) {
@@ -9220,6 +9376,7 @@ void lvglNavigateBackBySwipe(lv_scr_load_anim_t anim)
             lvglOpenScreen(UI_CHAT, anim);
             break;
         case UI_WIFI_LIST:
+        case UI_CONFIG_BATTERY:
             lvglOpenScreen(UI_CONFIG, anim);
             break;
         case UI_CONFIG_STYLE:
@@ -14017,6 +14174,106 @@ void lvglRefreshStyleUi()
     lvglStyleUiSyncing = false;
 }
 
+static void lvglRefreshBatteryTrainUi()
+{
+    if (!lvglBatteryTrainStatusLabel) return;
+
+    String status = String("Mode: ") + batteryTrainingPhaseLabel();
+    if (batteryTrainingState.active) {
+        if (batteryTrainingState.phase == BATTERY_TRAIN_CHARGE) status += "  |  Charging session in progress";
+        else if (batteryTrainingState.phase == BATTERY_TRAIN_DISCHARGE) status += "  |  Waiting for low-battery cutoff";
+    } else {
+        status += "  |  Background learning enabled";
+    }
+    lvglLabelSetTextIfChanged(lvglBatteryTrainStatusLabel, status);
+
+    char currentBuf[96];
+    snprintf(currentBuf, sizeof(currentBuf), "Current: raw %.3fV  |  corrected %.3fV  |  %u%%",
+             batteryRawVoltage, batteryVoltage, static_cast<unsigned>(batteryPercent));
+    lvglLabelSetTextIfChanged(lvglBatteryTrainCurrentLabel, currentBuf);
+
+    String fullText = "Stored FULL: ";
+    fullText += batteryCalState.hasFullAnchor ? String(batteryCalState.observedFullRawV, 3) + "V raw" : String("Not learned");
+    lvglLabelSetTextIfChanged(lvglBatteryTrainFullLabel, fullText);
+
+    String emptyText = "Stored EMPTY: ";
+    emptyText += batteryCalState.hasEmptyAnchor ? String(batteryCalState.observedEmptyRawV, 3) + "V raw" : String("Not learned");
+    lvglLabelSetTextIfChanged(lvglBatteryTrainEmptyLabel, emptyText);
+
+    lvglLabelSetTextIfChanged(lvglBatteryTrainFactorLabel, String("Effective factor: ") + String(batteryCalibrationFactor(), 4));
+
+    String powerText = String("Power Off: ") + formatIdleTimeoutLabel(powerOffIdleTimeoutMs);
+    if (batteryTrainingState.powerOverrideActive) {
+        powerText += "  |  Saved ";
+        powerText += formatIdleTimeoutLabel(batteryTrainingState.savedPowerOffMs);
+    }
+    lvglLabelSetTextIfChanged(lvglBatteryTrainPowerLabel, powerText);
+}
+
+static void lvglRefreshBatteryTrainButtonIcons()
+{
+    lvglSetMenuButtonIconMode(lvglBatteryTrainFullBtn, "FULL", LV_SYMBOL_OK, &img_full_small_icon, 6, 12);
+    lvglSetMenuButtonIconMode(lvglBatteryTrainDischargeBtn, "DISCHARGE", LV_SYMBOL_DOWN, &img_disch_small_icon, 6, 12);
+    lvglSetMenuButtonIconMode(lvglBatteryTrainAutoBtn, "Auto Calibration", LV_SYMBOL_REFRESH, &img_auto_small_icon, 6, 12);
+}
+
+void lvglBatteryTrainResetPromptEvent(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
+    lv_obj_t *msgbox = lv_event_get_current_target(e);
+    const char *btn = msgbox ? lv_msgbox_get_active_btn_text(msgbox) : nullptr;
+    if (btn && strcmp(btn, "OK") == 0) {
+        batteryCalibrationReset();
+        batteryTrainingStartCharge();
+        uiStatusLine = "Battery training reset; connect charger and press FULL when charged";
+        if (lvglReady) lvglSyncStatusLine();
+        lvglRefreshBatteryTrainUi();
+    }
+    if (msgbox) lv_obj_del(msgbox);
+}
+
+void lvglBatteryTrainResetEvent(lv_event_t *e)
+{
+    (void)e;
+    static const char *btns[] = {"Cancel", "OK", ""};
+    lv_obj_t *msgbox = lv_msgbox_create(nullptr,
+                                        "Battery Training",
+                                        "Connect charger first. Press OK to clear stored FULL and EMPTY anchors, switch Power Off to Never, and start charge training.",
+                                        btns,
+                                        false);
+    if (!msgbox) return;
+    lv_obj_center(msgbox);
+    lv_obj_add_event_cb(msgbox, lvglBatteryTrainResetPromptEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+}
+
+void lvglBatteryTrainFullEvent(lv_event_t *e)
+{
+    (void)e;
+    batteryCalibrationLearnFull(batteryRawVoltage);
+    batteryTrainingStopManual();
+    uiStatusLine = "Stored FULL anchor";
+    if (lvglReady) lvglSyncStatusLine();
+    lvglRefreshBatteryTrainUi();
+}
+
+void lvglBatteryTrainDischargeEvent(lv_event_t *e)
+{
+    (void)e;
+    batteryTrainingStartDischarge();
+    uiStatusLine = "Discharge training armed until the next low-battery shutdown";
+    if (lvglReady) lvglSyncStatusLine();
+    lvglRefreshBatteryTrainUi();
+}
+
+void lvglBatteryTrainAutoEvent(lv_event_t *e)
+{
+    (void)e;
+    batteryTrainingStopManual();
+    uiStatusLine = "Battery auto calibration active";
+    if (lvglReady) lvglSyncStatusLine();
+    lvglRefreshBatteryTrainUi();
+}
+
 void lvglAirplaneToggleEvent(lv_event_t *e)
 {
     (void)e;
@@ -14867,6 +15124,103 @@ static void batteryCalibrationSave()
     if (batteryCalState.hasEmptyAnchor) batteryPrefs.putFloat("cal_empty", batteryCalState.observedEmptyRawV);
     else batteryPrefs.remove("cal_empty");
     batteryPrefs.end();
+}
+
+static void batteryCalibrationReset()
+{
+    batteryCalState.hasFullAnchor = false;
+    batteryCalState.hasEmptyAnchor = false;
+    batteryCalState.observedFullRawV = 0.0f;
+    batteryCalState.observedEmptyRawV = 0.0f;
+    batteryCalibrationSave();
+}
+
+static void batteryTrainingLoad()
+{
+    batteryPrefs.begin("battery", true);
+    batteryTrainingState.active = batteryPrefs.getBool("train_on", false);
+    batteryTrainingState.powerOverrideActive = batteryPrefs.getBool("train_ovr", false);
+    batteryTrainingState.phase = static_cast<BatteryTrainingPhase>(batteryPrefs.getUChar("train_ph", static_cast<uint8_t>(BATTERY_TRAIN_IDLE)));
+    if (batteryTrainingState.phase > BATTERY_TRAIN_DISCHARGE) batteryTrainingState.phase = BATTERY_TRAIN_IDLE;
+    batteryTrainingState.savedPowerOffMs = batteryPrefs.getULong("train_pwr", 0UL);
+    batteryPrefs.end();
+    if (!batteryTrainingState.active) batteryTrainingState.phase = BATTERY_TRAIN_IDLE;
+    if (batteryTrainingState.powerOverrideActive) powerOffIdleTimeoutMs = 0UL;
+}
+
+static void batteryTrainingSave()
+{
+    batteryPrefs.begin("battery", false);
+    batteryPrefs.putBool("train_on", batteryTrainingState.active);
+    batteryPrefs.putBool("train_ovr", batteryTrainingState.powerOverrideActive);
+    batteryPrefs.putUChar("train_ph", static_cast<uint8_t>(batteryTrainingState.phase));
+    batteryPrefs.putULong("train_pwr", batteryTrainingState.savedPowerOffMs);
+    batteryPrefs.end();
+}
+
+static const char *batteryTrainingPhaseLabel()
+{
+    switch (batteryTrainingState.phase) {
+        case BATTERY_TRAIN_CHARGE: return "Charge Training";
+        case BATTERY_TRAIN_DISCHARGE: return "Discharge Training";
+        default: return "Auto Calibration";
+    }
+}
+
+static void batteryTrainingRestorePowerOff()
+{
+    if (!batteryTrainingState.powerOverrideActive) return;
+    powerOffIdleTimeoutMs = POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS[powerOffTimeoutOptionIndex(batteryTrainingState.savedPowerOffMs)];
+    batteryTrainingState.powerOverrideActive = false;
+    uiPrefs.begin("ui", false);
+    uiPrefs.putULong("pwr_idle", powerOffIdleTimeoutMs);
+    uiPrefs.end();
+    applyDisplayIdleTimeoutPowerOffCap(true);
+    batteryTrainingSave();
+    if (lvglReady) lvglRefreshStyleUi();
+}
+
+static void batteryTrainingStartCharge()
+{
+    if (!batteryTrainingState.powerOverrideActive) batteryTrainingState.savedPowerOffMs = powerOffIdleTimeoutMs;
+    powerOffIdleTimeoutMs = 0UL;
+    batteryTrainingState.active = true;
+    batteryTrainingState.phase = BATTERY_TRAIN_CHARGE;
+    batteryTrainingState.powerOverrideActive = true;
+    uiPrefs.begin("ui", false);
+    uiPrefs.putULong("pwr_idle", powerOffIdleTimeoutMs);
+    uiPrefs.end();
+    batteryTrainingSave();
+    if (lvglReady) {
+        lvglRefreshStyleUi();
+        lvglRefreshBatteryTrainUi();
+    }
+}
+
+static void batteryTrainingStartDischarge()
+{
+    if (!batteryTrainingState.powerOverrideActive) batteryTrainingState.savedPowerOffMs = powerOffIdleTimeoutMs;
+    powerOffIdleTimeoutMs = 0UL;
+    batteryTrainingState.active = true;
+    batteryTrainingState.phase = BATTERY_TRAIN_DISCHARGE;
+    batteryTrainingState.powerOverrideActive = true;
+    uiPrefs.begin("ui", false);
+    uiPrefs.putULong("pwr_idle", powerOffIdleTimeoutMs);
+    uiPrefs.end();
+    batteryTrainingSave();
+    if (lvglReady) {
+        lvglRefreshStyleUi();
+        lvglRefreshBatteryTrainUi();
+    }
+}
+
+static void batteryTrainingStopManual()
+{
+    batteryTrainingRestorePowerOff();
+    batteryTrainingState.active = false;
+    batteryTrainingState.phase = BATTERY_TRAIN_IDLE;
+    batteryTrainingSave();
+    if (lvglReady) lvglRefreshBatteryTrainUi();
 }
 
 static float batteryBlendObserved(float current, float observed)
@@ -22244,6 +22598,7 @@ void setup()
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step loadUiRuntimeConfig");
     loadUiRuntimeConfig();
     batteryCalibrationLoad();
+    batteryTrainingLoad();
     loadGamePrefs();
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step mqttBuildIdentity");
     mqttBuildIdentity();
@@ -22267,7 +22622,12 @@ void setup()
             !prevBatterySnapshot.charging &&
             prevBatterySnapshot.uptimeMs >= BATTERY_BOOT_EMPTY_MIN_UPTIME_MS &&
             prevBatterySnapshot.rawV <= BATTERY_BOOT_EMPTY_INFER_MAX_V;
-        if (inferEmptyFromPreviousCycle) batteryCalibrationLearnEmpty(prevBatterySnapshot.rawV);
+        if (inferEmptyFromPreviousCycle) {
+            batteryCalibrationLearnEmpty(prevBatterySnapshot.rawV);
+            if (batteryTrainingState.active && batteryTrainingState.phase == BATTERY_TRAIN_DISCHARGE) {
+                batteryTrainingStopManual();
+            }
+        }
     }
     lastBatterySnapshotVoltage = batteryVoltage;
     lastBatterySnapshotMs = millis();
@@ -22428,6 +22788,11 @@ void loop()
     if (!isDown && millis() - lastSensorSampleMs >= sensorPeriodMs) {
         lastSensorSampleMs = millis();
         sampleTopIndicators();
+    }
+    static unsigned long lastBatteryTrainUiRefreshMs = 0;
+    if (uiScreen == UI_CONFIG_BATTERY && static_cast<unsigned long>(millis() - lastBatteryTrainUiRefreshMs) >= 1000UL) {
+        lastBatteryTrainUiRefreshMs = millis();
+        lvglRefreshBatteryTrainUi();
     }
 
     if (rebootRequested && static_cast<unsigned long>(millis() - rebootRequestedAtMs) >= 150UL) {
