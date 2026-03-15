@@ -31,6 +31,7 @@ Board references used while adding `ESP32-3248S035` support:
 - Encrypted chat over LAN UDP, MQTT, and optional radio modules
 - `Radio Config` with `HC-12` and `Ebyte E220-400T22D` support on the S3 build
 - Radio pin-swap selectors for `HC-12` and `E220`, persisted in memory
+- `OTA Updates` includes both update-check and same-version `Reflash` on supported boards
 - `Battery` screen with manual `FULL` / `DISCHARGE` training and opt-in auto calibration
 - `Style` settings for theme, timezone, 3D icons, screen timeout, and auto power-off
 - Top-bar sound indicator/editor with volume and vibration quick controls
@@ -179,6 +180,7 @@ Radio notes:
 - `E220 Fixed` mode is available for module configuration, but current chat/discovery transport is disabled there.
 - Radio encryption is shared across both modules.
 - `Radio Config` can swap `RX/TX` for both modules and `M0/M1` for `E220` if wiring was cross-connected.
+- Radio pin-swap settings are stored in NVS and restored after reboot.
 - `Radio Terminal` shows example test commands for the selected module.
 
 ## Battery and Power
@@ -194,6 +196,7 @@ Radio notes:
 - Background battery auto-learning runs only after the user explicitly enables `Auto Calibration`
 - Manual training can temporarily force `Power Off` to `Never`, then restore the previous user setting
 - S3 hardware power-off pulse is driven on `GPIO21`
+- Battery ADC on S3 now falls back to raw ADC scaling if `analogReadMilliVolts()` returns zero
 
 ## Defaults
 

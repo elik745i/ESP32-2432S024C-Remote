@@ -271,6 +271,7 @@ static constexpr float BATTERY_CAL_BLEND_ALPHA = 0.30f;
 static constexpr int BATTERY_ADC_SAMPLES = 16;
 static constexpr int BATTERY_ADC_SETTLE_READS = 3;
 static constexpr unsigned int BATTERY_ADC_SETTLE_US = 250U;
+static constexpr float BATTERY_ADC_FALLBACK_REF_V = 3.30f;
 static constexpr uint8_t BATTERY_MEDIAN_WINDOW = 5;
 static constexpr float BATTERY_FILTER_ALPHA_RISE = 0.08f;
 static constexpr float BATTERY_FILTER_ALPHA_FALL = 0.05f;
@@ -625,6 +626,8 @@ static void otaSetStatus(const String &text);
 static void otaClearPopupVersion();
 static void otaCheckTask(void *param);
 static void otaUpdateTask(void *param);
+static bool otaFetchReleaseInfoForTag(const String &tagName, String &binUrlOut, String &errorOut);
+static bool otaStartUpdateTask(const String &binUrl, const String &targetVersion, const String &statusText);
 void lvglOpenOtaScreenEvent(lv_event_t *e);
 void lvglOpenHc12ScreenEvent(lv_event_t *e);
 void lvglOpenHc12TerminalEvent(lv_event_t *e);
@@ -643,6 +646,7 @@ void lvglRadioPrevModePinSwapEvent(lv_event_t *e);
 void lvglRadioNextModePinSwapEvent(lv_event_t *e);
 void lvglHc12DefaultEvent(lv_event_t *e);
 void lvglOtaUpdateEvent(lv_event_t *e);
+void lvglOtaReflashEvent(lv_event_t *e);
 void lvglRefreshOtaUi();
 void lvglRefreshHc12Ui();
 void lvglRefreshHc12ConfigUi();
@@ -1013,6 +1017,8 @@ static lv_obj_t *lvglOtaLatestLabel = nullptr;
 static lv_obj_t *lvglOtaStatusLabel = nullptr;
 static lv_obj_t *lvglOtaUpdateBtn = nullptr;
 static lv_obj_t *lvglOtaUpdateBtnLabel = nullptr;
+static lv_obj_t *lvglOtaReflashBtn = nullptr;
+static lv_obj_t *lvglOtaReflashBtnLabel = nullptr;
 static lv_obj_t *lvglOtaProgressBar = nullptr;
 static lv_obj_t *lvglOtaProgressLabel = nullptr;
 static lv_obj_t *lvglBatteryTrainStatusLabel = nullptr;
@@ -8583,12 +8589,15 @@ void lvglEnsureScreenBuilt(UiScreen screen)
 
             lvglOtaUpdateBtn = lvglCreateMenuButton(wrap, lvglSymbolText(LV_SYMBOL_UPLOAD, "Update").c_str(), lv_color_hex(0x3A8F4B), lvglOtaUpdateEvent, nullptr);
             if (lvglOtaUpdateBtn) lvglOtaUpdateBtnLabel = lv_obj_get_child(lvglOtaUpdateBtn, 0);
+            lvglOtaReflashBtn = lvglCreateMenuButton(wrap, lvglSymbolText(LV_SYMBOL_REFRESH, "Reflash").c_str(), lv_color_hex(0x7A5C2E), lvglOtaReflashEvent, nullptr);
+            if (lvglOtaReflashBtn) lvglOtaReflashBtnLabel = lv_obj_get_child(lvglOtaReflashBtn, 0);
             lvglRegisterReorderableItem(otaCurrentCard, "ord_ota", "cur");
             lvglRegisterReorderableItem(otaLatestCard, "ord_ota", "latest");
             lvglRegisterReorderableItem(otaStatusCard, "ord_ota", "status");
             lvglRegisterReorderableItem(lvglOtaProgressBar, "ord_ota", "bar");
             lvglRegisterReorderableItem(lvglOtaProgressLabel, "ord_ota", "pct");
             lvglRegisterReorderableItem(lvglOtaUpdateBtn, "ord_ota", "update");
+            lvglRegisterReorderableItem(lvglOtaReflashBtn, "ord_ota", "reflash");
             lvglApplySavedOrder(wrap, "ord_ota");
             lvglRefreshOtaUi();
             break;
@@ -11855,9 +11864,9 @@ static void hc12InitIfNeeded()
 static String hc12TerminalExampleCommands()
 {
     if (radioModuleType == RADIO_MODULE_E220) {
-        return "Examples: AT, AT+CHANNEL=?, AT+UART=?, AT+POWER=?, AT+TRANS=?";
+        return "Examples:\nAT\nAT+CHANNEL=?\nAT+UART=?\nAT+POWER=?\nAT+TRANS=?";
     }
-    return "Examples: AT, AT+RX, AT+RC, AT+RB, AT+RF, AT+RP";
+    return "Examples:\nAT\nAT+RX\nAT+RC\nAT+RB\nAT+RF\nAT+RP";
 }
 
 static void hc12RestartWithCurrentPins(const String &statusText)
@@ -12099,6 +12108,7 @@ static void loadPersistedRadioSettings()
 
 static void savePersistedRadioSettings()
 {
+    uiPrefs.begin("ui", false);
     uiPrefs.putBool("hc12_swap", hc12SwapUartPins);
     uiPrefs.putInt("hc12_ch", hc12CurrentChannel);
     uiPrefs.putInt("hc12_baud", hc12CurrentBaudIndex);
@@ -12112,6 +12122,7 @@ static void savePersistedRadioSettings()
     uiPrefs.putInt("e220_rate", e220CurrentAirRateIndex);
     uiPrefs.putInt("e220_pwr", e220CurrentPowerIndex);
     uiPrefs.putBool("e220_fix", e220CurrentFixedTransmission);
+    uiPrefs.end();
 }
 
 static bool hc12ReadConfigSelection()
@@ -14253,38 +14264,30 @@ void lvglStylePowerOffEvent(lv_event_t *e)
 void lvglOtaUpdateEvent(lv_event_t *e)
 {
     (void)e;
-    if (otaUpdateTaskHandle || otaUiState == OTA_UI_DOWNLOADING || otaUiState == OTA_UI_FINALIZING) return;
-    if (!OTA_FIRMWARE_FLASH_SUPPORTED) {
-        otaUiState = OTA_UI_ERROR;
-        otaSetStatus("This board build does not have an OTA flash slot");
-        lvglRefreshOtaUi();
-        uiStatusLine = "OTA unsupported on current flash layout";
-        lvglSyncStatusLine();
-        return;
-    }
-    if (!wifiConnectedSafe()) {
-        otaUiState = OTA_UI_ERROR;
-        otaSetStatus(apModeActive ? "Not connected to update server (AP mode only)" : "Not connected to update server");
-        lvglRefreshOtaUi();
-        uiStatusLine = apModeActive ? "OTA needs internet WiFi, not AP-only mode" : "Connect WiFi before OTA";
-        lvglSyncStatusLine();
-        return;
-    }
     if (!otaUpdateAvailable || otaLatestBinUrl.isEmpty()) {
         otaCheckRequested = true;
         uiStatusLine = "Checking for updates";
         lvglSyncStatusLine();
         return;
     }
-    otaUiState = OTA_UI_DOWNLOADING;
-    otaProgressPercent = 0;
-    otaSetStatus("Starting update...");
-    if (xTaskCreatePinnedToCore(otaUpdateTask, "ota_update", 12288, nullptr, 1, &otaUpdateTaskHandle, ARDUINO_RUNNING_CORE) != pdPASS) {
-        otaUpdateTaskHandle = nullptr;
+    otaStartUpdateTask(otaLatestBinUrl, String(otaLatestVersion), "Starting update...");
+}
+
+void lvglOtaReflashEvent(lv_event_t *e)
+{
+    (void)e;
+    String url;
+    String error;
+    const String currentTag = String("v") + FW_VERSION;
+    if (!otaFetchReleaseInfoForTag(currentTag, url, error)) {
         otaUiState = OTA_UI_ERROR;
-        otaSetStatus("Update start failed");
+        otaSetStatus("Reflash asset lookup failed");
+        uiStatusLine = "Reflash failed: " + error;
+        lvglSyncStatusLine();
+        lvglRefreshOtaUi();
+        return;
     }
-    lvglRefreshOtaUi();
+    otaStartUpdateTask(url, FW_VERSION, "Starting reflash...");
 }
 
 void lvglRefreshStyleUi()
@@ -14792,6 +14795,16 @@ void lvglRefreshOtaUi()
                                                      otaUpdateAvailable ? "Update" : "Check Now"));
             const lv_color_t btnCol = otaUpdateAvailable ? lv_color_hex(0x3A8F4B) : lv_color_hex(0x2E6F95);
             lvglRegisterStyledButton(lvglOtaUpdateBtn, btnCol, false);
+        }
+    }
+    if (lvglOtaReflashBtn && lvglOtaReflashBtnLabel) {
+        const bool busy = otaUiState == OTA_UI_CHECKING || otaUiState == OTA_UI_DOWNLOADING || otaUiState == OTA_UI_FINALIZING;
+        if (busy || !OTA_FIRMWARE_FLASH_SUPPORTED) {
+            lv_obj_add_flag(lvglOtaReflashBtn, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_clear_flag(lvglOtaReflashBtn, LV_OBJ_FLAG_HIDDEN);
+            lvglLabelSetTextIfChanged(lvglOtaReflashBtnLabel, lvglSymbolText(LV_SYMBOL_REFRESH, "Reflash"));
+            lvglRegisterStyledButton(lvglOtaReflashBtn, lv_color_hex(0x7A5C2E), false);
         }
     }
 }
@@ -15643,16 +15656,22 @@ float batteryCalibrationFactor()
 float readBatteryVoltage()
 {
     uint32_t mvSum = 0;
+    uint32_t rawSum = 0;
     for (int i = 0; i < BATTERY_ADC_SAMPLES; i++) {
         for (int settle = 0; settle < BATTERY_ADC_SETTLE_READS; ++settle) {
             (void)analogReadMilliVolts(BATTERY_ADC_PIN);
             delayMicroseconds(BATTERY_ADC_SETTLE_US);
         }
         mvSum += analogReadMilliVolts(BATTERY_ADC_PIN);
+        rawSum += static_cast<uint32_t>(analogRead(BATTERY_ADC_PIN));
         delayMicroseconds(BATTERY_ADC_SETTLE_US);
     }
     const uint32_t mv = mvSum / BATTERY_ADC_SAMPLES;
-    const float pinV = static_cast<float>(mv) / 1000.0f;
+    const uint32_t raw = rawSum / BATTERY_ADC_SAMPLES;
+    float pinV = static_cast<float>(mv) / 1000.0f;
+    if (pinV <= 0.001f && raw > 0U) {
+        pinV = (static_cast<float>(raw) / 4095.0f) * BATTERY_ADC_FALLBACK_REF_V;
+    }
     const float ratio = (BATTERY_DIVIDER_R_TOP + BATTERY_DIVIDER_R_BOTTOM) / BATTERY_DIVIDER_R_BOTTOM;
     return pinV * ratio;
 }
@@ -20416,6 +20435,87 @@ static bool otaFetchLatestReleaseInfo(String &tagNameOut, String &binUrlOut, Str
     return true;
 }
 
+static bool otaFetchReleaseInfoForTag(const String &tagName, String &binUrlOut, String &errorOut)
+{
+    binUrlOut = "";
+    errorOut = "";
+    if (tagName.isEmpty()) {
+        errorOut = "missing_tag";
+        return false;
+    }
+
+    int ghStatus = -1;
+    const String url = String("https://api.github.com/repos/elik745i/ESP32-2432S024C-Remote/releases/tags/") + tagName;
+    const String body = httpsGetText(url, &ghStatus);
+    if (body.isEmpty()) {
+        errorOut = "github_fetch_failed";
+        return false;
+    }
+
+    JsonDocument filter;
+    filter["assets"][0]["name"] = true;
+    filter["assets"][0]["browser_download_url"] = true;
+
+    JsonDocument parsed;
+    const DeserializationError err = deserializeJson(parsed, body, DeserializationOption::Filter(filter));
+    if (err) {
+        errorOut = "json_parse_failed";
+        return false;
+    }
+
+    binUrlOut = chooseLatestFirmwareBinUrl(parsed["assets"]);
+    if (binUrlOut.isEmpty()) {
+        errorOut = "release_asset_not_found";
+        return false;
+    }
+    return true;
+}
+
+static bool otaStartUpdateTask(const String &binUrl, const String &targetVersion, const String &statusText)
+{
+    if (otaUpdateTaskHandle || otaUiState == OTA_UI_DOWNLOADING || otaUiState == OTA_UI_FINALIZING) return false;
+    if (!OTA_FIRMWARE_FLASH_SUPPORTED) {
+        otaUiState = OTA_UI_ERROR;
+        otaSetStatus("This board build does not have an OTA flash slot");
+        if (lvglReady) lvglRefreshOtaUi();
+        uiStatusLine = "OTA unsupported on current flash layout";
+        lvglSyncStatusLine();
+        return false;
+    }
+    if (!wifiConnectedSafe()) {
+        otaUiState = OTA_UI_ERROR;
+        otaSetStatus(apModeActive ? "Not connected to update server (AP mode only)" : "Not connected to update server");
+        if (lvglReady) lvglRefreshOtaUi();
+        uiStatusLine = apModeActive ? "OTA needs internet WiFi, not AP-only mode" : "Connect WiFi before OTA";
+        lvglSyncStatusLine();
+        return false;
+    }
+    if (binUrl.isEmpty()) {
+        otaUiState = OTA_UI_ERROR;
+        otaSetStatus("Firmware URL missing");
+        if (lvglReady) lvglRefreshOtaUi();
+        return false;
+    }
+
+    otaLatestBinUrl = binUrl;
+    copyTextToBuf(otaLatestVersion, sizeof(otaLatestVersion), otaNormalizedVersion(targetVersion));
+    otaUiState = OTA_UI_DOWNLOADING;
+    otaProgressPercent = 0;
+    otaUpdatePromptPending = false;
+    otaUpdateAvailable = false;
+    otaPersistAvailabilityState();
+    otaSetStatus(statusText.isEmpty() ? String("Starting update...") : statusText);
+    if (xTaskCreatePinnedToCore(otaUpdateTask, "ota_update", 12288, nullptr, 1, &otaUpdateTaskHandle, ARDUINO_RUNNING_CORE) != pdPASS) {
+        otaUpdateTaskHandle = nullptr;
+        otaUiState = OTA_UI_ERROR;
+        otaSetStatus("Update start failed");
+        if (lvglReady) lvglRefreshOtaUi();
+        return false;
+    }
+    if (lvglReady) lvglRefreshOtaUi();
+    return true;
+}
+
 static void otaSetStatus(const String &text)
 {
     otaStatusText = text;
@@ -22991,6 +23091,7 @@ void setup()
     rgbApplyNow(false, false, false);
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step analogReadResolution");
     analogReadResolution(12);
+    pinMode(BATTERY_ADC_PIN, INPUT);
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step battery attenuation");
     analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);
     if (LIGHT_ADC_PIN >= 0) {

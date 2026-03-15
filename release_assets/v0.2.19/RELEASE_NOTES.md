@@ -8,3 +8,6 @@
 - Fixed `Screen Timeoff` persistence so slider changes are always saved and restored.
 - Fixed the battery screen so the auto-calibration control visibly reflects `ON/OFF` state.
 - Manual `FULL` calibration now reloads the stored anchor immediately after saving for consistent screen state.
+- Fixed radio pin-swap persistence by saving the swap options properly to NVS.
+- Added an OTA `Reflash` action to reinstall the current firmware version on supported boards.
+- Added a battery ADC fallback path for S3 if `analogReadMilliVolts()` returns zero.
