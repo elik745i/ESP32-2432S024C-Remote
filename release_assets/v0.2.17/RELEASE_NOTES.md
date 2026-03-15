@@ -7,3 +7,5 @@
 - Moved background battery auto-calibration behind the `Auto Calibration` button with a confirmation popup and persisted opt-in state.
 - Kept manual `DISCHARGE` training working independently of background auto-calibration.
 - Fixed double-tap sleep/screensaver so it suppresses accidental button clicks underneath the gesture.
+- Fixed `Style -> Power Off` so the `Screen Timeoff` control redraws immediately after timeout capping changes.
+- Reduced duplicate background sensor sampling and tightened LVGL idle scheduling to improve UI smoothness.

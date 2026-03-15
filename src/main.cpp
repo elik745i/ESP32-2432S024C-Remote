@@ -1683,20 +1683,21 @@ static int powerOffTimeoutOptionIndex(unsigned long ms)
     return static_cast<int>(sizeof(POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS) / sizeof(POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS[0])) - 1;
 }
 
-static void applyDisplayIdleTimeoutPowerOffCap(bool persist)
+static bool applyDisplayIdleTimeoutPowerOffCap(bool persist)
 {
     unsigned long cappedTimeoutMs = displayIdleTimeoutMs;
     if (powerOffIdleTimeoutMs >= 120000UL) {
         const unsigned long minimumTimeoutMs = clampIdleTimeoutMs(powerOffIdleTimeoutMs - 60000UL);
         if (displayIdleTimeoutMs < minimumTimeoutMs) cappedTimeoutMs = minimumTimeoutMs;
     }
-    if (displayIdleTimeoutMs == cappedTimeoutMs) return;
+    if (displayIdleTimeoutMs == cappedTimeoutMs) return false;
     displayIdleTimeoutMs = cappedTimeoutMs;
     if (persist) {
         uiPrefs.begin("ui", false);
         uiPrefs.putULong("disp_idle", displayIdleTimeoutMs);
         uiPrefs.end();
     }
+    return true;
 }
 
 static String chatSafeFileToken(const String &raw);
@@ -14062,6 +14063,7 @@ void lvglStyleTimeoutEvent(lv_event_t *e)
     displayIdleTimeoutMs = clampIdleTimeoutMs(stepValue * LCD_IDLE_TIMEOUT_STEP_MS);
     applyDisplayIdleTimeoutPowerOffCap(true);
     lvglRefreshStyleUi();
+    lvglNextHandlerDueMs = 0;
 }
 
 void lvglStylePowerOffEvent(lv_event_t *e)
@@ -14074,8 +14076,13 @@ void lvglStylePowerOffEvent(lv_event_t *e)
     uiPrefs.begin("ui", false);
     uiPrefs.putULong("pwr_idle", powerOffIdleTimeoutMs);
     uiPrefs.end();
-    applyDisplayIdleTimeoutPowerOffCap(true);
+    const bool timeoutChanged = applyDisplayIdleTimeoutPowerOffCap(true);
     lvglRefreshStyleUi();
+    if (timeoutChanged) {
+        if (lvglStyleTimeoutSlider) lv_obj_invalidate(lvglStyleTimeoutSlider);
+        if (lvglStyleTimeoutValueLabel) lv_obj_invalidate(lvglStyleTimeoutValueLabel);
+    }
+    lvglNextHandlerDueMs = 0;
 }
 
 void lvglOtaUpdateEvent(lv_event_t *e)
@@ -15090,8 +15097,9 @@ void lvglService()
         lvglNextHandlerDueMs = now + 1UL;
     } else {
         uint32_t delayMs = nextHandlerInMs;
+        const uint32_t maxDelayMs = displayAwake ? 8U : 12U;
         if (delayMs < 2U) delayMs = 2U;
-        if (delayMs > 12U) delayMs = 12U;
+        if (delayMs > maxDelayMs) delayMs = maxDelayMs;
         lvglNextHandlerDueMs = now + delayMs;
     }
 
@@ -23010,7 +23018,6 @@ void loop()
     if (uiPriorityActive) topIndicatorRefreshMs *= 2UL;
     if (lvglReady && displayAwake && millis() - lastTopIndicatorRefreshMs >= topIndicatorRefreshMs) {
         lastTopIndicatorRefreshMs = millis();
-        sampleTopIndicators();
         lvglRefreshTopIndicators();
         if (uiScreen == UI_INFO && !uiPriorityActive) lvglRefreshInfoPanel(false);
     }
