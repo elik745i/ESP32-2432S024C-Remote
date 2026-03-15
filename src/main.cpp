@@ -301,7 +301,7 @@ static constexpr uint8_t VIBRATION_QUEUE_MAX = 4;
 #endif
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.2.14";
+static constexpr const char *FW_VERSION = "0.2.15";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -1605,6 +1605,8 @@ static unsigned long clampIdleTimeoutMs(unsigned long ms)
     return snapped;
 }
 
+extern Preferences uiPrefs;
+
 static String formatIdleTimeoutLabel(unsigned long ms)
 {
     const unsigned long totalSec = ms / 1000UL;
@@ -1626,6 +1628,22 @@ static int powerOffTimeoutOptionIndex(unsigned long ms)
         if (POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS[i] == ms) return i;
     }
     return static_cast<int>(sizeof(POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS) / sizeof(POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS[0])) - 1;
+}
+
+static void applyDisplayIdleTimeoutPowerOffCap(bool persist)
+{
+    unsigned long cappedTimeoutMs = displayIdleTimeoutMs;
+    if (powerOffIdleTimeoutMs >= 120000UL) {
+        const unsigned long minimumTimeoutMs = clampIdleTimeoutMs(powerOffIdleTimeoutMs - 60000UL);
+        if (displayIdleTimeoutMs < minimumTimeoutMs) cappedTimeoutMs = minimumTimeoutMs;
+    }
+    if (displayIdleTimeoutMs == cappedTimeoutMs) return;
+    displayIdleTimeoutMs = cappedTimeoutMs;
+    if (persist) {
+        uiPrefs.begin("ui", false);
+        uiPrefs.putULong("disp_idle", displayIdleTimeoutMs);
+        uiPrefs.end();
+    }
 }
 
 static String chatSafeFileToken(const String &raw);
@@ -13855,9 +13873,7 @@ void lvglStyleTimeoutEvent(lv_event_t *e)
     if (!lvglStyleTimeoutSlider) return;
     const unsigned long stepValue = static_cast<unsigned long>(lv_slider_get_value(lvglStyleTimeoutSlider));
     displayIdleTimeoutMs = clampIdleTimeoutMs(stepValue * LCD_IDLE_TIMEOUT_STEP_MS);
-    uiPrefs.begin("ui", false);
-    uiPrefs.putULong("disp_idle", displayIdleTimeoutMs);
-    uiPrefs.end();
+    applyDisplayIdleTimeoutPowerOffCap(true);
     lvglRefreshStyleUi();
 }
 
@@ -13871,6 +13887,7 @@ void lvglStylePowerOffEvent(lv_event_t *e)
     uiPrefs.begin("ui", false);
     uiPrefs.putULong("pwr_idle", powerOffIdleTimeoutMs);
     uiPrefs.end();
+    applyDisplayIdleTimeoutPowerOffCap(true);
     lvglRefreshStyleUi();
 }
 
@@ -18184,6 +18201,7 @@ void loadUiRuntimeConfig()
     screensaverEnabled = uiPrefs.getBool("scrsvr_en", false);
     displayIdleTimeoutMs = clampIdleTimeoutMs(uiPrefs.getULong("disp_idle", LCD_IDLE_TIMEOUT_MS_DEFAULT));
     powerOffIdleTimeoutMs = POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS[powerOffTimeoutOptionIndex(uiPrefs.getULong("pwr_idle", 0UL))];
+    applyDisplayIdleTimeoutPowerOffCap(true);
     copyTextToBuf(otaPendingPopupVersion, sizeof(otaPendingPopupVersion), uiPrefs.getString("ota_popup", ""));
     copyTextToBuf(otaLatestVersion, sizeof(otaLatestVersion), otaNormalizedVersion(uiPrefs.getString("ota_latest", "")));
     otaUpdateAvailable = uiPrefs.getBool("ota_avail", false);

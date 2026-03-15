@@ -2,7 +2,7 @@
 
 Firmware for Sunton-style ESP32 touch display boards with an LVGL touch UI, Wi-Fi/AP management, SD-backed recovery tools, MQTT controls, and encrypted device-to-device chat.
 
-Current firmware version: **`0.2.14`**
+Current firmware version: **`0.2.15`**
 
 Supported boards:
 - `ESP32-2432S024C` (`240x320`, `ILI9341`, `CST820`)
@@ -31,7 +31,7 @@ Supported boards:
 - Speaker volume now uses an exponential response curve for finer low-volume control
 - Brightness, volume, and RGB slider values are persisted in `Preferences`
 - `WiFi Config` screen with current network info, manual scan, saved-network actions, and editable AP SSID/password
-- `Radio Config` submenu with selectable `HC-12` or `Ebyte E220-400T22D` module support, live settings, dedicated `Info`, and `Radio Terminal` pages
+- `Radio Config` submenu with selectable `HC-12` or `Ebyte E220-400T22D` LoRa module support, live settings, dedicated `Info`, and `Radio Terminal` pages
 - Encrypted radio chat/discovery can run over `HC-12` or `E220` in transparent mode, with a fixed-mode warning shown in the UI
 - S3 main menu includes a hardware power-off action that sends the configured shutdown pulse on `GPIO21`
 - `OTA Updates` screen with boot-time and periodic update checks, update-available indicator/popup, progress bar, and post-update confirmation
@@ -250,7 +250,7 @@ Optional radio-module UART on the `ESP32-S3` build:
 | HC-12 `TXD` | 5 |
 | HC-12 `SET` | 3 |
 
-Optional `Ebyte E220-400T22D` wiring on the `ESP32-S3` build:
+Optional `Ebyte E220-400T22D` LoRa wiring on the `ESP32-S3` build:
 
 | Signal | ESP32-S3 |
 |---|---:|
@@ -372,7 +372,7 @@ Board-specific defaults:
 - `Config -> Radio Config` opens a submenu instead of dropping directly into the terminal
 - The top selector chooses the active module:
 - `HC-12`
-- `Ebyte E220-400T22D` on the `ESP32-S3-3248S035-N16R8` build only
+- `Ebyte E220-400T22D` LoRa module on the `ESP32-S3-3248S035-N16R8` build only
 - `HC-12` settings page can read and change:
 - channel (`CH001` to `CH100`)
 - baud rate (`1200` to `115200`)
