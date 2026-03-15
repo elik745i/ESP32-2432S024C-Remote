@@ -2,7 +2,7 @@
 
 Firmware for Sunton-style ESP32 touch display boards with an LVGL UI, Wi-Fi/AP tools, SD recovery/file access, MQTT controls, encrypted chat, and optional radio modules.
 
-Current firmware version: **`0.2.19`**
+Current firmware version: **`0.2.20`**
 
 ![ESP32 Remote Render](3D_Models/render1.jpeg)
 
