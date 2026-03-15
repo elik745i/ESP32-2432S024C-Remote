@@ -2,7 +2,7 @@
 
 Firmware for Sunton-style ESP32 touch display boards with an LVGL UI, Wi-Fi/AP tools, SD recovery/file access, MQTT controls, encrypted chat, and optional radio modules.
 
-Current firmware version: **`0.2.18`**
+Current firmware version: **`0.2.19`**
 
 ![ESP32 Remote Render](3D_Models/render1.jpeg)
 
@@ -30,6 +30,7 @@ Board references used while adding `ESP32-3248S035` support:
 - Wi-Fi station/AP setup, captive portal helpers, and SD-backed recovery browser
 - Encrypted chat over LAN UDP, MQTT, and optional radio modules
 - `Radio Config` with `HC-12` and `Ebyte E220-400T22D` support on the S3 build
+- Radio pin-swap selectors for `HC-12` and `E220`, persisted in memory
 - `Battery` screen with manual `FULL` / `DISCHARGE` training and opt-in auto calibration
 - `Style` settings for theme, timezone, 3D icons, screen timeout, and auto power-off
 - Top-bar sound indicator/editor with volume and vibration quick controls
@@ -177,6 +178,8 @@ Radio notes:
 - `E220` chat/discovery works in `Transparent` mode.
 - `E220 Fixed` mode is available for module configuration, but current chat/discovery transport is disabled there.
 - Radio encryption is shared across both modules.
+- `Radio Config` can swap `RX/TX` for both modules and `M0/M1` for `E220` if wiring was cross-connected.
+- `Radio Terminal` shows example test commands for the selected module.
 
 ## Battery and Power
 

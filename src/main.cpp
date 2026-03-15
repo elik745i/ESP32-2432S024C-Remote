@@ -308,7 +308,7 @@ static constexpr uint8_t VIBRATION_QUEUE_MAX = 4;
 #endif
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.2.18";
+static constexpr const char *FW_VERSION = "0.2.19";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -338,22 +338,22 @@ static constexpr unsigned long POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS[] = {
 
 static constexpr int HC12_UART_NUM = 1;
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
-static constexpr int HC12_RX_PIN = 5;
-static constexpr int HC12_TX_PIN = 4;
-static constexpr int HC12_SET_PIN = 3;
-static constexpr int E220_RX_PIN = 5;
-static constexpr int E220_TX_PIN = 4;
-static constexpr int E220_M0_PIN = 11;
-static constexpr int E220_M1_PIN = 3;
+static constexpr int HC12_RX_PIN_DEFAULT = 5;
+static constexpr int HC12_TX_PIN_DEFAULT = 4;
+static constexpr int HC12_SET_PIN_DEFAULT = 3;
+static constexpr int E220_RX_PIN_DEFAULT = 5;
+static constexpr int E220_TX_PIN_DEFAULT = 4;
+static constexpr int E220_M0_PIN_DEFAULT = 11;
+static constexpr int E220_M1_PIN_DEFAULT = 3;
 static constexpr int POWER_OFF_SIGNAL_PIN = 21;
 #else
-static constexpr int HC12_RX_PIN = 39;
-static constexpr int HC12_TX_PIN = 1;
-static constexpr int HC12_SET_PIN = 22;
-static constexpr int E220_RX_PIN = -1;
-static constexpr int E220_TX_PIN = -1;
-static constexpr int E220_M0_PIN = -1;
-static constexpr int E220_M1_PIN = -1;
+static constexpr int HC12_RX_PIN_DEFAULT = 39;
+static constexpr int HC12_TX_PIN_DEFAULT = 1;
+static constexpr int HC12_SET_PIN_DEFAULT = 22;
+static constexpr int E220_RX_PIN_DEFAULT = -1;
+static constexpr int E220_TX_PIN_DEFAULT = -1;
+static constexpr int E220_M0_PIN_DEFAULT = -1;
+static constexpr int E220_M1_PIN_DEFAULT = -1;
 static constexpr int POWER_OFF_SIGNAL_PIN = -1;
 #endif
 static constexpr unsigned long HC12_BAUD = 9600UL;
@@ -637,6 +637,10 @@ void lvglHc12PrevModeEvent(lv_event_t *e);
 void lvglHc12NextModeEvent(lv_event_t *e);
 void lvglHc12PrevPowerEvent(lv_event_t *e);
 void lvglHc12NextPowerEvent(lv_event_t *e);
+void lvglRadioPrevPinSwapEvent(lv_event_t *e);
+void lvglRadioNextPinSwapEvent(lv_event_t *e);
+void lvglRadioPrevModePinSwapEvent(lv_event_t *e);
+void lvglRadioNextModePinSwapEvent(lv_event_t *e);
 void lvglHc12DefaultEvent(lv_event_t *e);
 void lvglOtaUpdateEvent(lv_event_t *e);
 void lvglRefreshOtaUi();
@@ -690,6 +694,7 @@ static String buildGmtOffsetDropdownOptions();
 static void batteryCalibrationLearnFull(float rawV);
 static void batteryCalibrationSetFull(float rawV);
 static void batteryCalibrationForceFull(float rawV);
+static void batteryCalibrationLoad();
 static float batteryCalibratedVoltageFromRaw(float rawV);
 static float batteryFilterSample(float calibratedV);
 uint8_t batteryPercentFromVoltage(float vbat);
@@ -890,8 +895,18 @@ static lv_obj_t *lvglRadioExtraCard = nullptr;
 static lv_obj_t *lvglRadioExtraTitleLabel = nullptr;
 static lv_obj_t *lvglRadioExtraValueLabel = nullptr;
 static lv_obj_t *lvglRadioExtraSubLabel = nullptr;
+static lv_obj_t *lvglRadioPinSwapCard = nullptr;
+static lv_obj_t *lvglRadioPinSwapTitleLabel = nullptr;
+static lv_obj_t *lvglRadioPinSwapValueLabel = nullptr;
+static lv_obj_t *lvglRadioPinSwapSubLabel = nullptr;
+static lv_obj_t *lvglRadioModePinSwapCard = nullptr;
+static lv_obj_t *lvglRadioModePinSwapTitleLabel = nullptr;
+static lv_obj_t *lvglRadioModePinSwapValueLabel = nullptr;
+static lv_obj_t *lvglRadioModePinSwapSubLabel = nullptr;
 static lv_obj_t *lvglRadioHintLabel = nullptr;
 static lv_obj_t *lvglHc12ConfigStatusLabel = nullptr;
+static lv_obj_t *lvglHc12TerminalPinLabel = nullptr;
+static lv_obj_t *lvglHc12TerminalExamplesLabel = nullptr;
 static lv_obj_t *lvglHc12InfoVersionLabel = nullptr;
 static lv_obj_t *lvglHc12InfoBaudLabel = nullptr;
 static lv_obj_t *lvglHc12InfoChannelLabel = nullptr;
@@ -1709,6 +1724,13 @@ static bool applyDisplayIdleTimeoutPowerOffCap(bool persist)
     return true;
 }
 
+static void persistDisplayIdleTimeout()
+{
+    uiPrefs.begin("ui", false);
+    uiPrefs.putULong("disp_idle", displayIdleTimeoutMs);
+    uiPrefs.end();
+}
+
 static String chatSafeFileToken(const String &raw);
 static String chatFriendlyLogFilenameForPeer(const String &peerKey);
 static String chatLegacyLogPathForPeer(const String &peerKey);
@@ -1885,6 +1907,45 @@ static bool hc12EnsureDiscoveredStorage()
     hc12DiscoveredPeers = static_cast<Hc12DiscoveredPeer *>(allocPreferPsram(sizeof(Hc12DiscoveredPeer) * MAX_HC12_DISCOVERED));
     if (hc12DiscoveredPeers) memset(hc12DiscoveredPeers, 0, sizeof(Hc12DiscoveredPeer) * MAX_HC12_DISCOVERED);
     return hc12DiscoveredPeers != nullptr;
+}
+
+extern bool hc12SwapUartPins;
+extern bool e220SwapUartPins;
+extern bool e220SwapModePins;
+
+static int hc12ActiveRxPin()
+{
+    return hc12SwapUartPins ? HC12_TX_PIN_DEFAULT : HC12_RX_PIN_DEFAULT;
+}
+
+static int hc12ActiveTxPin()
+{
+    return hc12SwapUartPins ? HC12_RX_PIN_DEFAULT : HC12_TX_PIN_DEFAULT;
+}
+
+static int hc12ActiveSetPin()
+{
+    return HC12_SET_PIN_DEFAULT;
+}
+
+static int e220ActiveRxPin()
+{
+    return e220SwapUartPins ? E220_TX_PIN_DEFAULT : E220_RX_PIN_DEFAULT;
+}
+
+static int e220ActiveTxPin()
+{
+    return e220SwapUartPins ? E220_RX_PIN_DEFAULT : E220_TX_PIN_DEFAULT;
+}
+
+static int e220ActiveM0Pin()
+{
+    return e220SwapModePins ? E220_M1_PIN_DEFAULT : E220_M0_PIN_DEFAULT;
+}
+
+static int e220ActiveM1Pin()
+{
+    return e220SwapModePins ? E220_M0_PIN_DEFAULT : E220_M1_PIN_DEFAULT;
 }
 
 static int hc12FindDiscoveredByPubKeyHex(const String &pubKeyHex)
@@ -2185,10 +2246,13 @@ Preferences gamePrefs;
 String *hc12TerminalLog = nullptr;
 String hc12InfoValueText = "--";
 String hc12InfoSubText = "Open Info to query module";
+bool hc12SwapUartPins = false;
 int hc12CurrentChannel = HC12_MIN_CHANNEL;
 int hc12CurrentBaudIndex = 3;
 int hc12CurrentModeIndex = 2;
 int hc12CurrentPowerLevel = 8;
+bool e220SwapUartPins = false;
+bool e220SwapModePins = false;
 int e220CurrentChannel = 23;
 int e220CurrentBaudIndex = 3;
 int e220CurrentAirRateIndex = 2;
@@ -8633,6 +8697,10 @@ void lvglEnsureScreenBuilt(UiScreen screen)
                                                       &lvglRadioPowerTitleLabel, &lvglHc12PowerValueLabel, &lvglHc12PowerSubLabel);
             lvglRadioExtraCard = makeSelectorRow("Transfer Mode", lv_color_hex(0x5E7B35), lvglHc12PrevExtraEvent, lvglHc12NextExtraEvent,
                                                  &lvglRadioExtraTitleLabel, &lvglRadioExtraValueLabel, &lvglRadioExtraSubLabel);
+            lvglRadioPinSwapCard = makeSelectorRow("UART Pins", lv_color_hex(0x4E6786), lvglRadioPrevPinSwapEvent, lvglRadioNextPinSwapEvent,
+                                                   &lvglRadioPinSwapTitleLabel, &lvglRadioPinSwapValueLabel, &lvglRadioPinSwapSubLabel);
+            lvglRadioModePinSwapCard = makeSelectorRow("Mode Pins", lv_color_hex(0x6A7D42), lvglRadioPrevModePinSwapEvent, lvglRadioNextModePinSwapEvent,
+                                                       &lvglRadioModePinSwapTitleLabel, &lvglRadioModePinSwapValueLabel, &lvglRadioModePinSwapSubLabel);
 
             lv_obj_t *hc12DefaultBtn = lvglCreateMenuButton(wrap, lvglSymbolText(LV_SYMBOL_REFRESH, "Default").c_str(), lv_color_hex(0xA35757), lvglHc12DefaultEvent, nullptr);
             lvglHc12ConfigStatusLabel = lv_label_create(wrap);
@@ -8668,6 +8736,8 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglRegisterReorderableItem(hc12ModeCard, "ord_hc12", "mode");
             lvglRegisterReorderableItem(hc12PowerCard, "ord_hc12", "power");
             lvglRegisterReorderableItem(lvglRadioExtraCard, "ord_hc12", "extra");
+            lvglRegisterReorderableItem(lvglRadioPinSwapCard, "ord_hc12", "pins");
+            lvglRegisterReorderableItem(lvglRadioModePinSwapCard, "ord_hc12", "modepins");
             lvglRegisterReorderableItem(hc12DefaultBtn, "ord_hc12", "default");
             lvglRegisterReorderableItem(lvglHc12ConfigStatusLabel, "ord_hc12", "status");
             lvglRegisterReorderableItem(hc12TerminalBtn, "ord_hc12", "term");
@@ -8701,10 +8771,10 @@ void lvglEnsureScreenBuilt(UiScreen screen)
 
             makeSmallBtn(topRow, "CFG: OFF", 96, 34, lv_color_hex(0x7A5C2E), lvglHc12ToggleSetEvent, nullptr);
 
-            lv_obj_t *pinLbl = lv_label_create(topRow);
-            lv_obj_set_flex_grow(pinLbl, 1);
-            lv_obj_set_style_text_color(pinLbl, lv_color_hex(0xC9D7E3), 0);
-            lv_label_set_text(pinLbl, "Radio serial pins");
+            lvglHc12TerminalPinLabel = lv_label_create(topRow);
+            lv_obj_set_flex_grow(lvglHc12TerminalPinLabel, 1);
+            lv_obj_set_style_text_color(lvglHc12TerminalPinLabel, lv_color_hex(0xC9D7E3), 0);
+            lv_label_set_text(lvglHc12TerminalPinLabel, "Radio serial pins");
 
             lv_obj_t *terminalTa = lv_textarea_create(wrap);
             lv_obj_set_width(terminalTa, lv_pct(100));
@@ -8736,9 +8806,15 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_add_event_cb(cmdTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
 
             makeSmallBtn(cmdRow, "Send", 70, 36, lv_color_hex(0x2F6D86), lvglHc12SendEvent, nullptr);
+            lvglHc12TerminalExamplesLabel = lv_label_create(wrap);
+            lv_obj_set_width(lvglHc12TerminalExamplesLabel, lv_pct(100));
+            lv_label_set_long_mode(lvglHc12TerminalExamplesLabel, LV_LABEL_LONG_WRAP);
+            lv_obj_set_style_text_color(lvglHc12TerminalExamplesLabel, lv_color_hex(0xA8BACB), 0);
+            lv_label_set_text(lvglHc12TerminalExamplesLabel, "");
             lvglRegisterReorderableItem(topRow, "ord_hct", "top");
             lvglRegisterReorderableItem(terminalTa, "ord_hct", "term");
             lvglRegisterReorderableItem(cmdRow, "ord_hct", "cmd");
+            lvglRegisterReorderableItem(lvglHc12TerminalExamplesLabel, "ord_hct", "examples");
             lvglApplySavedOrder(wrap, "ord_hct");
             hc12InitIfNeeded();
             lvglRefreshHc12Ui();
@@ -11748,32 +11824,53 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
 
 static void hc12InitIfNeeded()
 {
-    if (radioModuleType == RADIO_MODULE_E220 && (E220_RX_PIN < 0 || E220_TX_PIN < 0 || E220_M0_PIN < 0 || E220_M1_PIN < 0)) {
+    if (radioModuleType == RADIO_MODULE_E220 && (e220ActiveRxPin() < 0 || e220ActiveTxPin() < 0 || e220ActiveM0Pin() < 0 || e220ActiveM1Pin() < 0)) {
         hc12ConfigStatusText = "E220 is only wired on the ESP32-S3 build";
         return;
     }
     if (hc12TerminalLog) return;
     if (radioModuleType == RADIO_MODULE_HC12) {
-        pinMode(HC12_SET_PIN, OUTPUT);
-        digitalWrite(HC12_SET_PIN, HIGH);
-        Serial1.begin(HC12_BAUD, SERIAL_8N1, HC12_RX_PIN, HC12_TX_PIN);
+        pinMode(hc12ActiveSetPin(), OUTPUT);
+        digitalWrite(hc12ActiveSetPin(), HIGH);
+        Serial1.begin(HC12_BAUD, SERIAL_8N1, hc12ActiveRxPin(), hc12ActiveTxPin());
     } else {
-        pinMode(E220_M0_PIN, OUTPUT);
-        pinMode(E220_M1_PIN, OUTPUT);
-        digitalWrite(E220_M0_PIN, LOW);
-        digitalWrite(E220_M1_PIN, LOW);
-        Serial1.begin(E220_AT_BAUD, SERIAL_8N1, E220_RX_PIN, E220_TX_PIN);
+        pinMode(e220ActiveM0Pin(), OUTPUT);
+        pinMode(e220ActiveM1Pin(), OUTPUT);
+        digitalWrite(e220ActiveM0Pin(), LOW);
+        digitalWrite(e220ActiveM1Pin(), LOW);
+        Serial1.begin(E220_AT_BAUD, SERIAL_8N1, e220ActiveRxPin(), e220ActiveTxPin());
     }
     String banner = String("[RADIO] Serial1 ready on ESP RX") +
-                    (radioModuleType == RADIO_MODULE_HC12 ? HC12_RX_PIN : E220_RX_PIN) +
+                    (radioModuleType == RADIO_MODULE_HC12 ? hc12ActiveRxPin() : e220ActiveRxPin()) +
                     " TX" +
-                    (radioModuleType == RADIO_MODULE_HC12 ? HC12_TX_PIN : E220_TX_PIN) + "\n";
+                    (radioModuleType == RADIO_MODULE_HC12 ? hc12ActiveTxPin() : e220ActiveTxPin()) + "\n";
     if (radioModuleType == RADIO_MODULE_HC12) {
-        banner += String("[HC12] HC12 RXD->GPIO") + HC12_TX_PIN + " TXD->GPIO" + HC12_RX_PIN + " SET->GPIO" + HC12_SET_PIN + "\n";
+        banner += String("[HC12] HC12 RXD->GPIO") + hc12ActiveTxPin() + " TXD->GPIO" + hc12ActiveRxPin() + " SET->GPIO" + hc12ActiveSetPin() + "\n";
     } else {
-        banner += String("[E220] RX->GPIO") + E220_TX_PIN + " TX->GPIO" + E220_RX_PIN + " M1->GPIO" + E220_M0_PIN + " M2->GPIO" + E220_M1_PIN + "\n";
+        banner += String("[E220] RX->GPIO") + e220ActiveTxPin() + " TX->GPIO" + e220ActiveRxPin() + " M0->GPIO" + e220ActiveM0Pin() + " M1->GPIO" + e220ActiveM1Pin() + "\n";
     }
     hc12AppendTerminal(banner.c_str());
+}
+
+static String hc12TerminalExampleCommands()
+{
+    if (radioModuleType == RADIO_MODULE_E220) {
+        return "Examples: AT, AT+CHANNEL=?, AT+UART=?, AT+POWER=?, AT+TRANS=?";
+    }
+    return "Examples: AT, AT+RX, AT+RC, AT+RB, AT+RF, AT+RP";
+}
+
+static void hc12RestartWithCurrentPins(const String &statusText)
+{
+    Serial1.flush();
+    Serial1.end();
+    uiDeferredFlags &= static_cast<uint8_t>(~(UI_DEFERRED_HC12_SETTLE_PENDING | UI_DEFERRED_HC12_TARGET_ASSERTED));
+    delete hc12TerminalLog;
+    hc12TerminalLog = nullptr;
+    delete hc12RadioRxLine;
+    hc12RadioRxLine = nullptr;
+    if (!statusText.isEmpty()) hc12ConfigStatusText = statusText;
+    hc12InitIfNeeded();
 }
 
 static lv_obj_t *hc12WrapObj()
@@ -11804,8 +11901,8 @@ static lv_obj_t *hc12CmdTaObj()
 static bool hc12SetIsAsserted()
 {
     if (!hc12TerminalLog) return false;
-    if (radioModuleType == RADIO_MODULE_HC12) return digitalRead(HC12_SET_PIN) == LOW;
-    return digitalRead(E220_M0_PIN) == HIGH && digitalRead(E220_M1_PIN) == HIGH;
+    if (radioModuleType == RADIO_MODULE_HC12) return digitalRead(hc12ActiveSetPin()) == LOW;
+    return digitalRead(e220ActiveM0Pin()) == HIGH && digitalRead(e220ActiveM1Pin()) == HIGH;
 }
 
 static String &hc12LogBuffer()
@@ -11914,10 +12011,10 @@ static void hc12EnterAtMode()
     hc12InitIfNeeded();
     while (Serial1.available() > 0) Serial1.read();
     if (radioModuleType == RADIO_MODULE_HC12) {
-        digitalWrite(HC12_SET_PIN, LOW);
+        digitalWrite(hc12ActiveSetPin(), LOW);
     } else {
-        digitalWrite(E220_M0_PIN, HIGH);
-        digitalWrite(E220_M1_PIN, HIGH);
+        digitalWrite(e220ActiveM0Pin(), HIGH);
+        digitalWrite(e220ActiveM1Pin(), HIGH);
     }
     delay(80);
 }
@@ -11925,10 +12022,10 @@ static void hc12EnterAtMode()
 static void hc12ExitAtMode()
 {
     if (radioModuleType == RADIO_MODULE_HC12) {
-        digitalWrite(HC12_SET_PIN, HIGH);
+        digitalWrite(hc12ActiveSetPin(), HIGH);
     } else {
-        digitalWrite(E220_M0_PIN, LOW);
-        digitalWrite(E220_M1_PIN, LOW);
+        digitalWrite(e220ActiveM0Pin(), LOW);
+        digitalWrite(e220ActiveM1Pin(), LOW);
     }
     delay(40);
     uiDeferredFlags &= static_cast<uint8_t>(~(UI_DEFERRED_HC12_SETTLE_PENDING | UI_DEFERRED_HC12_TARGET_ASSERTED));
@@ -11985,11 +12082,14 @@ static int hc12FindPowerLevelFromResponse(const String &raw)
 
 static void loadPersistedRadioSettings()
 {
+    hc12SwapUartPins = uiPrefs.getBool("hc12_swap", false);
     hc12CurrentChannel = constrain(uiPrefs.getInt("hc12_ch", HC12_MIN_CHANNEL), HC12_MIN_CHANNEL, HC12_MAX_CHANNEL);
     hc12CurrentBaudIndex = constrain(uiPrefs.getInt("hc12_baud", 3), 0, static_cast<int>(sizeof(HC12_SUPPORTED_BAUDS) / sizeof(HC12_SUPPORTED_BAUDS[0])) - 1);
     hc12CurrentModeIndex = constrain(uiPrefs.getInt("hc12_mode", 2), 0, 3);
     hc12CurrentPowerLevel = constrain(uiPrefs.getInt("hc12_pwr", 8), 1, 8);
 
+    e220SwapUartPins = uiPrefs.getBool("e220_swap", false);
+    e220SwapModePins = uiPrefs.getBool("e220_mswap", false);
     e220CurrentChannel = constrain(uiPrefs.getInt("e220_ch", 23), E220_MIN_CHANNEL, E220_MAX_CHANNEL);
     e220CurrentBaudIndex = constrain(uiPrefs.getInt("e220_baud", 3), 0, static_cast<int>(sizeof(E220_UART_BAUD_VALUES) / sizeof(E220_UART_BAUD_VALUES[0])) - 1);
     e220CurrentAirRateIndex = constrain(uiPrefs.getInt("e220_rate", 2), 0, static_cast<int>(sizeof(E220_AIR_RATE_OPTIONS) / sizeof(E220_AIR_RATE_OPTIONS[0])) - 1);
@@ -11999,11 +12099,14 @@ static void loadPersistedRadioSettings()
 
 static void savePersistedRadioSettings()
 {
+    uiPrefs.putBool("hc12_swap", hc12SwapUartPins);
     uiPrefs.putInt("hc12_ch", hc12CurrentChannel);
     uiPrefs.putInt("hc12_baud", hc12CurrentBaudIndex);
     uiPrefs.putInt("hc12_mode", hc12CurrentModeIndex);
     uiPrefs.putInt("hc12_pwr", hc12CurrentPowerLevel);
 
+    uiPrefs.putBool("e220_swap", e220SwapUartPins);
+    uiPrefs.putBool("e220_mswap", e220SwapModePins);
     uiPrefs.putInt("e220_ch", e220CurrentChannel);
     uiPrefs.putInt("e220_baud", e220CurrentBaudIndex);
     uiPrefs.putInt("e220_rate", e220CurrentAirRateIndex);
@@ -12253,6 +12356,8 @@ static bool hc12FactoryReset()
         const String resp = e220QueryCommand("AT+CFGTF");
         hc12ExitAtMode();
         if (resp.indexOf("OK") >= 0) {
+            e220SwapUartPins = false;
+            e220SwapModePins = false;
             e220CurrentChannel = 23;
             e220CurrentBaudIndex = 3;
             e220CurrentAirRateIndex = 2;
@@ -12269,6 +12374,7 @@ static bool hc12FactoryReset()
     const String resp = hc12QueryCommand("AT+DEFAULT", 260UL, 48UL);
     hc12ExitAtMode();
     if (resp.startsWith("OK+DEFAULT")) {
+        hc12SwapUartPins = false;
         hc12CurrentChannel = 1;
         hc12CurrentBaudIndex = hc12FindBaudIndex(9600UL);
         hc12CurrentModeIndex = 2;
@@ -12587,10 +12693,10 @@ void lvglHc12ToggleSetEvent(lv_event_t *e)
     hc12InitIfNeeded();
     const bool setAsserted = !hc12SetIsAsserted();
     if (radioModuleType == RADIO_MODULE_HC12) {
-        digitalWrite(HC12_SET_PIN, setAsserted ? LOW : HIGH);
+        digitalWrite(hc12ActiveSetPin(), setAsserted ? LOW : HIGH);
     } else {
-        digitalWrite(E220_M0_PIN, setAsserted ? HIGH : LOW);
-        digitalWrite(E220_M1_PIN, setAsserted ? HIGH : LOW);
+        digitalWrite(e220ActiveM0Pin(), setAsserted ? HIGH : LOW);
+        digitalWrite(e220ActiveM1Pin(), setAsserted ? HIGH : LOW);
     }
     uiDeferredFlags |= UI_DEFERRED_HC12_SETTLE_PENDING;
     if (setAsserted) uiDeferredFlags |= UI_DEFERRED_HC12_TARGET_ASSERTED;
@@ -14120,6 +14226,7 @@ void lvglStyleTimeoutEvent(lv_event_t *e)
     const unsigned long stepValue = static_cast<unsigned long>(lv_slider_get_value(lvglStyleTimeoutSlider));
     displayIdleTimeoutMs = clampIdleTimeoutMs(stepValue * LCD_IDLE_TIMEOUT_STEP_MS);
     applyDisplayIdleTimeoutPowerOffCap(true);
+    persistDisplayIdleTimeout();
     lvglRefreshStyleUi();
     lvglNextHandlerDueMs = 0;
 }
@@ -14273,6 +14380,13 @@ static void lvglRefreshBatteryTrainUi()
 {
     if (!lvglBatteryTrainStatusLabel) return;
 
+    lvglRefreshBatteryTrainButtonIcons();
+    if (lvglBatteryTrainAutoBtn) {
+        lvglRegisterStyledButton(lvglBatteryTrainAutoBtn,
+                                 batteryTrainingState.autoCalibrationEnabled ? lv_color_hex(0x2F7A45) : lv_color_hex(0x345D8A),
+                                 false);
+    }
+
     String status = String("Mode: ") + batteryTrainingPhaseLabel();
     if (batteryTrainingState.active) {
         if (batteryTrainingState.phase == BATTERY_TRAIN_CHARGE) status += "  |  Charging session in progress";
@@ -14315,7 +14429,12 @@ static void lvglRefreshBatteryTrainButtonIcons()
 {
     lvglSetMenuButtonIconMode(lvglBatteryTrainFullBtn, "FULL", LV_SYMBOL_OK, &img_full_small_icon, 6, 12);
     lvglSetMenuButtonIconMode(lvglBatteryTrainDischargeBtn, "DISCHARGE", LV_SYMBOL_DOWN, &img_disch_small_icon, 6, 12);
-    lvglSetMenuButtonIconMode(lvglBatteryTrainAutoBtn, "Auto Calibration", LV_SYMBOL_REFRESH, &img_auto_small_icon, 6, 12);
+    lvglSetMenuButtonIconMode(lvglBatteryTrainAutoBtn,
+                              batteryTrainingState.autoCalibrationEnabled ? "Auto Calibration: ON" : "Auto Calibration: OFF",
+                              LV_SYMBOL_REFRESH,
+                              &img_auto_small_icon,
+                              6,
+                              12);
 }
 
 void lvglBatteryTrainResetPromptEvent(lv_event_t *e)
@@ -14357,6 +14476,7 @@ void lvglBatteryTrainFullConfirmEvent(lv_event_t *e)
     if (btn && strcmp(btn, "FULL") == 0) {
         batteryTrainingState.autoCalibrationEnabled = false;
         batteryCalibrationForceFull(batteryRawVoltage);
+        batteryCalibrationLoad();
         batteryVoltage = batteryCalibratedVoltageFromRaw(batteryRawVoltage);
         batteryPercent = batteryPercentFromVoltage(batteryVoltage);
         batteryFilterInitialized = true;
@@ -14414,6 +14534,15 @@ void lvglBatteryTrainAutoConfirmEvent(lv_event_t *e)
 void lvglBatteryTrainAutoEvent(lv_event_t *e)
 {
     (void)e;
+    if (batteryTrainingState.autoCalibrationEnabled) {
+        batteryTrainingStopManual();
+        batteryTrainingState.autoCalibrationEnabled = false;
+        batteryTrainingSave();
+        uiStatusLine = "Battery auto calibration disabled";
+        if (lvglReady) lvglSyncStatusLine();
+        lvglRefreshBatteryTrainUi();
+        return;
+    }
     static const char *btns[] = {"Enable", "Cancel", ""};
     lv_obj_t *msgbox = lv_msgbox_create(nullptr,
                                         "Battery Auto Calibration",
@@ -16130,19 +16259,25 @@ void lvglRefreshHc12Ui()
     }
     lv_obj_t *wrap = hc12WrapObj();
     lv_obj_t *topRow = wrap ? lv_obj_get_child(wrap, 0) : nullptr;
-    lv_obj_t *pinLbl = topRow ? lv_obj_get_child(topRow, 1) : nullptr;
+    lv_obj_t *pinLbl = lvglHc12TerminalPinLabel ? lvglHc12TerminalPinLabel : (topRow ? lv_obj_get_child(topRow, 1) : nullptr);
     if (pinLbl) {
         if (radioModuleType == RADIO_MODULE_HC12) {
-            lv_label_set_text_fmt(pinLbl, "HC-12 RXD %d  TXD %d  SET %d  9600 baud", HC12_TX_PIN, HC12_RX_PIN, HC12_SET_PIN);
+            lv_label_set_text_fmt(pinLbl, "HC-12 RXD %d  TXD %d  SET %d  9600 baud", hc12ActiveTxPin(), hc12ActiveRxPin(), hc12ActiveSetPin());
         } else {
-            lv_label_set_text_fmt(pinLbl, "E220 RX %d  TX %d  M1 %d  M2 %d  9600 baud", E220_TX_PIN, E220_RX_PIN, E220_M0_PIN, E220_M1_PIN);
+            lv_label_set_text_fmt(pinLbl, "E220 RX %d  TX %d  M0 %d  M1 %d  9600 baud", e220ActiveTxPin(), e220ActiveRxPin(), e220ActiveM0Pin(), e220ActiveM1Pin());
         }
     }
+    if (lvglHc12TerminalExamplesLabel) lv_label_set_text(lvglHc12TerminalExamplesLabel, hc12TerminalExampleCommands().c_str());
     lv_obj_t *terminalTa = hc12TerminalObj();
     if (terminalTa) {
         lv_textarea_set_text(terminalTa, hc12TerminalLog ? hc12TerminalLog->c_str() : "");
         lv_textarea_set_cursor_pos(terminalTa, LV_TEXTAREA_CURSOR_LAST);
         lv_textarea_set_placeholder_text(terminalTa, radioModuleType == RADIO_MODULE_HC12 ? "HC-12 terminal output" : "E220 terminal output");
+    }
+    lv_obj_t *cmdTa = hc12CmdTaObj();
+    if (cmdTa) {
+        lv_textarea_set_placeholder_text(cmdTa,
+                                         radioModuleType == RADIO_MODULE_HC12 ? "AT, AT+RX, AT+RC..." : "AT, AT+CHANNEL=?, AT+UART=?...");
     }
 }
 
@@ -16173,9 +16308,14 @@ void lvglRefreshHc12ConfigUi()
         const int powerLevel = constrain(hc12CurrentPowerLevel, 1, 8);
         if (lvglHc12PowerValueLabel) lv_label_set_text_fmt(lvglHc12PowerValueLabel, "P%d", powerLevel);
         if (lvglHc12PowerSubLabel) lv_label_set_text_fmt(lvglHc12PowerSubLabel, "%d dBm", HC12_POWER_DBM[powerLevel - 1]);
+        if (lvglRadioPinSwapCard) lv_obj_clear_flag(lvglRadioPinSwapCard, LV_OBJ_FLAG_HIDDEN);
+        if (lvglRadioPinSwapTitleLabel) lv_label_set_text(lvglRadioPinSwapTitleLabel, "UART Pins");
+        if (lvglRadioPinSwapValueLabel) lv_label_set_text(lvglRadioPinSwapValueLabel, hc12SwapUartPins ? "Swapped" : "Normal");
+        if (lvglRadioPinSwapSubLabel) lv_label_set_text_fmt(lvglRadioPinSwapSubLabel, "ESP RX %d  |  TX %d", hc12ActiveRxPin(), hc12ActiveTxPin());
+        if (lvglRadioModePinSwapCard) lv_obj_add_flag(lvglRadioModePinSwapCard, LV_OBJ_FLAG_HIDDEN);
         if (lvglRadioHintLabel) lv_label_set_text_fmt(lvglRadioHintLabel,
                                                       "HC-12 RXD %d  |  TXD %d  |  SET %d  |  9600 baud\nSerial Terminal and Info use HC-12 AT mode. Radio chat/discovery is only active while HC-12 is selected.",
-                                                      HC12_TX_PIN, HC12_RX_PIN, HC12_SET_PIN);
+                                                      hc12ActiveTxPin(), hc12ActiveRxPin(), hc12ActiveSetPin());
     } else {
         if (lvglRadioExtraCard) lv_obj_clear_flag(lvglRadioExtraCard, LV_OBJ_FLAG_HIDDEN);
         if (lvglHc12ChannelValueLabel) lv_label_set_text_fmt(lvglHc12ChannelValueLabel, "CH%02d", e220CurrentChannel);
@@ -16190,9 +16330,17 @@ void lvglRefreshHc12ConfigUi()
         if (lvglRadioExtraTitleLabel) lv_label_set_text(lvglRadioExtraTitleLabel, "Transfer Mode");
         if (lvglRadioExtraValueLabel) lv_label_set_text(lvglRadioExtraValueLabel, e220CurrentFixedTransmission ? "Fixed" : "Transparent");
         if (lvglRadioExtraSubLabel) lv_label_set_text(lvglRadioExtraSubLabel, e220CurrentFixedTransmission ? "packet addressing, chat off" : "packet streaming, chat on");
+        if (lvglRadioPinSwapCard) lv_obj_clear_flag(lvglRadioPinSwapCard, LV_OBJ_FLAG_HIDDEN);
+        if (lvglRadioPinSwapTitleLabel) lv_label_set_text(lvglRadioPinSwapTitleLabel, "UART Pins");
+        if (lvglRadioPinSwapValueLabel) lv_label_set_text(lvglRadioPinSwapValueLabel, e220SwapUartPins ? "Swapped" : "Normal");
+        if (lvglRadioPinSwapSubLabel) lv_label_set_text_fmt(lvglRadioPinSwapSubLabel, "ESP RX %d  |  TX %d", e220ActiveRxPin(), e220ActiveTxPin());
+        if (lvglRadioModePinSwapCard) lv_obj_clear_flag(lvglRadioModePinSwapCard, LV_OBJ_FLAG_HIDDEN);
+        if (lvglRadioModePinSwapTitleLabel) lv_label_set_text(lvglRadioModePinSwapTitleLabel, "Mode Pins");
+        if (lvglRadioModePinSwapValueLabel) lv_label_set_text(lvglRadioModePinSwapValueLabel, e220SwapModePins ? "Swapped" : "Normal");
+        if (lvglRadioModePinSwapSubLabel) lv_label_set_text_fmt(lvglRadioModePinSwapSubLabel, "M0 %d  |  M1 %d", e220ActiveM0Pin(), e220ActiveM1Pin());
         if (lvglRadioHintLabel) lv_label_set_text_fmt(lvglRadioHintLabel,
-                                                      "E220 RX %d  |  TX %d  |  M1 %d  |  M2 %d  |  9600 baud in config mode\nEncrypted radio chat/discovery uses E220 Transparent mode; Fixed mode keeps config access but disables chat traffic.",
-                                                      E220_TX_PIN, E220_RX_PIN, E220_M0_PIN, E220_M1_PIN);
+                                                      "E220 RX %d  |  TX %d  |  M0 %d  |  M1 %d  |  9600 baud in config mode\nEncrypted radio chat/discovery uses E220 Transparent mode; Fixed mode keeps config access but disables chat traffic.",
+                                                      e220ActiveTxPin(), e220ActiveRxPin(), e220ActiveM0Pin(), e220ActiveM1Pin());
     }
     if (lvglHc12ConfigStatusLabel) lv_label_set_text(lvglHc12ConfigStatusLabel, hc12ConfigStatusText.c_str());
 }
@@ -16293,6 +16441,43 @@ void lvglHc12NextPowerEvent(lv_event_t *e)
     lvglRefreshHc12ConfigUi();
 }
 
+void lvglRadioPrevPinSwapEvent(lv_event_t *e)
+{
+    (void)e;
+    if (radioModuleType == RADIO_MODULE_HC12) {
+        hc12SwapUartPins = !hc12SwapUartPins;
+        savePersistedRadioSettings();
+        hc12RestartWithCurrentPins(hc12SwapUartPins ? "HC-12 UART pins swapped" : "HC-12 UART pins restored");
+    } else {
+        e220SwapUartPins = !e220SwapUartPins;
+        savePersistedRadioSettings();
+        hc12RestartWithCurrentPins(e220SwapUartPins ? "E220 UART pins swapped" : "E220 UART pins restored");
+    }
+    lvglRefreshHc12ConfigUi();
+    lvglRefreshHc12Ui();
+}
+
+void lvglRadioNextPinSwapEvent(lv_event_t *e)
+{
+    lvglRadioPrevPinSwapEvent(e);
+}
+
+void lvglRadioPrevModePinSwapEvent(lv_event_t *e)
+{
+    (void)e;
+    if (radioModuleType != RADIO_MODULE_E220) return;
+    e220SwapModePins = !e220SwapModePins;
+    savePersistedRadioSettings();
+    hc12RestartWithCurrentPins(e220SwapModePins ? "E220 mode pins swapped" : "E220 mode pins restored");
+    lvglRefreshHc12ConfigUi();
+    lvglRefreshHc12Ui();
+}
+
+void lvglRadioNextModePinSwapEvent(lv_event_t *e)
+{
+    lvglRadioPrevModePinSwapEvent(e);
+}
+
 void lvglHc12PrevExtraEvent(lv_event_t *e)
 {
     (void)e;
@@ -16332,7 +16517,7 @@ void lvglRefreshHc12InfoUi()
         return;
     }
     while (Serial1.available() > 0) Serial1.read();
-    digitalWrite(HC12_SET_PIN, LOW);
+    digitalWrite(hc12ActiveSetPin(), LOW);
     delay(80);
 
     versionRaw = hc12QueryCommand("AT+V");
@@ -16342,7 +16527,7 @@ void lvglRefreshHc12InfoUi()
     powerRaw = hc12QueryCommand("AT+RP");
     summaryRaw = hc12QueryCommand("AT+RX", 220UL, 40UL);
 
-    digitalWrite(HC12_SET_PIN, HIGH);
+    digitalWrite(hc12ActiveSetPin(), HIGH);
     delay(40);
     uiDeferredFlags &= static_cast<uint8_t>(~(UI_DEFERRED_HC12_SETTLE_PENDING | UI_DEFERRED_HC12_TARGET_ASSERTED));
 
@@ -18691,10 +18876,13 @@ void appendUiSettings(JsonDocument &doc)
     doc["DisplayLanguage"] = uiPrefs.getUChar("lang", static_cast<uint8_t>(uiLanguage));
     doc["VibrationIntensity"] = uiPrefs.getUChar("vib_int", static_cast<uint8_t>(vibrationIntensity));
     doc["RadioModule"] = uiPrefs.getUChar("radio_mod", static_cast<uint8_t>(radioModuleType));
+    doc["Hc12SwapUart"] = uiPrefs.getBool("hc12_swap", hc12SwapUartPins) ? 1 : 0;
     doc["Hc12Channel"] = uiPrefs.getInt("hc12_ch", hc12CurrentChannel);
     doc["Hc12BaudIndex"] = uiPrefs.getInt("hc12_baud", hc12CurrentBaudIndex);
     doc["Hc12ModeIndex"] = uiPrefs.getInt("hc12_mode", hc12CurrentModeIndex);
     doc["Hc12PowerLevel"] = uiPrefs.getInt("hc12_pwr", hc12CurrentPowerLevel);
+    doc["E220SwapUart"] = uiPrefs.getBool("e220_swap", e220SwapUartPins) ? 1 : 0;
+    doc["E220SwapModePins"] = uiPrefs.getBool("e220_mswap", e220SwapModePins) ? 1 : 0;
     doc["E220Channel"] = uiPrefs.getInt("e220_ch", e220CurrentChannel);
     doc["E220BaudIndex"] = uiPrefs.getInt("e220_baud", e220CurrentBaudIndex);
     doc["E220AirRateIndex"] = uiPrefs.getInt("e220_rate", e220CurrentAirRateIndex);
