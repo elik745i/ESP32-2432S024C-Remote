@@ -271,7 +271,11 @@ static constexpr float BATTERY_CAL_BLEND_ALPHA = 0.30f;
 static constexpr int BATTERY_ADC_SAMPLES = 16;
 static constexpr int BATTERY_ADC_SETTLE_READS = 3;
 static constexpr unsigned int BATTERY_ADC_SETTLE_US = 250U;
-static constexpr float BATTERY_FILTER_ALPHA = 0.12f;
+static constexpr uint8_t BATTERY_MEDIAN_WINDOW = 5;
+static constexpr float BATTERY_FILTER_ALPHA_RISE = 0.08f;
+static constexpr float BATTERY_FILTER_ALPHA_FALL = 0.05f;
+static constexpr float BATTERY_FILTER_FAST_ALPHA = 0.30f;
+static constexpr float BATTERY_FILTER_FAST_DELTA_V = 0.12f;
 static constexpr unsigned long BATTERY_SNAPSHOT_PERIOD_MS = 30000;
 static constexpr unsigned long BATTERY_SNAPSHOT_FORCE_MS = 300000;
 static constexpr float BATTERY_SNAPSHOT_MIN_DELTA_V = 0.010f;
@@ -304,7 +308,7 @@ static constexpr uint8_t VIBRATION_QUEUE_MAX = 4;
 #endif
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.2.17";
+static constexpr const char *FW_VERSION = "0.2.18";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -687,6 +691,7 @@ static void batteryCalibrationLearnFull(float rawV);
 static void batteryCalibrationSetFull(float rawV);
 static void batteryCalibrationForceFull(float rawV);
 static float batteryCalibratedVoltageFromRaw(float rawV);
+static float batteryFilterSample(float calibratedV);
 uint8_t batteryPercentFromVoltage(float vbat);
 static void batteryCalibrationReset();
 static void batteryTrainingLoad();
@@ -1347,6 +1352,9 @@ int16_t touchLastSampleX = 0;
 int16_t touchLastSampleY = 0;
 float batteryVoltage = 0.0f;
 float batteryRawVoltage = 0.0f;
+float batteryVoltageMedianWindow[BATTERY_MEDIAN_WINDOW] = {0.0f};
+uint8_t batteryVoltageMedianIndex = 0;
+uint8_t batteryVoltageMedianCount = 0;
 uint8_t batteryPercent = 0;
 bool batteryCharging = false;
 uint8_t lightPercent = 0;
@@ -15400,6 +15408,40 @@ static float batteryCalibratedVoltageFromRaw(float rawV)
     return rawV * BATTERY_CAL_FACTOR;
 }
 
+static float batteryFilterSample(float calibratedV)
+{
+    if (calibratedV <= 0.0f) return calibratedV;
+
+    batteryVoltageMedianWindow[batteryVoltageMedianIndex] = calibratedV;
+    batteryVoltageMedianIndex = static_cast<uint8_t>((batteryVoltageMedianIndex + 1U) % BATTERY_MEDIAN_WINDOW);
+    if (batteryVoltageMedianCount < BATTERY_MEDIAN_WINDOW) batteryVoltageMedianCount++;
+
+    float sorted[BATTERY_MEDIAN_WINDOW];
+    for (uint8_t i = 0; i < batteryVoltageMedianCount; ++i) sorted[i] = batteryVoltageMedianWindow[i];
+    for (uint8_t i = 1; i < batteryVoltageMedianCount; ++i) {
+        const float key = sorted[i];
+        int8_t j = static_cast<int8_t>(i) - 1;
+        while (j >= 0 && sorted[j] > key) {
+            sorted[j + 1] = sorted[j];
+            --j;
+        }
+        sorted[j + 1] = key;
+    }
+    const float median = sorted[batteryVoltageMedianCount / 2U];
+
+    if (!batteryFilterInitialized) {
+        batteryVoltage = median;
+        batteryFilterInitialized = true;
+        return batteryVoltage;
+    }
+
+    const float delta = median - batteryVoltage;
+    float alpha = delta >= 0.0f ? BATTERY_FILTER_ALPHA_RISE : BATTERY_FILTER_ALPHA_FALL;
+    if (fabsf(delta) >= BATTERY_FILTER_FAST_DELTA_V) alpha = BATTERY_FILTER_FAST_ALPHA;
+    batteryVoltage += alpha * delta;
+    return batteryVoltage;
+}
+
 float batteryCalibrationFactor()
 {
     if (batteryRawVoltage > 0.0f) {
@@ -15508,12 +15550,7 @@ void sampleTopIndicators()
     const unsigned long now = millis();
     batteryRawVoltage = readBatteryVoltage();
     const float rawVoltage = batteryCalibratedVoltageFromRaw(batteryRawVoltage);
-    if (!batteryFilterInitialized) {
-        batteryVoltage = rawVoltage;
-        batteryFilterInitialized = true;
-    } else {
-        batteryVoltage += BATTERY_FILTER_ALPHA * (rawVoltage - batteryVoltage);
-    }
+    batteryVoltage = batteryFilterSample(rawVoltage);
     batteryPercent = batteryPercentFromVoltage(batteryVoltage);
 
     if (lastChargeEvalMs == 0) {
