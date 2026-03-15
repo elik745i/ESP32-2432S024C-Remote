@@ -87,7 +87,7 @@ static constexpr int DISPLAY_CENTER_Y = DISPLAY_HEIGHT / 2;
 static constexpr uint32_t TOUCH_I2C_HZ = 400000U;
 static constexpr bool TOUCH_USE_IRQ = false;
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
-static constexpr unsigned long TOUCH_POLL_INTERVAL_MS = 4UL;
+static constexpr unsigned long TOUCH_POLL_INTERVAL_MS = 3UL;
 #else
 static constexpr unsigned long TOUCH_POLL_INTERVAL_MS = 6UL;
 #endif
@@ -830,6 +830,7 @@ static constexpr int16_t DOUBLE_TAP_MAX_GAP = 350;
 static constexpr unsigned long DOUBLE_TAP_MAX_TAP_MS = 240;
 static constexpr unsigned long CLICK_SUPPRESS_AFTER_GESTURE_MS = 180UL;
 static constexpr unsigned long UI_WARMUP_INTERVAL_MS = 220UL;
+static constexpr unsigned long UI_WARMUP_IDLE_AFTER_INPUT_MS = 1800UL;
 static lv_color_t *lvglDrawPixels = nullptr;
 static uint16_t lvglBufLinesActive = 0;
 static lv_disp_draw_buf_t lvglDrawBuf;
@@ -1845,7 +1846,7 @@ static constexpr size_t P2P_NONCE_BYTES = crypto_box_curve25519xchacha20poly1305
 static constexpr size_t P2P_MAC_BYTES = crypto_box_curve25519xchacha20poly1305_MACBYTES;
 static constexpr size_t P2P_MAX_CHAT_TEXT = 160;
 static constexpr size_t P2P_MAX_PACKET = 512;
-P2PPeer p2pPeers[MAX_P2P_PEERS];
+P2PPeer *p2pPeers = nullptr;
 int p2pPeerCount = 0;
 
 struct P2PDiscoveredPeer {
@@ -1857,13 +1858,32 @@ struct P2PDiscoveredPeer {
     unsigned long lastSeenMs;
 };
 
-P2PDiscoveredPeer p2pDiscoveredPeers[MAX_P2P_DISCOVERED];
+P2PDiscoveredPeer *p2pDiscoveredPeers = nullptr;
 int p2pDiscoveredCount = 0;
+
+static bool p2pEnsurePeerStorage()
+{
+    if (p2pPeers) return true;
+    p2pPeers = static_cast<P2PPeer *>(allocPreferPsram(sizeof(P2PPeer) * MAX_P2P_PEERS));
+    if (!p2pPeers) return false;
+    memset(p2pPeers, 0, sizeof(P2PPeer) * MAX_P2P_PEERS);
+    return true;
+}
+
+static bool p2pEnsureDiscoveredStorage()
+{
+    if (p2pDiscoveredPeers) return true;
+    p2pDiscoveredPeers = static_cast<P2PDiscoveredPeer *>(allocPreferPsram(sizeof(P2PDiscoveredPeer) * MAX_P2P_DISCOVERED));
+    if (!p2pDiscoveredPeers) return false;
+    memset(p2pDiscoveredPeers, 0, sizeof(P2PDiscoveredPeer) * MAX_P2P_DISCOVERED);
+    return true;
+}
 
 static bool hc12EnsureDiscoveredStorage()
 {
     if (hc12DiscoveredPeers) return true;
-    hc12DiscoveredPeers = new Hc12DiscoveredPeer[MAX_HC12_DISCOVERED];
+    hc12DiscoveredPeers = static_cast<Hc12DiscoveredPeer *>(allocPreferPsram(sizeof(Hc12DiscoveredPeer) * MAX_HC12_DISCOVERED));
+    if (hc12DiscoveredPeers) memset(hc12DiscoveredPeers, 0, sizeof(Hc12DiscoveredPeer) * MAX_HC12_DISCOVERED);
     return hc12DiscoveredPeers != nullptr;
 }
 
@@ -4477,6 +4497,7 @@ static void lvglWarmupScreensService(bool uiPriorityActive)
         UI_CONFIG_MQTT_CONTROLS
     };
     const unsigned long now = millis();
+    if (static_cast<unsigned long>(now - lastUserActivityMs) < UI_WARMUP_IDLE_AFTER_INPUT_MS) return;
     if (static_cast<unsigned long>(now - lvglWarmupLastMs) < UI_WARMUP_INTERVAL_MS) return;
     lvglWarmupLastMs = now;
 
@@ -4521,7 +4542,7 @@ struct LvglStyledButtonEntry {
 
 static constexpr uint8_t LVGL_STYLED_BUTTON_FLAG_COMPACT = 0x01;
 static constexpr size_t LVGL_STYLED_BUTTON_CAPACITY = 256;
-static LvglStyledButtonEntry lvglStyledButtons[LVGL_STYLED_BUTTON_CAPACITY] = {};
+static LvglStyledButtonEntry *lvglStyledButtons = nullptr;
 static constexpr size_t LVGL_REORDER_ITEM_CAPACITY = 192;
 static constexpr unsigned long UI_REORDER_HOLD_MS = 2000UL;
 static constexpr lv_coord_t UI_REORDER_AUTO_SCROLL_MARGIN = 26;
@@ -4548,8 +4569,23 @@ struct UiReorderDragState {
     bool parentOverflowTemporarilyEnabled;
 };
 
-static LvglReorderItemEntry lvglReorderItems[LVGL_REORDER_ITEM_CAPACITY] = {};
+static LvglReorderItemEntry *lvglReorderItems = nullptr;
 static UiReorderDragState lvglReorderDrag = {};
+
+static bool lvglEnsureUiRegistryStorage()
+{
+    if (!lvglStyledButtons) {
+        lvglStyledButtons = static_cast<LvglStyledButtonEntry *>(allocPreferPsram(sizeof(LvglStyledButtonEntry) * LVGL_STYLED_BUTTON_CAPACITY));
+        if (!lvglStyledButtons) return false;
+        memset(lvglStyledButtons, 0, sizeof(LvglStyledButtonEntry) * LVGL_STYLED_BUTTON_CAPACITY);
+    }
+    if (!lvglReorderItems) {
+        lvglReorderItems = static_cast<LvglReorderItemEntry *>(allocPreferPsram(sizeof(LvglReorderItemEntry) * LVGL_REORDER_ITEM_CAPACITY));
+        if (!lvglReorderItems) return false;
+        memset(lvglReorderItems, 0, sizeof(LvglReorderItemEntry) * LVGL_REORDER_ITEM_CAPACITY);
+    }
+    return true;
+}
 
 static void lvglApplyReorderDragVisual(lv_obj_t *obj, bool active)
 {
@@ -4635,7 +4671,7 @@ static lv_color_t lvglActiveToggleGreen(bool compact)
 
 static LvglReorderItemEntry *lvglFindReorderItemEntry(lv_obj_t *obj)
 {
-    if (!obj) return nullptr;
+    if (!obj || !lvglReorderItems) return nullptr;
     for (size_t i = 0; i < LVGL_REORDER_ITEM_CAPACITY; ++i) {
         if (lvglReorderItems[i].obj == obj) return &lvglReorderItems[i];
     }
@@ -4644,7 +4680,7 @@ static LvglReorderItemEntry *lvglFindReorderItemEntry(lv_obj_t *obj)
 
 static const LvglReorderItemEntry *lvglFindReorderItemEntryConst(const lv_obj_t *obj)
 {
-    if (!obj) return nullptr;
+    if (!obj || !lvglReorderItems) return nullptr;
     for (size_t i = 0; i < LVGL_REORDER_ITEM_CAPACITY; ++i) {
         if (lvglReorderItems[i].obj == obj) return &lvglReorderItems[i];
     }
@@ -4671,7 +4707,7 @@ static void lvglPersistReorderForParent(lv_obj_t *parent, const char *prefKey)
 
 static void lvglApplySavedOrder(lv_obj_t *parent, const char *prefKey)
 {
-    if (!parent || !prefKey || !*prefKey) return;
+    if (!parent || !prefKey || !*prefKey || !lvglReorderItems) return;
     uiPrefs.begin("ui", true);
     String order = uiPrefs.getString(prefKey, "");
     uiPrefs.end();
@@ -4734,7 +4770,7 @@ static void lvglEndReorderDrag(bool persistOrder)
 static void lvglReorderItemDeleteEvent(lv_event_t *e)
 {
     lv_obj_t *obj = lv_event_get_target(e);
-    if (!obj) return;
+    if (!obj || !lvglReorderItems) return;
     for (size_t i = 0; i < LVGL_REORDER_ITEM_CAPACITY; ++i) {
         if (lvglReorderItems[i].obj == obj) {
             lvglReorderItems[i].obj = nullptr;
@@ -4883,6 +4919,7 @@ static void lvglReorderItemEvent(lv_event_t *e)
 static void lvglRegisterReorderableItem(lv_obj_t *obj, const char *prefKey, const char *itemKey)
 {
     if (!obj || !prefKey || !*prefKey || !itemKey || !*itemKey) return;
+    if (!lvglEnsureUiRegistryStorage()) return;
     lv_obj_t *parent = lv_obj_get_parent(obj);
     if (!parent) return;
 
@@ -4918,7 +4955,7 @@ static void lvglRegisterReorderableItem(lv_obj_t *obj, const char *prefKey, cons
 static void lvglStyledButtonDeleteEvent(lv_event_t *e)
 {
     lv_obj_t *obj = lv_event_get_target(e);
-    if (!obj) return;
+    if (!obj || !lvglStyledButtons) return;
     for (size_t i = 0; i < LVGL_STYLED_BUTTON_CAPACITY; ++i) {
         if (lvglStyledButtons[i].obj == obj) lvglStyledButtons[i].obj = nullptr;
     }
@@ -4926,7 +4963,7 @@ static void lvglStyledButtonDeleteEvent(lv_event_t *e)
 
 static LvglStyledButtonEntry *lvglFindStyledButtonEntry(lv_obj_t *obj)
 {
-    if (!obj) return nullptr;
+    if (!obj || !lvglStyledButtons) return nullptr;
     for (size_t i = 0; i < LVGL_STYLED_BUTTON_CAPACITY; ++i) {
         if (lvglStyledButtons[i].obj == obj) return &lvglStyledButtons[i];
     }
@@ -4935,7 +4972,7 @@ static LvglStyledButtonEntry *lvglFindStyledButtonEntry(lv_obj_t *obj)
 
 static const LvglStyledButtonEntry *lvglFindStyledButtonEntryConst(const lv_obj_t *obj)
 {
-    if (!obj) return nullptr;
+    if (!obj || !lvglStyledButtons) return nullptr;
     for (size_t i = 0; i < LVGL_STYLED_BUTTON_CAPACITY; ++i) {
         if (lvglStyledButtons[i].obj == obj) return &lvglStyledButtons[i];
     }
@@ -5658,6 +5695,7 @@ static void lvglApplyMomentaryButtonStyle(lv_obj_t *btn, lv_obj_t *label, lv_col
 static void lvglRegisterStyledButton(lv_obj_t *btn, lv_color_t baseColor, bool compact)
 {
     if (!btn) return;
+    if (!lvglEnsureUiRegistryStorage()) return;
     LvglStyledButtonEntry *entry = lvglFindStyledButtonEntry(btn);
     if (!entry) {
         for (size_t i = 0; i < LVGL_STYLED_BUTTON_CAPACITY; ++i) {
@@ -5945,6 +5983,7 @@ void lvglApplyWifiWebServerButtonStyle()
 
 void lvglRefreshAllButtonStyles()
 {
+    if (!lvglStyledButtons) return;
     for (size_t i = 0; i < LVGL_STYLED_BUTTON_CAPACITY; ++i) {
         LvglStyledButtonEntry &entry = lvglStyledButtons[i];
         if (!entry.obj || !lv_obj_is_valid(entry.obj)) {
@@ -6987,6 +7026,7 @@ static int p2pFindPeerByPubKeyHex(const String &pubKeyHex);
 
 static int p2pFindPeerByPubKeyHex(const String &pubKeyHex)
 {
+    if (!p2pPeers) return -1;
     for (int i = 0; i < p2pPeerCount; ++i) {
         if (p2pPeers[i].pubKeyHex.equalsIgnoreCase(pubKeyHex)) return i;
     }
@@ -6995,6 +7035,7 @@ static int p2pFindPeerByPubKeyHex(const String &pubKeyHex)
 
 static int p2pFindDiscoveredByPubKeyHex(const String &pubKeyHex)
 {
+    if (!p2pDiscoveredPeers) return -1;
     for (int i = 0; i < p2pDiscoveredCount; ++i) {
         if (p2pDiscoveredPeers[i].pubKeyHex.equalsIgnoreCase(pubKeyHex)) return i;
     }
@@ -7003,7 +7044,7 @@ static int p2pFindDiscoveredByPubKeyHex(const String &pubKeyHex)
 
 static void p2pTouchPeerSeen(int idx, const IPAddress &ip, uint16_t port)
 {
-    if (idx < 0 || idx >= p2pPeerCount) return;
+    if (!p2pPeers || idx < 0 || idx >= p2pPeerCount) return;
     p2pPeers[idx].ip = ip;
     p2pPeers[idx].port = port;
     p2pPeers[idx].lastSeenMs = millis();
@@ -7044,6 +7085,7 @@ static void p2pRefreshTrustedPeerIdentity(const String &pubKeyHex, const String 
 static void p2pTouchDiscoveredSeen(const String &name, const String &pubKeyHex, const IPAddress &ip, uint16_t port)
 {
     if (pubKeyHex.isEmpty()) return;
+    if (!p2pEnsureDiscoveredStorage()) return;
     int idx = p2pFindDiscoveredByPubKeyHex(pubKeyHex);
     if (idx < 0) {
         if (p2pDiscoveredCount >= MAX_P2P_DISCOVERED) {
@@ -7064,6 +7106,7 @@ static void p2pTouchDiscoveredSeen(const String &name, const String &pubKeyHex, 
 
 void saveP2pConfig()
 {
+    if (!p2pPeers) return;
     p2pPrefs.begin("p2p", false);
     p2pPrefs.putString("pub", p2pPublicKeyHex());
     p2pPrefs.putBytes("sec", p2pSecretKey, sizeof(p2pSecretKey));
@@ -7082,6 +7125,7 @@ void saveP2pConfig()
 void loadP2pConfig()
 {
     p2pPeerCount = 0;
+    p2pDiscoveredCount = 0;
     p2pPrefs.begin("p2p", false);
     p2pDiscoveryEnabled = p2pPrefs.getBool("discover_en", true);
 
@@ -7099,6 +7143,11 @@ void loadP2pConfig()
     p2pPeerCount = p2pPrefs.getInt("peer_count", 0);
     if (p2pPeerCount < 0) p2pPeerCount = 0;
     if (p2pPeerCount > MAX_P2P_PEERS) p2pPeerCount = MAX_P2P_PEERS;
+    if (p2pPeerCount > 0 && !p2pEnsurePeerStorage()) {
+        p2pPeerCount = 0;
+        p2pPrefs.end();
+        return;
+    }
     for (int i = 0; i < p2pPeerCount; ++i) {
         p2pPeers[i].name = p2pPrefs.getString((String("peer_name_") + i).c_str(), "");
         p2pPeers[i].pubKeyHex = p2pPrefs.getString((String("peer_key_") + i).c_str(), "");
@@ -10893,6 +10942,7 @@ bool p2pAddOrUpdateTrustedPeer(const String &name, const String &pubKeyHex, cons
 {
     unsigned char testPk[P2P_PUBLIC_KEY_BYTES] = {0};
     if (name.isEmpty() || !p2pHexToBytes(pubKeyHex, testPk, sizeof(testPk))) return false;
+    if (!p2pEnsurePeerStorage()) return false;
     int idx = p2pFindPeerByPubKeyHex(pubKeyHex);
     if (idx < 0) {
         if (p2pPeerCount >= MAX_P2P_PEERS) return false;
@@ -14921,6 +14971,10 @@ void lvglInitUi()
 {
     static_assert(LV_COLOR_DEPTH == 16, "LVGL color depth must be 16 for TFT_eSPI flush path");
     lvglReady = false;
+    if (!lvglEnsureUiRegistryStorage()) {
+        Serial.println("[LVGL] registry alloc failed");
+        return;
+    }
     if (VERBOSE_SERIAL_DEBUG) {
         Serial.printf("[LVGL] cfg mem=%uB color_depth=%u free_heap=%u largest_8bit=%u\n",
                       static_cast<unsigned int>(LV_MEM_SIZE),
