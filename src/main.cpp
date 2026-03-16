@@ -384,6 +384,9 @@ static constexpr uint8_t UI_DEFERRED_SCREENSHOT_BUSY = 0x02;
 static constexpr uint8_t UI_DEFERRED_HC12_SETTLE_PENDING = 0x04;
 static constexpr uint8_t UI_DEFERRED_HC12_TARGET_ASSERTED = 0x08;
 
+static constexpr uint16_t CHAT_NOTIFY_FADE_IN_MS = 12;
+static constexpr uint16_t CHAT_NOTIFY_FADE_OUT_MS = 12;
+
 void serialLogPushLine(const char *line, bool sendWs = true);
 void executeSerialCommand(String input);
 decltype(::Serial) &serialHw = ::Serial;
@@ -18178,28 +18181,29 @@ static inline bool chatMessageBeepCanPlay()
     return !mediaIsPlaying && !mediaPaused;
 }
 
-static void chatMessageBeepStop(bool clearQueue)
+static void chatMessageBeepRampDuty(uint32_t fromDuty, uint32_t toDuty, uint16_t rampMs)
 {
-    ledcWriteTone(CHAT_NOTIFY_LEDC_CHANNEL, 0);
-    ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, 0);
-    if (chatMessageBeepPinAttached) {
-        ledcDetachPin(I2S_SPK_PIN);
-        pinMode(I2S_SPK_PIN, OUTPUT);
-        digitalWrite(I2S_SPK_PIN, LOW);
-        chatMessageBeepPinAttached = false;
-    }
-    chatMessageBeepPhase = 0;
-    chatMessageBeepDeadlineMs = 0;
-    if (clearQueue) chatMessageBeepQueue = 0;
-}
+    if (!chatMessageBeepPinAttached) return;
 
-static bool chatMessageBeepEnsurePinAttached()
-{
-    if (chatMessageBeepPinAttached) return true;
-    ledcSetup(CHAT_NOTIFY_LEDC_CHANNEL, CHAT_NOTIFY_FREQ_PRIMARY, 10);
-    ledcAttachPin(I2S_SPK_PIN, CHAT_NOTIFY_LEDC_CHANNEL);
-    chatMessageBeepPinAttached = true;
-    return true;
+    const uint8_t steps = 8;
+
+    if (rampMs == 0 || fromDuty == toDuty) {
+        ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, toDuty);
+        return;
+    }
+
+    const uint16_t stepDelay = (rampMs >= steps) ? (rampMs / steps) : 0;
+    const int32_t delta = (int32_t)toDuty - (int32_t)fromDuty;
+
+    for (uint8_t i = 1; i <= steps; ++i) {
+        uint32_t duty = fromDuty + (delta * i) / steps;
+        ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, duty);
+
+        if (stepDelay > 0) delay(stepDelay);
+    }
+
+    // guarantee exact final value
+    ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, toDuty);
 }
 
 static inline uint32_t chatMessageBeepDuty()
@@ -18211,6 +18215,40 @@ static inline uint32_t chatMessageBeepDuty()
     return static_cast<uint32_t>(constrain(mapped, 1L, 1023L));
 }
 
+static void chatMessageBeepStop(bool clearQueue)
+{
+    if (chatMessageBeepPinAttached) {
+        const uint32_t duty = chatMessageBeepDuty();
+        chatMessageBeepRampDuty(duty, 0, CHAT_NOTIFY_FADE_OUT_MS);
+        ledcWriteTone(CHAT_NOTIFY_LEDC_CHANNEL, 0);
+        ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, 0);
+
+        ledcDetachPin(I2S_SPK_PIN);
+        pinMode(I2S_SPK_PIN, OUTPUT);
+        digitalWrite(I2S_SPK_PIN, LOW);
+        chatMessageBeepPinAttached = false;
+    }
+
+    chatMessageBeepPhase = 0;
+    chatMessageBeepDeadlineMs = 0;
+    if (clearQueue) chatMessageBeepQueue = 0;
+}
+
+static bool chatMessageBeepEnsurePinAttached()
+{
+    if (chatMessageBeepPinAttached) return true;
+
+    pinMode(I2S_SPK_PIN, OUTPUT);
+    digitalWrite(I2S_SPK_PIN, LOW);
+
+    ledcSetup(CHAT_NOTIFY_LEDC_CHANNEL, CHAT_NOTIFY_FREQ_PRIMARY, 10);
+    ledcAttachPin(I2S_SPK_PIN, CHAT_NOTIFY_LEDC_CHANNEL);
+    ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, 0);
+
+    chatMessageBeepPinAttached = true;
+    return true;
+}
+
 static void chatMessageBeepStartStep(uint8_t stepIndex)
 {
     const ChatBeepPattern pattern = chatMessageBeepPattern(messageBeepTone);
@@ -18220,15 +18258,22 @@ static void chatMessageBeepStartStep(uint8_t stepIndex)
         chatMessageBeepDeadlineMs = millis() + CHAT_NOTIFY_REPEAT_GAP_MS;
         return;
     }
+
     if (!chatMessageBeepEnsurePinAttached()) return;
+
     const ChatBeepStep &step = pattern.steps[stepIndex];
     if (step.freq == 0) {
+        const uint32_t duty = chatMessageBeepDuty();
+        chatMessageBeepRampDuty(duty, 0, CHAT_NOTIFY_FADE_OUT_MS);
         ledcWriteTone(CHAT_NOTIFY_LEDC_CHANNEL, 0);
         ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, 0);
     } else {
+        ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, 0);
+        delayMicroseconds(150);
         ledcWriteTone(CHAT_NOTIFY_LEDC_CHANNEL, step.freq);
-        ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, chatMessageBeepDuty());
+        chatMessageBeepRampDuty(0, chatMessageBeepDuty(), CHAT_NOTIFY_FADE_IN_MS);
     }
+
     chatMessageBeepPhase = static_cast<uint8_t>(stepIndex + 1U);
     chatMessageBeepDeadlineMs = millis() + step.durationMs;
 }
