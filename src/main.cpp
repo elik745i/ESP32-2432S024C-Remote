@@ -18224,8 +18224,10 @@ static void chatMessageBeepStop(bool clearQueue)
         ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, 0);
 
         ledcDetachPin(I2S_SPK_PIN);
-        pinMode(I2S_SPK_PIN, OUTPUT);
-        digitalWrite(I2S_SPK_PIN, LOW);
+
+        pinMode(I2S_SPK_PIN, INPUT);
+        gpio_set_pull_mode((gpio_num_t)I2S_SPK_PIN, GPIO_FLOATING);
+
         chatMessageBeepPinAttached = false;
     }
 
@@ -18238,6 +18240,7 @@ static bool chatMessageBeepEnsurePinAttached()
 {
     if (chatMessageBeepPinAttached) return true;
 
+    gpio_set_pull_mode((gpio_num_t)I2S_SPK_PIN, GPIO_FLOATING);
     pinMode(I2S_SPK_PIN, OUTPUT);
     digitalWrite(I2S_SPK_PIN, LOW);
 
@@ -23367,8 +23370,13 @@ void setup()
 
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step speaker pin quiet");
-    pinMode(I2S_SPK_PIN, OUTPUT);
-    digitalWrite(I2S_SPK_PIN, LOW);
+    //pinMode(I2S_SPK_PIN, OUTPUT);
+    //digitalWrite(I2S_SPK_PIN, LOW);
+    ledcDetachPin(I2S_SPK_PIN);
+    pinMode(I2S_SPK_PIN, INPUT);
+    gpio_set_pull_mode((gpio_num_t)I2S_SPK_PIN, GPIO_FLOATING);
+
+    gpio_set_drive_capability((gpio_num_t)I2S_SPK_PIN, GPIO_DRIVE_CAP_0);
     if (VERBOSE_SERIAL_DEBUG) {
         Serial.printf("Audio output is disabled on this ESP32-S3 build; GPIO %d is reserved until external I2S pinout is wired in firmware\n", I2S_SPK_PIN);
     }
