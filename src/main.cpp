@@ -690,6 +690,11 @@ void lvglApplyAirplaneButtonStyle();
 void lvglApplyApModeButtonStyle();
 void lvglApplyChatDiscoveryButtonStyle();
 void lvglApplyWifiWebServerButtonStyle();
+void lvglFactoryResetEvent(lv_event_t *e);
+void lvglFactoryResetConfirmEvent(lv_event_t *e);
+static void factoryResetWipeStoredData();
+static void factoryResetClearNamespace(Preferences &prefs, const char *ns);
+static void factoryResetWipeSdData();
 static void lvglAttachMenuButtonImage(lv_obj_t *btn, const lv_img_dsc_t *imgSrc, lv_coord_t xOffset, lv_coord_t labelShiftX);
 static void lvglSetButtonImageZoom(lv_obj_t *btn, uint16_t zoom, lv_coord_t xOffset = 8, lv_coord_t labelShiftX = 10);
 static void lvglRefreshPrimaryMenuButtonIcons();
@@ -997,6 +1002,7 @@ static lv_obj_t *lvglConfigMqttControlsBtn = nullptr;
 static lv_obj_t *lvglConfigScreenshotBtn = nullptr;
 static lv_obj_t *lvglConfigLanguageBtn = nullptr;
 static lv_obj_t *lvglConfigOtaBtn = nullptr;
+static lv_obj_t *lvglConfigFactoryResetBtn = nullptr;
 static lv_obj_t *lvglConfigWrap = nullptr;
 static lv_obj_t *lvglStyleScreensaverSw = nullptr;
 static lv_obj_t *lvglStyleMenuIconsSw = nullptr;
@@ -1491,6 +1497,12 @@ enum UiTextId : uint8_t {
     TXT_HC12_INFO,
     TXT_CHECKERS,
     TXT_SNAKE_3D,
+    TXT_FACTORY_RESET,
+    TXT_FACTORY_RESET_TITLE,
+    TXT_FACTORY_RESET_BODY,
+    TXT_RESET,
+    TXT_CANCEL,
+    TXT_FACTORY_RESET_DONE,    
     TXT_SCREEN
 };
 
@@ -5335,6 +5347,12 @@ static const char *tr(UiTextId id)
                 case TXT_HC12_INFO: return "Инфо HC12";
                 case TXT_CHECKERS: return "Шашки";
                 case TXT_SNAKE_3D: return "Змейка 3D";
+                case TXT_FACTORY_RESET: return "Сброс";
+                case TXT_FACTORY_RESET_TITLE: return "Сброс до заводских";
+                case TXT_FACTORY_RESET_BODY: return "Удалить сохранённые настройки, Wi-Fi, радио, MQTT, калибровку батареи, данные чата и перезагрузить?";
+                case TXT_RESET: return "Сбросить";
+                case TXT_CANCEL: return "Отмена";
+                case TXT_FACTORY_RESET_DONE: return "Сброс выполнен. Перезагрузка...";                
                 case TXT_SCREEN:
                 default: return "Экран";
             }
@@ -5369,6 +5387,12 @@ static const char *tr(UiTextId id)
                 case TXT_HC12_INFO: return "HC12信息";
                 case TXT_CHECKERS: return "跳棋";
                 case TXT_SNAKE_3D: return "3D贪吃蛇";
+                case TXT_FACTORY_RESET: return "恢复出厂";
+                case TXT_FACTORY_RESET_TITLE: return "恢复出厂设置";
+                case TXT_FACTORY_RESET_BODY: return "删除已保存的设置、Wi-Fi、无线电、MQTT、电池校准、聊天数据并重启？";
+                case TXT_RESET: return "重置";
+                case TXT_CANCEL: return "取消";
+                case TXT_FACTORY_RESET_DONE: return "恢复出厂完成，正在重启...";                
                 case TXT_SCREEN:
                 default: return "界面";
             }
@@ -5403,6 +5427,12 @@ static const char *tr(UiTextId id)
                 case TXT_HC12_INFO: return "Infos Radio";
                 case TXT_CHECKERS: return "Dames";
                 case TXT_SNAKE_3D: return "Snake 3D";
+                case TXT_FACTORY_RESET: return "Réinit. usine";
+                case TXT_FACTORY_RESET_TITLE: return "Réinitialisation usine";
+                case TXT_FACTORY_RESET_BODY: return "Effacer les réglages enregistrés, le Wi-Fi, la radio, MQTT, la calibration batterie, les données de chat, puis redémarrer ?";
+                case TXT_RESET: return "Réinitialiser";
+                case TXT_CANCEL: return "Annuler";
+                case TXT_FACTORY_RESET_DONE: return "Réinitialisation terminée. Redémarrage...";                
                 case TXT_SCREEN:
                 default: return "Ecran";
             }
@@ -5437,6 +5467,12 @@ static const char *tr(UiTextId id)
                 case TXT_HC12_INFO: return "Radyo Bilgi";
                 case TXT_CHECKERS: return "Dama";
                 case TXT_SNAKE_3D: return "Yilan 3D";
+                case TXT_FACTORY_RESET: return "Fabrika Ayarı";
+                case TXT_FACTORY_RESET_TITLE: return "Fabrika Ayarlarına Dön";
+                case TXT_FACTORY_RESET_BODY: return "Kaydedilmiş ayarlar, Wi-Fi, radyo, MQTT, pil kalibrasyonu ve sohbet verileri silinip cihaz yeniden başlatılsın mı?";
+                case TXT_RESET: return "Sıfırla";
+                case TXT_CANCEL: return "İptal";
+                case TXT_FACTORY_RESET_DONE: return "Fabrika ayarı tamamlandı. Yeniden başlatılıyor...";                
                 case TXT_SCREEN:
                 default: return "Ekran";
             }
@@ -5471,6 +5507,12 @@ static const char *tr(UiTextId id)
                 case TXT_HC12_INFO: return "Info Radio";
                 case TXT_CHECKERS: return "Dama";
                 case TXT_SNAKE_3D: return "Snake 3D";
+                case TXT_FACTORY_RESET: return "Reset fabbrica";
+                case TXT_FACTORY_RESET_TITLE: return "Ripristino di fabbrica";
+                case TXT_FACTORY_RESET_BODY: return "Cancellare impostazioni salvate, Wi-Fi, radio, MQTT, calibrazione batteria, dati chat e riavviare?";
+                case TXT_RESET: return "Ripristina";
+                case TXT_CANCEL: return "Annulla";
+                case TXT_FACTORY_RESET_DONE: return "Ripristino completato. Riavvio...";                
                 case TXT_SCREEN:
                 default: return "Schermo";
             }
@@ -5505,6 +5547,12 @@ static const char *tr(UiTextId id)
                 case TXT_HC12_INFO: return "Radio Info";
                 case TXT_CHECKERS: return "Dame";
                 case TXT_SNAKE_3D: return "Snake 3D";
+                case TXT_FACTORY_RESET: return "Werkreset";
+                case TXT_FACTORY_RESET_TITLE: return "Auf Werkseinstellungen";
+                case TXT_FACTORY_RESET_BODY: return "Gespeicherte Einstellungen, WLAN, Funk, MQTT, Batteriekalibrierung und Chatdaten löschen und neu starten?";
+                case TXT_RESET: return "Zurücksetzen";
+                case TXT_CANCEL: return "Abbrechen";
+                case TXT_FACTORY_RESET_DONE: return "Werkreset abgeschlossen. Neustart...";                
                 case TXT_SCREEN:
                 default: return "Bildschirm";
             }
@@ -5539,6 +5587,12 @@ static const char *tr(UiTextId id)
                 case TXT_HC12_INFO: return "HC12情報";
                 case TXT_CHECKERS: return "チェッカー";
                 case TXT_SNAKE_3D: return "スネーク3D";
+                case TXT_FACTORY_RESET: return "工場出荷時";
+                case TXT_FACTORY_RESET_TITLE: return "工場出荷時リセット";
+                case TXT_FACTORY_RESET_BODY: return "保存された設定、Wi-Fi、無線、MQTT、バッテリー校正、チャットデータを消去して再起動しますか？";
+                case TXT_RESET: return "リセット";
+                case TXT_CANCEL: return "キャンセル";
+                case TXT_FACTORY_RESET_DONE: return "初期化完了。再起動します...";                
                 case TXT_SCREEN:
                 default: return "画面";
             }
@@ -5573,6 +5627,12 @@ static const char *tr(UiTextId id)
                 case TXT_HC12_INFO: return "HC12 정보";
                 case TXT_CHECKERS: return "체커";
                 case TXT_SNAKE_3D: return "스네이크 3D";
+                case TXT_FACTORY_RESET: return "공장 초기화";
+                case TXT_FACTORY_RESET_TITLE: return "공장 초기화";
+                case TXT_FACTORY_RESET_BODY: return "저장된 설정, Wi-Fi, 라디오, MQTT, 배터리 보정, 채팅 데이터를 지우고 재부팅할까요?";
+                case TXT_RESET: return "초기화";
+                case TXT_CANCEL: return "취소";
+                case TXT_FACTORY_RESET_DONE: return "공장 초기화 완료. 재부팅 중...";                
                 case TXT_SCREEN:
                 default: return "화면";
             }
@@ -5608,6 +5668,12 @@ static const char *tr(UiTextId id)
                 case TXT_HC12_INFO: return "Radio Info";
                 case TXT_CHECKERS: return "Checkers";
                 case TXT_SNAKE_3D: return "Snake 3D";
+                case TXT_FACTORY_RESET: return "Factory Reset";
+                case TXT_FACTORY_RESET_TITLE: return "Factory Reset";
+                case TXT_FACTORY_RESET_BODY: return "Erase saved settings, WiFi, radio, MQTT, battery calibration, chat data, and reboot?";
+                case TXT_RESET: return "Reset";
+                case TXT_CANCEL: return "Cancel";
+                case TXT_FACTORY_RESET_DONE: return "Factory reset complete. Rebooting...";                
                 case TXT_SCREEN:
                 default: return "Screen";
             }
@@ -5686,6 +5752,14 @@ static void lvglRefreshPrimaryMenuButtonIcons()
     lvglSetMenuButtonIconMode(lvglConfigScreenshotBtn, tr(TXT_SCREENSHOT), LV_SYMBOL_IMAGE, &img_screenshot_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(lvglConfigLanguageBtn, tr(TXT_LANGUAGE), LV_SYMBOL_EDIT, &img_styles_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(lvglConfigOtaBtn, tr(TXT_OTA_UPDATES), LV_SYMBOL_UPLOAD, &img_ota_small_icon, 8, 12);
+    lvglSetMenuButtonIconMode(
+        lvglConfigFactoryResetBtn,
+        tr(TXT_FACTORY_RESET),
+        LV_SYMBOL_WARNING,
+        &img_power_small_icon,
+        8,
+        12
+    );
     lvglRefreshBatteryTrainButtonIcons();
 }
 
@@ -7942,6 +8016,13 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglConfigScreenshotBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_SCREENSHOT), lv_color_hex(0x6B5B2A), lvglScreenshotEvent, nullptr);
             lvglConfigLanguageBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_LANGUAGE), lv_color_hex(0x5A6FA8), lvglOpenLanguageScreenEvent, nullptr);
             lvglConfigOtaBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_OTA_UPDATES), lv_color_hex(0x2E6F95), lvglOpenOtaScreenEvent, nullptr);
+            lvglConfigFactoryResetBtn = lvglCreateMenuButton(
+                lvglConfigWrap,
+                tr(TXT_FACTORY_RESET),
+                lv_color_hex(0x8E2D2D),
+                lvglFactoryResetEvent,
+                nullptr
+            );
             lvglRefreshPrimaryMenuButtonIcons();
 
             lv_obj_t *nameWrap = lv_obj_create(lvglConfigWrap);
@@ -8148,6 +8229,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglRegisterReorderableItem(lvglConfigScreenshotBtn, "ord_cfg", "shot");
             lvglRegisterReorderableItem(lvglConfigLanguageBtn, "ord_cfg", "lang");
             lvglRegisterReorderableItem(lvglConfigOtaBtn, "ord_cfg", "ota");
+            lvglRegisterReorderableItem(lvglConfigFactoryResetBtn, "ord_cfg", "freset");            
             lvglRegisterReorderableItem(nameWrap, "ord_cfg", "name");
             lvglRegisterReorderableItem(brightWrap, "ord_cfg", "bright");
             lvglRegisterReorderableItem(volWrap, "ord_cfg", "vol");
@@ -9766,6 +9848,13 @@ void lvglChatDiscoveryToggleEvent(lv_event_t *e)
     lvglSyncStatusLine();
 }
 
+void saveApModePref(bool enabled)
+{
+    wifiPrefs.begin("wifi", false);
+    wifiPrefs.putBool("ap_mode", enabled);
+    wifiPrefs.end();
+}
+
 void lvglApModeEvent(lv_event_t *e)
 {
     (void)e;
@@ -9776,6 +9865,7 @@ void lvglApModeEvent(lv_event_t *e)
     }
     if (wifiSessionApMode) {
         wifiSessionApMode = false;
+        saveApModePref(false);
         disableApWhenStaConnected("ui_ap_mode_off");
         if (wifiHasStaTarget()) {
             beginStaConnectAttempt("ui_ap_mode_off");
@@ -14531,6 +14621,120 @@ void lvglBatteryTrainResetPromptEvent(lv_event_t *e)
     if (msgbox) lv_msgbox_close(msgbox);
 }
 
+void lvglFactoryResetEvent(lv_event_t *e)
+{
+    (void)e;
+
+    static const char *btns[3];
+    btns[0] = tr(TXT_CANCEL);
+    btns[1] = tr(TXT_RESET);
+    btns[2] = "";
+
+    lv_obj_t *msgbox = lv_msgbox_create(
+        nullptr,
+        tr(TXT_FACTORY_RESET_TITLE),
+        tr(TXT_FACTORY_RESET_BODY),
+        btns,
+        false
+    );
+    if (!msgbox) return;
+
+    lvglApplyMsgboxModalStyle(msgbox);
+    lv_obj_center(msgbox);
+    lv_obj_set_width(msgbox, min<int16_t>(DISPLAY_WIDTH - 24, 280));
+    lv_obj_add_event_cb(msgbox, lvglFactoryResetConfirmEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+}
+
+void lvglFactoryResetConfirmEvent(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
+
+    lv_obj_t *msgbox = lv_event_get_current_target(e);
+    const char *btn = msgbox ? lv_msgbox_get_active_btn_text(msgbox) : nullptr;
+
+    if (btn && strcmp(btn, tr(TXT_RESET)) == 0) {
+        if (msgbox) lv_msgbox_close(msgbox);
+
+        uiStatusLine = tr(TXT_FACTORY_RESET_DONE);
+        lvglSyncStatusLine();
+
+        factoryResetWipeStoredData();
+
+        rebootRequested = true;
+        rebootRequestedAtMs = millis();
+        return;
+    }
+
+    if (msgbox) lv_msgbox_close(msgbox);
+}
+
+static void factoryResetClearNamespace(Preferences &prefs, const char *ns)
+{
+    if (!ns || !*ns) return;
+    if (!prefs.begin(ns, false)) return;
+    prefs.clear();
+    prefs.end();
+}
+
+bool deletePathRecursive(const String &path, bool keepRoot = false)
+{
+    File f = SD.open(path);
+    if (!f) return false;
+    bool isDir = f.isDirectory();
+    f.close();
+
+    if (!isDir) return SD.remove(path);
+
+    File dir = SD.open(path);
+    if (!dir) return false;
+    File entry = dir.openNextFile();
+    while (entry) {
+        String child = entry.name();
+        if (!child.startsWith("/")) child = (path == "/") ? ("/" + child) : (path + "/" + child);
+        entry.close();
+        deletePathRecursive(child, false);
+        entry = dir.openNextFile();
+    }
+    dir.close();
+    if (keepRoot || path == "/") return true;
+    return SD.rmdir(path);
+}
+
+static void factoryResetWipeSdData()
+{
+    if (!sdEnsureMounted()) return;
+
+    if (SD.exists(CHAT_LOG_DIR)) {
+        deletePathRecursive(CHAT_LOG_DIR, false);
+    }
+
+    if (SD.exists(CHAT_OUTBOX_PATH)) {
+        SD.remove(CHAT_OUTBOX_PATH);
+    }
+
+    if (SD.exists("/recycle")) {
+        deletePathRecursive("/recycle", false);
+    }
+}
+
+static void factoryResetWipeStoredData()
+{
+    stopDnsForAp();
+    stopWebServerRuntime();
+
+    WiFi.disconnect(true, true);
+    WiFi.mode(WIFI_OFF);
+
+    factoryResetClearNamespace(wifiPrefs, "wifi");
+    factoryResetClearNamespace(uiPrefs, "ui");
+    factoryResetClearNamespace(batteryPrefs, "battery");
+    factoryResetClearNamespace(gamePrefs, "games");
+    factoryResetClearNamespace(mqttPrefs, "mqtt");
+    factoryResetClearNamespace(p2pPrefs, "p2p");
+
+    factoryResetWipeSdData();
+}
+
 void lvglBatteryTrainResetEvent(lv_event_t *e)
 {
     (void)e;
@@ -18906,6 +19110,7 @@ void loadSavedStaCreds()
     savedStaPass = wifiPrefs.getString("sta_pass", "");
     savedApSsid = wifiPrefs.getString("ap_ssid", AP_SSID);
     savedApPass = wifiPrefs.getString("ap_pass", AP_PASS);
+    wifiSessionApMode = wifiPrefs.getBool("ap_mode", false);
     wifiPrefs.end();
     if (normalizeSavedApCreds()) {
         wifiPrefs.begin("wifi", false);
@@ -19530,6 +19735,7 @@ void applyAirplaneMode(bool enabled, const char *reason)
         apModeActive = false;
         WiFi.disconnect(true, false);
         wifiRuntimeManaged = false;
+        stopWebServerRuntime();
         WiFi.mode(WIFI_OFF);
         stopBluetoothRadio();
         bootStaConnectInProgress = false;
@@ -19843,6 +20049,7 @@ void ensureApOnline(const char *reason)
 void forceSessionApMode(const char *reason)
 {
     wifiSessionApMode = true;
+    saveApModePref(true);
     wifiForgetPendingUi = false;
     pendingSaveCreds = false;
     pendingSaveSsid = "";
@@ -20440,30 +20647,6 @@ void listSdDirEntries(const String &path, JsonArray out)
         entry = dir.openNextFile();
     }
     dir.close();
-}
-
-bool deletePathRecursive(const String &path, bool keepRoot = false)
-{
-    File f = SD.open(path);
-    if (!f) return false;
-    bool isDir = f.isDirectory();
-    f.close();
-
-    if (!isDir) return SD.remove(path);
-
-    File dir = SD.open(path);
-    if (!dir) return false;
-    File entry = dir.openNextFile();
-    while (entry) {
-        String child = entry.name();
-        if (!child.startsWith("/")) child = (path == "/") ? ("/" + child) : (path + "/" + child);
-        entry.close();
-        deletePathRecursive(child, false);
-        entry = dir.openNextFile();
-    }
-    dir.close();
-    if (keepRoot || path == "/") return true;
-    return SD.rmdir(path);
 }
 
 String normalizeSdRoutePath(const String &rawPath, bool allowEmptyRoot)
@@ -23162,6 +23345,7 @@ void networkSuspendForAudio()
     apModeActive = false;
     stopDnsForAp();
     WiFi.disconnect(true, false);
+    stopWebServerRuntime();
     WiFi.mode(WIFI_OFF);
     delay(40);
     networkSuspendedForAudio = true;
@@ -23181,6 +23365,7 @@ bool networkResumeAfterAudio()
     if (uiScreen == UI_MEDIA) return false;
     if (airplaneModeEnabled) return false;
 
+    stopWebServerRuntime();
     WiFi.mode(WIFI_OFF);
     delay(30);
     WiFi.mode(WIFI_STA);
@@ -23206,20 +23391,29 @@ void setupWifiAndServer()
 {
     if (airplaneModeEnabled) {
         wifiRuntimeManaged = false;
+        stopWebServerRuntime();
         WiFi.mode(WIFI_OFF);
         apModeActive = false;
-        stopWebServerRuntime();
         return;
     }
+
     wifiRuntimeManaged = true;
     registerWifiEvents();
     WiFi.persistent(false);
     WiFi.setAutoReconnect(false);
     WiFi.setSleep(false);
+    stopDnsForAp();
+
+    /* AP-mode boot preference */
+    if (wifiSessionApMode) {
+        Serial.println("Booting in saved AP mode");
+        ensureApOnline("boot_pref");
+        return;
+    }
+
+    /* normal STA boot path */
     WiFi.mode(WIFI_STA);
     apModeActive = false;
-    wifiSessionApMode = false;
-    stopDnsForAp();
     ensureWebServerRuntime();
 
     loadSavedStaCreds();
