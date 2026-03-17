@@ -377,6 +377,7 @@ static constexpr int8_t E220_POWER_DBM[] = {22, 17, 13, 10};
 static constexpr char HC12_RADIO_FRAME_PREFIX[] = "@RMT|";
 static constexpr size_t HC12_RADIO_MAX_LINE = 1216;
 static constexpr int MAX_HC12_DISCOVERED = 8;
+static constexpr int MAX_MQTT_DISCOVERED = 8;
 static constexpr unsigned long HC12_DISCOVERY_INTERVAL_MS = 8000UL;
 static constexpr unsigned long HC12_DISCOVERY_STALE_MS = 45000UL;
 static constexpr uint8_t UI_DEFERRED_SCREENSHOT_PENDING = 0x01;
@@ -669,6 +670,7 @@ void mqttPublishDiscovery();
 void mqttTrimBufferForIdle();
 bool mqttPublishChatMessage(const String &text);
 bool mqttPublishChatMessageWithId(const String &peerKey, const String &text, const String &messageId);
+void mqttPublishPeerPresence();
 bool mqttPublishMessageDelete(const String &peerKey, const String &messageId);
 bool mqttPublishConversationDelete();
 bool mqttPublishChatAck(const String &peerKey, const String &messageId);
@@ -748,6 +750,9 @@ bool hc12SendChatMessageWithId(const String &peerKey, const String &text, const 
 bool hc12SendMessageDelete(const String &peerKey, const String &messageId);
 bool hc12SendConversationDelete(const String &peerKey);
 bool hc12SendChatAck(const String &peerKey, const String &messageId);
+static bool infoRefreshPending = false;
+static bool radioInfoFetchPending = false;
+static unsigned long radioInfoFetchDueMs = 0;
 static void lvglAirplaneButtonDrawEvent(lv_event_t *e);
 String p2pPublicKeyHex();
 static int p2pFindPeerByPubKeyHex(const String &pubKeyHex);
@@ -1970,6 +1975,21 @@ static int e220ActiveM1Pin()
     return e220SwapModePins ? E220_M0_PIN_DEFAULT : E220_M1_PIN_DEFAULT;
 }
 
+static void hc12PruneDiscoveredPeers()
+{
+    const unsigned long now = millis();
+    for (int i = 0; i < hc12DiscoveredCount; ) {
+        if (static_cast<unsigned long>(now - hc12DiscoveredPeers[i].lastSeenMs) > HC12_DISCOVERY_STALE_MS) {
+            for (int j = i + 1; j < hc12DiscoveredCount; ++j) {
+                hc12DiscoveredPeers[j - 1] = hc12DiscoveredPeers[j];
+            }
+            hc12DiscoveredCount--;
+        } else {
+            ++i;
+        }
+    }
+}
+
 static int hc12FindDiscoveredByPubKeyHex(const String &pubKeyHex)
 {
     if (!hc12DiscoveredPeers) return -1;
@@ -2386,10 +2406,12 @@ String mqttNodeId;
 String mqttDeviceName;
 String mqttActionTopic;
 String mqttChatInboxTopic;
+String mqttChatPresenceTopic;
 String mqttStatusLine = "Disabled";
 bool mqttDiscoveryPublished = false;
 unsigned long mqttLastReconnectMs = 0;
 static constexpr unsigned long MQTT_RECONNECT_MS = 5000;
+static constexpr unsigned long MQTT_DISCOVERY_STALE_MS = 60000UL;
 bool mqttConnectRequested = false;
 static constexpr int MQTT_MAX_BUTTONS = 12;
 static constexpr const char *MQTT_CHAT_NAMESPACE = "global";
@@ -3005,6 +3027,60 @@ setInterval(refreshTelemetry, 2500);
 </html>
 )rawliteral";
 
+
+struct MqttDiscoveredPeer {
+    String name;
+    String pubKeyHex;
+    unsigned long lastSeenMs = 0;
+};
+
+static MqttDiscoveredPeer mqttDiscoveredPeers[MAX_MQTT_DISCOVERED];
+static int mqttDiscoveredCount = 0;
+
+static int mqttFindDiscoveredByPubKeyHex(const String &pubKeyHex)
+{
+    for (int i = 0; i < mqttDiscoveredCount; ++i) {
+        if (mqttDiscoveredPeers[i].pubKeyHex.equalsIgnoreCase(pubKeyHex)) return i;
+    }
+    return -1;
+}
+
+static void mqttTouchDiscoveredPeer(const String &name, const String &pubKeyHex)
+{
+    if (pubKeyHex.isEmpty()) return;
+
+    int idx = mqttFindDiscoveredByPubKeyHex(pubKeyHex);
+    if (idx < 0) {
+        if (mqttDiscoveredCount >= MAX_MQTT_DISCOVERED) {
+            idx = 0;
+            for (int i = 1; i < mqttDiscoveredCount; ++i) {
+                if (mqttDiscoveredPeers[i].lastSeenMs < mqttDiscoveredPeers[idx].lastSeenMs) idx = i;
+            }
+        } else {
+            idx = mqttDiscoveredCount++;
+        }
+    }
+
+    mqttDiscoveredPeers[idx].name = name;
+    mqttDiscoveredPeers[idx].pubKeyHex = pubKeyHex;
+    mqttDiscoveredPeers[idx].lastSeenMs = millis();
+}
+
+static void mqttPruneDiscoveredPeers()
+{
+    const unsigned long now = millis();
+    for (int i = 0; i < mqttDiscoveredCount; ) {
+        if (static_cast<unsigned long>(now - mqttDiscoveredPeers[i].lastSeenMs) > MQTT_DISCOVERY_STALE_MS) {
+            for (int j = i + 1; j < mqttDiscoveredCount; ++j) {
+                mqttDiscoveredPeers[j - 1] = mqttDiscoveredPeers[j];
+            }
+            mqttDiscoveredCount--;
+        } else {
+            ++i;
+        }
+    }
+}
+
 bool touchReadBytes(uint8_t addr, const uint8_t *prefix, size_t prefixLen, uint8_t *buf, uint8_t len)
 {
     Wire.beginTransmission(addr);
@@ -3387,8 +3463,10 @@ static bool lvglGetSwipeBackPreviewTarget(UiScreen current, UiScreen &target)
 
 static void lvglSetObjXAnim(void *obj, int32_t v)
 {
-    if (!obj) return;
-    lv_obj_set_x(static_cast<lv_obj_t *>(obj), static_cast<lv_coord_t>(v));
+    lv_obj_t *o = static_cast<lv_obj_t *>(obj);
+    if (!o) return;
+    if (!lv_obj_is_valid(o)) return;
+    lv_obj_set_x(o, static_cast<lv_coord_t>(v));
 }
 
 static uint16_t lvglSwipeBackAnimDuration(lv_coord_t fromX, lv_coord_t toX)
@@ -3401,8 +3479,12 @@ static uint16_t lvglSwipeBackAnimDuration(lv_coord_t fromX, lv_coord_t toX)
 
 static void lvglReleaseSwipeBackPreview()
 {
-    if (lvglSwipePreviewImg && lv_obj_is_valid(lvglSwipePreviewImg)) lv_obj_del(lvglSwipePreviewImg);
+    if (lvglSwipePreviewImg && lv_obj_is_valid(lvglSwipePreviewImg)) {
+        lv_anim_del(lvglSwipePreviewImg, nullptr);   // delete any anim on this object
+        lv_obj_del(lvglSwipePreviewImg);
+    }
     lvglSwipePreviewImg = nullptr;
+
     if (lvglSwipePreviewSnapshot) lv_snapshot_free(lvglSwipePreviewSnapshot);
     lvglSwipePreviewSnapshot = nullptr;
     lvglSwipePreviewUsesSnapshot = false;
@@ -3497,7 +3579,7 @@ static bool lvglEnsureSwipeBackPreviewMounted()
 static void lvglResetSwipeBackVisualState(bool resetScreenX = true)
 {
     if (lvglSwipeVisualScreen && lv_obj_is_valid(lvglSwipeVisualScreen)) {
-        lv_anim_del(lvglSwipeVisualScreen, lvglSetObjXAnim);
+        lv_anim_del(lvglSwipeVisualScreen, nullptr);
         if (resetScreenX) lv_obj_set_x(lvglSwipeVisualScreen, 0);
     }
     if (lvglSwipePreviewImg && lv_obj_is_valid(lvglSwipePreviewImg)) {
@@ -3533,11 +3615,17 @@ static void lvglSwipeBackVisualAnimReady(lv_anim_t *a)
 {
     lv_obj_t *screen = a ? static_cast<lv_obj_t *>(a->var) : nullptr;
     const bool navigateBack = a && lv_anim_get_user_data(a) != nullptr;
-    if (screen && lv_obj_is_valid(screen)) lv_obj_set_x(screen, 0);
+
+    if (screen && lv_obj_is_valid(screen)) {
+        lv_anim_del(screen, nullptr);
+        lv_obj_set_x(screen, 0);
+    }
+
     lvglSwipeVisualScreen = nullptr;
     lvglSwipeVisualOffsetX = 0;
     lvglSwipeVisualActive = false;
     lvglSwipeVisualAnimating = false;
+
     if (navigateBack) lvglNavigateBackBySwipe(LV_SCR_LOAD_ANIM_NONE);
 }
 
@@ -5711,6 +5799,7 @@ static void lvglSetMenuButtonIconMode(lv_obj_t *btn,
     while (lv_obj_get_child_cnt(btn) > 1) {
         lv_obj_t *child = lv_obj_get_child(btn, lv_obj_get_child_cnt(btn) - 1);
         if (!child) break;
+        lv_anim_del(child, nullptr);
         lv_obj_del(child);
     }
 
@@ -7495,6 +7584,43 @@ inline void lvglLoadScreen(lv_obj_t *target, lv_scr_load_anim_t anim)
     }
 }
 
+static void serviceInfoRefresh()
+{
+    if (!infoRefreshPending) return;
+    if (uiScreen != UI_INFO) {
+        infoRefreshPending = false;
+        return;
+    }
+
+    infoRefreshPending = false;
+    hc12RefreshInfoSnapshot();
+    lvglRefreshInfoPanel();
+}
+
+static void serviceDeferredRadioInfoFetch()
+{
+    if (!radioInfoFetchPending) return;
+    if (static_cast<unsigned long>(millis() - radioInfoFetchDueMs) < 0UL) return;
+
+    if (uiScreen != UI_INFO && uiScreen != UI_CONFIG_HC12_INFO) {
+        radioInfoFetchPending = false;
+        return;
+    }
+
+    radioInfoFetchPending = false;
+
+    if (uiScreen == UI_INFO) {
+        hc12RefreshInfoSnapshot();
+        lvglRefreshInfoPanel(false);
+        return;
+    }
+
+    if (uiScreen == UI_CONFIG_HC12_INFO) {
+        lvglRefreshHc12InfoUi();
+        return;
+    }
+}
+
 static bool uiScreenSupportsSwipeBack(UiScreen screen)
 {
     switch (screen) {
@@ -7766,12 +7892,17 @@ void lvglEnsureScreenBuilt(UiScreen screen)
         }
         case UI_CHAT_PEERS: {
             lvglScrChatPeers = lvglCreateScreenBase("Chat Peers", false);
+            static constexpr int16_t CHAT_PEERS_TOP_H = 96;
+
             lv_obj_t *peerTop = lv_obj_create(lvglScrChatPeers);
-            lv_obj_set_size(peerTop, lv_pct(100), 74);
+            lv_obj_set_size(peerTop, lv_pct(100), CHAT_PEERS_TOP_H);
             lv_obj_align(peerTop, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
             lv_obj_set_style_bg_color(peerTop, lv_color_hex(0x16212C), 0);
             lv_obj_set_style_border_width(peerTop, 0, 0);
-            lv_obj_set_style_pad_all(peerTop, 8, 0);
+            lv_obj_set_style_pad_left(peerTop, 8, 0);
+            lv_obj_set_style_pad_right(peerTop, 8, 0);
+            lv_obj_set_style_pad_top(peerTop, 6, 0);
+            lv_obj_set_style_pad_bottom(peerTop, 6, 0);
             lv_obj_set_style_pad_row(peerTop, 6, 0);
             lv_obj_set_flex_flow(peerTop, LV_FLEX_FLOW_COLUMN);
             lv_obj_clear_flag(peerTop, LV_OBJ_FLAG_SCROLLABLE);
@@ -7784,15 +7915,24 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_style_pad_column(peerOps, 6, 0);
             lv_obj_set_flex_flow(peerOps, LV_FLEX_FLOW_ROW);
             lv_obj_clear_flag(peerOps, LV_OBJ_FLAG_SCROLLABLE);
-            lvglChatPeerScanBtn = makeSmallBtn(peerOps, lvglSymbolText(LV_SYMBOL_REFRESH, "Scan").c_str(), 74, 26, lv_color_hex(0x2F6D86), lvglChatPeerActionEvent, reinterpret_cast<void *>(static_cast<intptr_t>(0)));
+
+            lvglChatPeerScanBtn = makeSmallBtn(
+                peerOps,
+                lvglSymbolText(LV_SYMBOL_REFRESH, "Scan").c_str(),
+                74, 26,
+                lv_color_hex(0x2F6D86),
+                lvglChatPeerActionEvent,
+                reinterpret_cast<void *>(static_cast<intptr_t>(0))
+            );
 
             lvglChatPeerIdentityLabel = lv_label_create(peerTop);
             lv_obj_set_width(lvglChatPeerIdentityLabel, lv_pct(100));
             lv_label_set_long_mode(lvglChatPeerIdentityLabel, LV_LABEL_LONG_WRAP);
             lv_obj_set_style_text_color(lvglChatPeerIdentityLabel, lv_color_hex(0xC8D3DD), 0);
+            lv_obj_set_style_text_line_space(lvglChatPeerIdentityLabel, 2, 0);
 
             lvglChatPeerList = lv_obj_create(lvglScrChatPeers);
-            lv_obj_set_size(lvglChatPeerList, lv_pct(100), UI_CONTENT_H - 74);
+            lv_obj_set_size(lvglChatPeerList, lv_pct(100), UI_CONTENT_H - CHAT_PEERS_TOP_H);
             lv_obj_align(lvglChatPeerList, LV_ALIGN_BOTTOM_MID, 0, 0);
             lv_obj_set_style_bg_color(lvglChatPeerList, lv_color_hex(0x111922), 0);
             lv_obj_set_style_border_width(lvglChatPeerList, 0, 0);
@@ -7801,6 +7941,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_flex_flow(lvglChatPeerList, LV_FLEX_FLOW_COLUMN);
             lv_obj_set_scroll_dir(lvglChatPeerList, LV_DIR_VER);
             lv_obj_set_scrollbar_mode(lvglChatPeerList, LV_SCROLLBAR_MODE_OFF);
+
             lvglRefreshChatPeerUi();
             break;
         }
@@ -8766,12 +8907,18 @@ void lvglEnsureScreenBuilt(UiScreen screen)
                 lv_obj_clear_flag(center, LV_OBJ_FLAG_SCROLLABLE);
 
                 lv_obj_t *valueLbl = lv_label_create(center);
+                lv_obj_set_width(valueLbl, lv_pct(100));
                 lv_obj_set_style_text_color(valueLbl, lv_color_hex(0xF5F8FB), 0);
+                lv_obj_set_style_text_align(valueLbl, LV_TEXT_ALIGN_CENTER, 0);
+                lv_label_set_long_mode(valueLbl, LV_LABEL_LONG_CLIP);
                 lv_label_set_text(valueLbl, "--");
                 *valueOut = valueLbl;
 
                 lv_obj_t *subLbl = lv_label_create(center);
+                lv_obj_set_width(subLbl, lv_pct(100));
                 lv_obj_set_style_text_color(subLbl, lv_color_hex(0xA8BACB), 0);
+                lv_obj_set_style_text_align(subLbl, LV_TEXT_ALIGN_CENTER, 0);
+                lv_label_set_long_mode(subLbl, LV_LABEL_LONG_CLIP);
                 lv_label_set_text(subLbl, "");
                 *subOut = subLbl;
 
@@ -8799,17 +8946,42 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_t *hc12ChannelCard = makeSelectorRow("Channel", lv_color_hex(0x7A5C2E), lvglHc12PrevChannelEvent, lvglHc12NextChannelEvent,
                                                         &lvglRadioChannelTitleLabel, &lvglHc12ChannelValueLabel, &lvglHc12ChannelSubLabel);
             lv_obj_t *hc12BaudCard = makeSelectorRow("Baud Rate", lv_color_hex(0x2F6D86), lvglHc12PrevBaudEvent, lvglHc12NextBaudEvent,
-                                                     &lvglRadioBaudTitleLabel, &lvglHc12BaudValueLabel, &lvglHc12BaudSubLabel);
+                                                    &lvglRadioBaudTitleLabel, &lvglHc12BaudValueLabel, &lvglHc12BaudSubLabel);
             lv_obj_t *hc12ModeCard = makeSelectorRow("Transmission Mode", lv_color_hex(0x355E8A), lvglHc12PrevModeEvent, lvglHc12NextModeEvent,
-                                                     &lvglRadioModeTitleLabel, &lvglHc12ModeValueLabel, &lvglHc12ModeSubLabel);
+                                                    &lvglRadioModeTitleLabel, &lvglHc12ModeValueLabel, &lvglHc12ModeSubLabel);
             lv_obj_t *hc12PowerCard = makeSelectorRow("Transmission Power", lv_color_hex(0xA35757), lvglHc12PrevPowerEvent, lvglHc12NextPowerEvent,
-                                                      &lvglRadioPowerTitleLabel, &lvglHc12PowerValueLabel, &lvglHc12PowerSubLabel);
+                                                    &lvglRadioPowerTitleLabel, &lvglHc12PowerValueLabel, &lvglHc12PowerSubLabel);
             lvglRadioExtraCard = makeSelectorRow("Transfer Mode", lv_color_hex(0x5E7B35), lvglHc12PrevExtraEvent, lvglHc12NextExtraEvent,
-                                                 &lvglRadioExtraTitleLabel, &lvglRadioExtraValueLabel, &lvglRadioExtraSubLabel);
+                                                &lvglRadioExtraTitleLabel, &lvglRadioExtraValueLabel, &lvglRadioExtraSubLabel);
+
+            /* Channel: keep top centered, make bottom scrolling */
+            if (lvglHc12ChannelValueLabel) {
+                lv_obj_set_width(lvglHc12ChannelValueLabel, lv_pct(100));
+                lv_obj_set_style_text_align(lvglHc12ChannelValueLabel, LV_TEXT_ALIGN_CENTER, 0);
+                lv_label_set_long_mode(lvglHc12ChannelValueLabel, LV_LABEL_LONG_CLIP);
+            }
+            if (lvglHc12ChannelSubLabel) {
+                lv_obj_set_width(lvglHc12ChannelSubLabel, lv_pct(100));
+                lv_obj_set_style_text_align(lvglHc12ChannelSubLabel, LV_TEXT_ALIGN_CENTER, 0);
+                lv_label_set_long_mode(lvglHc12ChannelSubLabel, LV_LABEL_LONG_WRAP);
+            }
+
+            /* Transfer Mode: keep top centered, make bottom scrolling */
+            if (lvglRadioExtraValueLabel) {
+                lv_obj_set_width(lvglRadioExtraValueLabel, lv_pct(100));
+                lv_obj_set_style_text_align(lvglRadioExtraValueLabel, LV_TEXT_ALIGN_CENTER, 0);
+                lv_label_set_long_mode(lvglRadioExtraValueLabel, LV_LABEL_LONG_CLIP);
+            }
+            if (lvglRadioExtraSubLabel) {
+                lv_obj_set_width(lvglRadioExtraSubLabel, lv_pct(100));
+                lv_obj_set_style_text_align(lvglRadioExtraSubLabel, LV_TEXT_ALIGN_CENTER, 0);
+                lv_label_set_long_mode(lvglRadioExtraSubLabel, LV_LABEL_LONG_WRAP);
+            }
+
             lvglRadioPinSwapCard = makeSelectorRow("UART Pins", lv_color_hex(0x4E6786), lvglRadioPrevPinSwapEvent, lvglRadioNextPinSwapEvent,
-                                                   &lvglRadioPinSwapTitleLabel, &lvglRadioPinSwapValueLabel, &lvglRadioPinSwapSubLabel);
+                                                &lvglRadioPinSwapTitleLabel, &lvglRadioPinSwapValueLabel, &lvglRadioPinSwapSubLabel);
             lvglRadioModePinSwapCard = makeSelectorRow("Mode Pins", lv_color_hex(0x6A7D42), lvglRadioPrevModePinSwapEvent, lvglRadioNextModePinSwapEvent,
-                                                       &lvglRadioModePinSwapTitleLabel, &lvglRadioModePinSwapValueLabel, &lvglRadioModePinSwapSubLabel);
+                                                    &lvglRadioModePinSwapTitleLabel, &lvglRadioModePinSwapValueLabel, &lvglRadioModePinSwapSubLabel);
 
             lv_obj_t *hc12DefaultBtn = lvglCreateMenuButton(wrap, lvglSymbolText(LV_SYMBOL_REFRESH, "Default").c_str(), lv_color_hex(0xA35757), lvglHc12DefaultEvent, nullptr);
             lvglHc12ConfigStatusLabel = lv_label_create(wrap);
@@ -9593,8 +9765,10 @@ void lvglOpenScreen(UiScreen screen, lv_scr_load_anim_t anim)
     } else if (screen == UI_MEDIA) {
         lvglQueueMediaRefresh();
     } else if (screen == UI_INFO) {
-        hc12RefreshInfoSnapshot();
-        lvglRefreshInfoPanel();
+        infoRefreshPending = true;
+        radioInfoFetchPending = true;
+        radioInfoFetchDueMs = millis() + 20UL;
+        lvglRefreshInfoPanel();        
     } else if (screen == UI_CONFIG) {
         lvglRefreshConfigUi();
     } else if (screen == UI_CONFIG_BATTERY) {
@@ -9750,6 +9924,29 @@ void lvglRadioModeWarningEvent(lv_event_t *e)
     lv_msgbox_close(msgbox);
 }
 
+static void lvglApplyMarqueeLabel(lv_obj_t *label, lv_coord_t width = LV_PCT(100))
+{
+    if (!label) return;
+
+    lv_obj_set_width(label, width);
+
+    // Enable scrolling for long text
+    lv_label_set_long_mode(label, LV_LABEL_LONG_SCROLL_CIRCULAR);
+
+    // IMPORTANT: reset text AFTER setting mode
+    lv_label_set_text(label, "");
+
+    // Align left so scroll starts from left edge
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_LEFT, 0);
+
+    // Padding for readability
+    lv_obj_set_style_pad_left(label, 2, 0);
+    lv_obj_set_style_pad_right(label, 2, 0);
+
+    // Ensure label itself is not treated as scroll container
+    lv_obj_clear_flag(label, LV_OBJ_FLAG_SCROLLABLE);
+}
+
 static void lvglShowE220FixedModeWarning()
 {
     static const char *btns[] = {"OK", ""};
@@ -9875,6 +10072,10 @@ void lvglApModeEvent(lv_event_t *e)
         }
     } else {
         forceSessionApMode("ui_ap_mode");
+        if (p2pDiscoveryEnabled) {
+            hc12LastDiscoveryAnnounceMs = 0;
+            hc12BroadcastDiscoveryFrame("probe");
+        }
         uiStatusLine = "AP mode enabled";
     }
     lvglSyncStatusLine();
@@ -10594,19 +10795,176 @@ void lvglSetChatPeerScanButtonStatus(const char *text, uint32_t revertDelayMs)
     if (timer) lv_timer_set_repeat_count(timer, 1);
 }
 
+static bool hc12SendRadioPayload(const char *payload, size_t len)
+{
+    hc12InitIfNeeded();
+    if (hc12SetIsAsserted() || !radioModuleCanCarryChat() || !payload || len == 0 || len >= HC12_RADIO_MAX_LINE) return false;
+    Serial1.print(HC12_RADIO_FRAME_PREFIX);
+    Serial1.write(reinterpret_cast<const uint8_t *>(payload), len);
+    Serial1.write('\n');
+    Serial1.flush();
+    return true;
+}
+
+static bool hc12SendRadioDocument(JsonDocument &doc)
+{
+    hc12InitIfNeeded();
+    if (hc12SetIsAsserted() || !radioModuleCanCarryChat()) return false;
+    char payload[HC12_RADIO_MAX_LINE] = {0};
+    const size_t len = serializeJson(doc, payload, sizeof(payload));
+    if (len == 0 || len >= sizeof(payload)) return false;
+    Serial1.print(HC12_RADIO_FRAME_PREFIX);
+    Serial1.write(reinterpret_cast<const uint8_t *>(payload), len);
+    Serial1.write('\n');
+    Serial1.flush();
+    return true;
+}
+
+static bool hc12BroadcastDiscoveryFrame(const char *kind)
+{
+    JsonDocument doc;
+    doc["kind"] = kind ? kind : "hello";
+    doc["device"] = deviceShortNameValue();
+    doc["public_key"] = p2pPublicKeyHex();
+    return hc12SendRadioDocument(doc);
+}
+
+static void hc12DiscoveryService()
+{
+    if (hc12SetIsAsserted() || !radioModuleCanCarryChat()) return;
+    const unsigned long now = millis();
+    if (static_cast<unsigned long>(now - hc12LastDiscoveryAnnounceMs) < HC12_DISCOVERY_INTERVAL_MS) return;
+    hc12LastDiscoveryAnnounceMs = now;
+    hc12BroadcastDiscoveryFrame("hello");
+}
+
+static bool hc12SendEncryptedPayload(const String &peerKey, const uint8_t *plain, size_t plainLen)
+{
+    if (peerKey.isEmpty() || !plain || plainLen == 0 || plainLen > (P2P_MAX_PACKET - 64U)) return false;
+
+    unsigned char peerPk[P2P_PUBLIC_KEY_BYTES] = {0};
+    if (!p2pHexToBytes(peerKey, peerPk, sizeof(peerPk))) return false;
+
+    unsigned char nonce[P2P_NONCE_BYTES] = {0};
+    unsigned char cipher[P2P_MAX_PACKET] = {0};
+    randombytes_buf(nonce, sizeof(nonce));
+    if (crypto_box_curve25519xchacha20poly1305_easy(cipher, plain, plainLen, nonce, peerPk, p2pSecretKey) != 0) return false;
+
+    const size_t cipherLen = plainLen + P2P_MAC_BYTES;
+    char senderPubHex[(P2P_PUBLIC_KEY_BYTES * 2U) + 1U] = {0};
+    char nonceHex[(P2P_NONCE_BYTES * 2U) + 1U] = {0};
+    char cipherHex[(P2P_MAX_PACKET * 2U) + 1U] = {0};
+    char payload[HC12_RADIO_MAX_LINE] = {0};
+    sodium_bin2hex(senderPubHex, sizeof(senderPubHex), p2pPublicKey, sizeof(p2pPublicKey));
+    sodium_bin2hex(nonceHex, sizeof(nonceHex), nonce, sizeof(nonce));
+    sodium_bin2hex(cipherHex, sizeof(cipherHex), cipher, cipherLen);
+    const int written = snprintf(payload,
+                                 sizeof(payload),
+                                 "{\"sender_pub\":\"%s\",\"nonce\":\"%s\",\"cipher\":\"%s\"}",
+                                 senderPubHex,
+                                 nonceHex,
+                                 cipherHex);
+    if (written <= 0 || static_cast<size_t>(written) >= sizeof(payload)) return false;
+    return hc12SendRadioPayload(payload, static_cast<size_t>(written));
+}
+
+static bool hc12SendPairRequest(const String &name, const String &pubKeyHex)
+{
+    if (pubKeyHex.isEmpty()) return false;
+
+    JsonDocument doc;
+    doc["kind"] = "pair_request";
+    doc["author"] = deviceShortNameValue();
+    doc["name"] = name.isEmpty() ? String("Peer") : name;
+
+    char plain[P2P_MAX_PACKET] = {0};
+    const size_t plainLen = serializeJson(doc, plain, sizeof(plain));
+    if (plainLen == 0) return false;
+
+    return hc12SendEncryptedPayload(pubKeyHex, reinterpret_cast<const uint8_t *>(plain), plainLen);
+}
+
 void lvglChatPeerActionEvent(lv_event_t *e)
 {
     const int action = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
+
     if (action == 0) {
         lvglSetChatPeerScanButtonStatus("Scanning...");
         p2pLastDiscoverAnnounceMs = 0;
         p2pSendDiscoveryProbe();
         hc12LastDiscoveryAnnounceMs = 0;
         hc12BroadcastDiscoveryFrame("probe");
-        uiStatusLine = "WiFi and radio scan started";
+        mqttPublishPeerPresence();
+        uiStatusLine = "WiFi, radio and MQTT scan started";
         lvglSyncStatusLine();
         lvglRefreshChatPeerUi();
         lvglSetChatPeerScanButtonStatus("Done", 1500);
+        return;
+    }
+
+    if (action >= 30000) {
+        const int raw = action - 30000;
+        const int idx = raw / 10;
+        const int sub = raw % 10;
+        if (idx < 0 || idx >= mqttDiscoveredCount) return;
+
+        const String peerName = mqttDiscoveredPeers[idx].name.isEmpty() ? String("MQTT Peer")
+                                                                        : mqttDiscoveredPeers[idx].name;
+        const String peerKey = mqttDiscoveredPeers[idx].pubKeyHex;
+
+        if (sub == 1) {
+            const bool ok = p2pAddOrUpdateTrustedPeer(peerName, peerKey, IPAddress((uint32_t)0), 0);
+            uiStatusLine = ok ? "MQTT peer paired" : "MQTT pair failed";
+        } else if (sub == 2) {
+            chatScheduleOpenPeerConversation(peerKey);
+            return;
+        } else if (sub == 3) {
+            const int pidx = p2pFindPeerByPubKeyHex(peerKey);
+            if (pidx >= 0) {
+                for (int i = pidx + 1; i < p2pPeerCount; ++i) p2pPeers[i - 1] = p2pPeers[i];
+                p2pPeerCount--;
+                saveP2pConfig();
+                uiStatusLine = "MQTT peer unpaired";
+            }
+        }
+
+        lvglSyncStatusLine();
+        lvglRefreshChatPeerUi();
+        lvglRefreshChatContactsUi();
+        if (uiScreen == UI_CHAT) lvglRefreshChatUi();
+        return;
+    }
+
+    if (action >= 20000) {
+        const int raw = action - 20000;
+        const int idx = raw / 10;
+        const int sub = raw % 10;
+        if (idx < 0 || idx >= hc12DiscoveredCount) return;
+
+        const String peerName = hc12DiscoveredPeers[idx].name.isEmpty() ? String("Radio Peer")
+                                                                        : hc12DiscoveredPeers[idx].name;
+        const String peerKey = hc12DiscoveredPeers[idx].pubKeyHex;
+
+        if (sub == 1) {
+            const bool ok = hc12SendPairRequest(peerName, peerKey);
+            uiStatusLine = ok ? "Radio pair request sent" : "Radio pair request failed";
+        } else if (sub == 2) {
+            chatScheduleOpenPeerConversation(peerKey);
+            return;
+        } else if (sub == 3) {
+            const int pidx = p2pFindPeerByPubKeyHex(peerKey);
+            if (pidx >= 0) {
+                for (int i = pidx + 1; i < p2pPeerCount; ++i) p2pPeers[i - 1] = p2pPeers[i];
+                p2pPeerCount--;
+                saveP2pConfig();
+                uiStatusLine = "Radio peer unpaired";
+            }
+        }
+
+        lvglSyncStatusLine();
+        lvglRefreshChatPeerUi();
+        lvglRefreshChatContactsUi();
+        if (uiScreen == UI_CHAT) lvglRefreshChatUi();
         return;
     }
 
@@ -10693,17 +11051,22 @@ void lvglChatPeerActionEvent(lv_event_t *e)
 
 void lvglRefreshChatPeerUi()
 {
+    const unsigned long nowMs = millis();
+    const int MAX_RENDER = 12;
+
     if (lvglChatDiscoveryBtn) {
         lv_obj_t *label = lv_obj_get_child(lvglChatDiscoveryBtn, 0);
         if (label) lv_label_set_text(label, lvglSymbolText(LV_SYMBOL_WIFI, "Discovery").c_str());
         lvglApplyChatDiscoveryButtonStyle();
     }
+
     if (lvglChatPeerIdentityLabel) {
         const String pub = p2pPublicKeyHex();
         String shortPub = pub;
         if (shortPub.length() > 20) shortPub = shortPub.substring(0, 20) + "...";
         lv_label_set_text_fmt(lvglChatPeerIdentityLabel, "Device: %s\nKey: %s", deviceShortNameValue().c_str(), shortPub.c_str());
     }
+
     if (!lvglChatPeerList) return;
     lv_obj_clean(lvglChatPeerList);
 
@@ -10748,11 +11111,14 @@ void lvglRefreshChatPeerUi()
             lv_obj_set_style_pad_row(card, 4, 0);
             lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
             lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
             const String orderKey = lvglOrderTokenFromText("p", p2pPeers[i].pubKeyHex);
             lvglRegisterReorderableItem(card, "ord_cpr", orderKey.c_str());
 
             lv_obj_t *title = lv_label_create(card);
-            lv_label_set_text_fmt(title, "%s  [%s]", p2pPeers[i].name.isEmpty() ? "Peer" : p2pPeers[i].name.c_str(), enabled ? "paired" : "disabled");
+            lv_label_set_text_fmt(title, "%s  [%s]",
+                                  p2pPeers[i].name.isEmpty() ? "Peer" : p2pPeers[i].name.c_str(),
+                                  enabled ? "paired" : "disabled");
             lv_obj_set_style_text_color(title, lv_color_hex(0xE5ECF3), 0);
 
             lv_obj_t *info = lv_label_create(card);
@@ -10760,8 +11126,10 @@ void lvglRefreshChatPeerUi()
             lv_label_set_long_mode(info, LV_LABEL_LONG_WRAP);
             String key = p2pPeers[i].pubKeyHex;
             if (key.length() > 16) key = key.substring(0, 16) + "...";
-            lv_label_set_text_fmt(info, "%s:%u\n%s", p2pPeers[i].ip.toString().c_str(),
-                                  static_cast<unsigned int>(p2pPeers[i].port), key.c_str());
+            lv_label_set_text_fmt(info, "%s:%u\n%s",
+                                  p2pPeers[i].ip.toString().c_str(),
+                                  static_cast<unsigned int>(p2pPeers[i].port),
+                                  key.c_str());
             lv_obj_set_style_text_color(info, lv_color_hex(0xB7C4D1), 0);
 
             lv_obj_t *row = lv_obj_create(card);
@@ -10810,11 +11178,12 @@ void lvglRefreshChatPeerUi()
         lv_obj_set_style_pad_row(card, 4, 0);
         lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
         lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
         const String orderKey = lvglOrderTokenFromText("d", p2pDiscoveredPeers[i].pubKeyHex);
         lvglRegisterReorderableItem(card, "ord_cpr", orderKey.c_str());
 
         lv_obj_t *title = lv_label_create(card);
-        lv_label_set_text_fmt(title, "%s  [discovered]", p2pDiscoveredPeers[i].name.c_str());
+        lv_label_set_text_fmt(title, "%s - over WiFi", p2pDiscoveredPeers[i].name.c_str());
         lv_obj_set_style_text_color(title, lv_color_hex(0xE5ECF3), 0);
 
         lv_obj_t *info = lv_label_create(card);
@@ -10822,8 +11191,10 @@ void lvglRefreshChatPeerUi()
         lv_label_set_long_mode(info, LV_LABEL_LONG_WRAP);
         String key = p2pDiscoveredPeers[i].pubKeyHex;
         if (key.length() > 16) key = key.substring(0, 16) + "...";
-        lv_label_set_text_fmt(info, "%s:%u\n%s", p2pDiscoveredPeers[i].ip.toString().c_str(),
-                              static_cast<unsigned int>(p2pDiscoveredPeers[i].port), key.c_str());
+        lv_label_set_text_fmt(info, "%s:%u\n%s",
+                              p2pDiscoveredPeers[i].ip.toString().c_str(),
+                              static_cast<unsigned int>(p2pDiscoveredPeers[i].port),
+                              key.c_str());
         lv_obj_set_style_text_color(info, lv_color_hex(0xB7C4D1), 0);
 
         lv_obj_t *row = lv_obj_create(card);
@@ -10868,11 +11239,12 @@ void lvglRefreshChatPeerUi()
         lv_obj_set_style_pad_row(card, 4, 0);
         lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
         lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
         const String orderKey = lvglOrderTokenFromText("r", hc12DiscoveredPeers[i].pubKeyHex);
         lvglRegisterReorderableItem(card, "ord_cpr", orderKey.c_str());
 
         lv_obj_t *title = lv_label_create(card);
-        lv_label_set_text_fmt(title, "%s  [radio]",
+        lv_label_set_text_fmt(title, "%s - over Radio",
                               hc12DiscoveredPeers[i].name.isEmpty() ? "Radio Peer" : hc12DiscoveredPeers[i].name.c_str());
         lv_obj_set_style_text_color(title, lv_color_hex(0xE5ECF3), 0);
 
@@ -10894,21 +11266,105 @@ void lvglRefreshChatPeerUi()
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
-        makeSmallBtnLocal(row, "Open", 54, 26, lv_color_hex(0x7A5C2E), [](lv_event_t *e) {
-            const int radioIdx = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e))) - 20000;
-            if (radioIdx < 0 || radioIdx >= hc12DiscoveredCount) return;
-            chatScheduleOpenPeerConversation(hc12DiscoveredPeers[radioIdx].pubKeyHex);
-        }, reinterpret_cast<void *>(static_cast<intptr_t>(20000 + i)));
+        const bool trusted = p2pFindPeerByPubKeyHex(hc12DiscoveredPeers[i].pubKeyHex) >= 0;
+
+        if (!trusted) {
+            makeSmallBtnLocal(row, "Pair", 54, 26, lv_color_hex(0x2E7A4A), lvglChatPeerActionEvent,
+                              reinterpret_cast<void *>(static_cast<intptr_t>(20000 + i * 10 + 1)));
+        }
+
+        makeSmallBtnLocal(row, "Open", 54, 26, lv_color_hex(0x7A5C2E), lvglChatPeerActionEvent,
+                          reinterpret_cast<void *>(static_cast<intptr_t>(20000 + i * 10 + 2)));
+
+        if (trusted) {
+            makeSmallBtnLocal(row, "Unpair", 58, 26, lv_color_hex(0x8A3A3A), lvglChatPeerActionEvent,
+                              reinterpret_cast<void *>(static_cast<intptr_t>(20000 + i * 10 + 3)));
+        }
+    }
+
+    bool anyMqttDiscovered = false;
+    for (int i = 0; i < mqttDiscoveredCount; ++i) {
+        const int existing = p2pFindPeerByPubKeyHex(mqttDiscoveredPeers[i].pubKeyHex);
+        if (existing >= 0) continue;
+        anyMqttDiscovered = true;
+        break;
+    }
+
+    if (anyMqttDiscovered) {
+        lv_obj_t *section = lv_label_create(lvglChatPeerList);
+        lv_obj_set_width(section, lv_pct(100));
+        lv_label_set_text(section, "MQTT");
+        lv_obj_set_style_text_color(section, lv_color_hex(0xE5ECF3), 0);
+        lvglRegisterReorderableItem(section, "ord_cpr", "sec_m");
+    }
+
+    for (int i = 0; i < mqttDiscoveredCount && i < MAX_RENDER; ++i) {
+        const int existing = p2pFindPeerByPubKeyHex(mqttDiscoveredPeers[i].pubKeyHex);
+        if (existing >= 0) continue;
+        anyEntries = true;
+
+        lv_obj_t *card = lv_obj_create(lvglChatPeerList);
+        lv_obj_set_width(card, lv_pct(100));
+        lv_obj_set_height(card, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_color(card, lv_color_hex(0x16212C), 0);
+        lv_obj_set_style_border_width(card, 0, 0);
+        lv_obj_set_style_radius(card, 12, 0);
+        lv_obj_set_style_pad_all(card, 8, 0);
+        lv_obj_set_style_pad_row(card, 4, 0);
+        lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+        lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+        const String orderKey = lvglOrderTokenFromText("m", mqttDiscoveredPeers[i].pubKeyHex);
+        lvglRegisterReorderableItem(card, "ord_cpr", orderKey.c_str());
+
+        lv_obj_t *title = lv_label_create(card);
+        lv_label_set_text_fmt(title, "%s - over MQTT",
+                              mqttDiscoveredPeers[i].name.isEmpty() ? "MQTT Peer" : mqttDiscoveredPeers[i].name.c_str());
+        lv_obj_set_style_text_color(title, lv_color_hex(0xE5ECF3), 0);
+
+        lv_obj_t *info = lv_label_create(card);
+        lv_obj_set_width(info, lv_pct(100));
+        lv_label_set_long_mode(info, LV_LABEL_LONG_WRAP);
+        String key = mqttDiscoveredPeers[i].pubKeyHex;
+        if (key.length() > 16) key = key.substring(0, 16) + "...";
+        const unsigned long ageSec = static_cast<unsigned long>((nowMs - mqttDiscoveredPeers[i].lastSeenMs) / 1000UL);
+        lv_label_set_text_fmt(info, "MQTT peer presence\nSeen %lus ago\n%s", ageSec, key.c_str());
+        lv_obj_set_style_text_color(info, lv_color_hex(0xB7C4D1), 0);
+
+        lv_obj_t *row = lv_obj_create(card);
+        lv_obj_set_size(row, lv_pct(100), 30);
+        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_set_style_pad_column(row, 6, 0);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+        const bool trusted = p2pFindPeerByPubKeyHex(mqttDiscoveredPeers[i].pubKeyHex) >= 0;
+
+        if (!trusted) {
+            makeSmallBtnLocal(row, "Pair", 54, 26, lv_color_hex(0x2E7A4A), lvglChatPeerActionEvent,
+                              reinterpret_cast<void *>(static_cast<intptr_t>(30000 + i * 10 + 1)));
+        }
+
+        makeSmallBtnLocal(row, "Open", 54, 26, lv_color_hex(0x7A5C2E), lvglChatPeerActionEvent,
+                          reinterpret_cast<void *>(static_cast<intptr_t>(30000 + i * 10 + 2)));
+
+        if (trusted) {
+            makeSmallBtnLocal(row, "Unpair", 58, 26, lv_color_hex(0x8A3A3A), lvglChatPeerActionEvent,
+                              reinterpret_cast<void *>(static_cast<intptr_t>(30000 + i * 10 + 3)));
+        }
     }
 
     if (!anyEntries) {
         lv_obj_t *lbl = lv_label_create(lvglChatPeerList);
         lv_obj_set_width(lbl, lv_pct(100));
         lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
-        lv_label_set_text(lbl, "No paired or discovered peers yet.\nOpen this screen on another device on the same WiFi or same HC-12 channel, then tap Scan.");
+        lv_label_set_text(lbl, "No paired or discovered peers yet.\nOpen this screen on another device on the same WiFi, same MQTT broker, or same HC-12 channel, then tap Scan.");
         lv_obj_set_style_text_color(lbl, lv_color_hex(0xC8CED6), 0);
         lvglRegisterReorderableItem(lbl, "ord_cpr", "empty");
     }
+
     lvglApplySavedOrder(lvglChatPeerList, "ord_cpr");
 }
 
@@ -11960,33 +12416,68 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
     if (ta == lvglConfigDeviceNameTa || ta == hc12CmdTaObj()) lvglSetConfigKeyboardVisible(true);
 }
 
+static unsigned long e220RuntimeBaud()
+{
+    const int maxIndex = static_cast<int>(sizeof(E220_UART_BAUD_VALUES) / sizeof(E220_UART_BAUD_VALUES[0])) - 1;
+    const int idx = constrain(e220CurrentBaudIndex, 0, maxIndex);
+    return E220_UART_BAUD_VALUES[idx];
+}
+
+static void hc12SerialReopen(unsigned long baud)
+{
+    Serial1.flush();
+    Serial1.end();
+    delay(10);
+
+    if (radioModuleType == RADIO_MODULE_HC12) {
+        Serial1.begin(baud, SERIAL_8N1, hc12ActiveRxPin(), hc12ActiveTxPin());
+    } else {
+        Serial1.begin(baud, SERIAL_8N1, e220ActiveRxPin(), e220ActiveTxPin());
+    }
+
+    delay(10);
+}
+
 static void hc12InitIfNeeded()
 {
-    if (radioModuleType == RADIO_MODULE_E220 && (e220ActiveRxPin() < 0 || e220ActiveTxPin() < 0 || e220ActiveM0Pin() < 0 || e220ActiveM1Pin() < 0)) {
+    if (radioModuleType == RADIO_MODULE_E220 &&
+        (e220ActiveRxPin() < 0 || e220ActiveTxPin() < 0 || e220ActiveM0Pin() < 0 || e220ActiveM1Pin() < 0)) {
         hc12ConfigStatusText = "E220 is only wired on the ESP32-S3 build";
         return;
     }
+
     if (hc12TerminalLog) return;
+
     if (radioModuleType == RADIO_MODULE_HC12) {
         pinMode(hc12ActiveSetPin(), OUTPUT);
         digitalWrite(hc12ActiveSetPin(), HIGH);
-        Serial1.begin(HC12_BAUD, SERIAL_8N1, hc12ActiveRxPin(), hc12ActiveTxPin());
+        hc12SerialReopen(HC12_BAUD);
     } else {
         pinMode(e220ActiveM0Pin(), OUTPUT);
         pinMode(e220ActiveM1Pin(), OUTPUT);
-        digitalWrite(e220ActiveM0Pin(), LOW);
+        digitalWrite(e220ActiveM0Pin(), LOW);   // normal mode
         digitalWrite(e220ActiveM1Pin(), LOW);
-        Serial1.begin(E220_AT_BAUD, SERIAL_8N1, e220ActiveRxPin(), e220ActiveTxPin());
+        hc12SerialReopen(e220RuntimeBaud());    // use runtime baud here
     }
+
     String banner = String("[RADIO] Serial1 ready on ESP RX") +
                     (radioModuleType == RADIO_MODULE_HC12 ? hc12ActiveRxPin() : e220ActiveRxPin()) +
                     " TX" +
                     (radioModuleType == RADIO_MODULE_HC12 ? hc12ActiveTxPin() : e220ActiveTxPin()) + "\n";
+
     if (radioModuleType == RADIO_MODULE_HC12) {
-        banner += String("[HC12] HC12 RXD->GPIO") + hc12ActiveTxPin() + " TXD->GPIO" + hc12ActiveRxPin() + " SET->GPIO" + hc12ActiveSetPin() + "\n";
+        banner += String("[HC12] HC12 RXD->GPIO") + hc12ActiveTxPin() +
+                  " TXD->GPIO" + hc12ActiveRxPin() +
+                  " SET->GPIO" + hc12ActiveSetPin() + "\n";
     } else {
-        banner += String("[E220] RX->GPIO") + e220ActiveTxPin() + " TX->GPIO" + e220ActiveRxPin() + " M0->GPIO" + e220ActiveM0Pin() + " M1->GPIO" + e220ActiveM1Pin() + "\n";
+        banner += String("[E220] RX->GPIO") + e220ActiveTxPin() +
+                  " TX->GPIO" + e220ActiveRxPin() +
+                  " M0->GPIO" + e220ActiveM0Pin() +
+                  " M1->GPIO" + e220ActiveM1Pin() +
+                  " runtime baud " + e220RuntimeBaud() +
+                  " / cfg baud " + E220_AT_BAUD + "\n";
     }
+
     hc12AppendTerminal(banner.c_str());
 }
 
@@ -12002,12 +12493,18 @@ static void hc12RestartWithCurrentPins(const String &statusText)
 {
     Serial1.flush();
     Serial1.end();
+    delay(10);
+
     uiDeferredFlags &= static_cast<uint8_t>(~(UI_DEFERRED_HC12_SETTLE_PENDING | UI_DEFERRED_HC12_TARGET_ASSERTED));
+
     delete hc12TerminalLog;
     hc12TerminalLog = nullptr;
+
     delete hc12RadioRxLine;
     hc12RadioRxLine = nullptr;
+
     if (!statusText.isEmpty()) hc12ConfigStatusText = statusText;
+
     hc12InitIfNeeded();
 }
 
@@ -12167,25 +12664,43 @@ static String e220QueryCommand(const char *line, unsigned long totalTimeoutMs, u
 static void hc12EnterAtMode()
 {
     hc12InitIfNeeded();
+
     while (Serial1.available() > 0) Serial1.read();
+
     if (radioModuleType == RADIO_MODULE_HC12) {
         digitalWrite(hc12ActiveSetPin(), LOW);
-    } else {
-        digitalWrite(e220ActiveM0Pin(), HIGH);
-        digitalWrite(e220ActiveM1Pin(), HIGH);
+        delay(80);
+        return;
     }
-    delay(80);
+
+    digitalWrite(e220ActiveM0Pin(), HIGH);
+    digitalWrite(e220ActiveM1Pin(), HIGH);
+    delay(120);  // was 80
+
+    hc12SerialReopen(E220_AT_BAUD);
+    delay(30);   // extra settle after reopen
+    while (Serial1.available() > 0) Serial1.read();
 }
 
 static void hc12ExitAtMode()
 {
+    while (Serial1.available() > 0) Serial1.read();
+
     if (radioModuleType == RADIO_MODULE_HC12) {
         digitalWrite(hc12ActiveSetPin(), HIGH);
-    } else {
-        digitalWrite(e220ActiveM0Pin(), LOW);
-        digitalWrite(e220ActiveM1Pin(), LOW);
+        delay(40);
+        uiDeferredFlags &= static_cast<uint8_t>(~(UI_DEFERRED_HC12_SETTLE_PENDING | UI_DEFERRED_HC12_TARGET_ASSERTED));
+        return;
     }
-    delay(40);
+
+    digitalWrite(e220ActiveM0Pin(), LOW);
+    digitalWrite(e220ActiveM1Pin(), LOW);
+    delay(80);   // was 40
+
+    hc12SerialReopen(e220RuntimeBaud());
+    delay(30);   // extra settle after reopen
+    while (Serial1.available() > 0) Serial1.read();
+
     uiDeferredFlags &= static_cast<uint8_t>(~(UI_DEFERRED_HC12_SETTLE_PENDING | UI_DEFERRED_HC12_TARGET_ASSERTED));
 }
 
@@ -12397,17 +12912,27 @@ static bool hc12ApplyBaudIndex(int index)
     if (radioModuleType == RADIO_MODULE_E220) {
         const int count = static_cast<int>(sizeof(E220_UART_BAUD_OPTIONS) / sizeof(E220_UART_BAUD_OPTIONS[0]));
         if (count <= 0) return false;
+
         index = constrain(index, 0, count - 1);
+
         hc12EnterAtMode();
         const String resp = e220QueryCommand((String("AT+UART=") + E220_UART_BAUD_OPTIONS[index] + ",0").c_str());
-        hc12ExitAtMode();
-        if (resp.indexOf("OK") >= 0) {
+        const bool ok = resp.indexOf("OK") >= 0;
+
+        if (ok) {
             e220CurrentBaudIndex = index;
             savePersistedRadioSettings();
             hc12ConfigStatusText = "UART baud set to " + String(E220_UART_BAUD_VALUES[index]) + " bps";
+        } else {
+            hc12ConfigStatusText = resp.isEmpty() ? "Baud change failed" : resp;
+        }
+
+        hc12ExitAtMode();
+
+        if (ok) {
+            hc12RestartWithCurrentPins(hc12ConfigStatusText);
             return true;
         }
-        hc12ConfigStatusText = resp.isEmpty() ? "Baud change failed" : resp;
         return false;
     }
     const int count = static_cast<int>(sizeof(HC12_SUPPORTED_BAUDS) / sizeof(HC12_SUPPORTED_BAUDS[0]));
@@ -12569,33 +13094,64 @@ static void hc12RefreshInfoSnapshot()
         hc12InitIfNeeded();
         hc12InfoValueText = "Querying...";
         hc12InfoSubText = "Entering config mode...";
+
         hc12EnterAtMode();
-        const String modelRaw = e220QueryCommand("AT+DEVTYPE=?");
-        const String fwRaw = e220QueryCommand("AT+FWCODE=?");
-        const String uartRaw = e220QueryCommand("AT+UART=?");
+        delay(120);  // let E220 fully settle in CFG mode
+
+        const String modelRaw   = e220QueryCommand("AT+DEVTYPE=?");
+        delay(30);
+        const String fwRaw      = e220QueryCommand("AT+FWCODE=?");
+        delay(30);
+        const String uartRaw    = e220QueryCommand("AT+UART=?");
+        delay(30);
         const String channelRaw = e220QueryCommand("AT+CHANNEL=?");
-        const String rateRaw = e220QueryCommand("AT+RATE=?");
-        const String powerRaw = e220QueryCommand("AT+POWER=?");
-        const String transRaw = e220QueryCommand("AT+TRANS=?");
+        delay(30);
+        const String rateRaw    = e220QueryCommand("AT+RATE=?");
+        delay(30);
+        const String powerRaw   = e220QueryCommand("AT+POWER=?");
+        delay(30);
+        const String transRaw   = e220QueryCommand("AT+TRANS=?");
+
         hc12ExitAtMode();
+        delay(80);   // let module return cleanly to normal mode
+
         hc12InfoValueText = e220ValueAfterEquals(modelRaw);
         if (hc12InfoValueText.isEmpty()) hc12InfoValueText = "No Reply";
         hc12InfoSubText = "FW " + e220ValueAfterEquals(fwRaw);
+
         if (lvglHc12InfoVersionLabel) lv_label_set_text(lvglHc12InfoVersionLabel, hc12InfoValueText.c_str());
-        if (lvglHc12InfoBaudLabel) lv_label_set_text(lvglHc12InfoBaudLabel, e220ValueAfterEquals(uartRaw).c_str());
-        if (lvglHc12InfoChannelLabel) lv_label_set_text(lvglHc12InfoChannelLabel, e220ValueAfterEquals(channelRaw).c_str());
-        if (lvglHc12InfoFuModeLabel) lv_label_set_text(lvglHc12InfoFuModeLabel, e220ValueAfterEquals(transRaw).c_str());
-        if (lvglHc12InfoPowerLabel) lv_label_set_text(lvglHc12InfoPowerLabel, e220ValueAfterEquals(powerRaw).c_str());
+        
+        const String uartVal    = e220ValueAfterEquals(uartRaw);
+        const String channelVal = e220ValueAfterEquals(channelRaw);
+        const String transVal   = e220ValueAfterEquals(transRaw);
+        const String powerVal   = e220ValueAfterEquals(powerRaw);
+        const String rateVal    = e220ValueAfterEquals(rateRaw);
+
+        if (lvglHc12InfoBaudLabel)    lv_label_set_text(lvglHc12InfoBaudLabel,    uartVal.isEmpty()    ? "--" : uartVal.c_str());
+        if (lvglHc12InfoChannelLabel) lv_label_set_text(lvglHc12InfoChannelLabel, channelVal.isEmpty() ? "--" : channelVal.c_str());
+        if (lvglHc12InfoFuModeLabel)  lv_label_set_text(lvglHc12InfoFuModeLabel,  transVal.isEmpty()   ? "--" : transVal.c_str());
+        if (lvglHc12InfoPowerLabel)   lv_label_set_text(lvglHc12InfoPowerLabel,   powerVal.isEmpty()   ? "--" : powerVal.c_str());
+
         if (lvglHc12InfoRawLabel) {
-            String raw = String("UART ") + e220ValueAfterEquals(uartRaw) + " | RATE " + e220ValueAfterEquals(rateRaw) +
+            String raw = String("UART ") + (uartVal.isEmpty() ? "--" : uartVal) +
+                        " | RATE " + (rateVal.isEmpty() ? "--" : rateVal) +
+                        " | TRANS " + (transVal.isEmpty() ? "--" : transVal);
+            lv_label_set_text(lvglHc12InfoRawLabel, raw.c_str());
+        }
+
+        if (lvglHc12InfoRawLabel) {
+            String raw = String("UART ") + e220ValueAfterEquals(uartRaw) +
+                         " | RATE " + e220ValueAfterEquals(rateRaw) +
                          " | TRANS " + e220ValueAfterEquals(transRaw);
             lv_label_set_text(lvglHc12InfoRawLabel, raw.c_str());
         }
         return;
     }
+
+    // keep your HC-12 branch as-is
     hc12InitIfNeeded();
-    hc12InfoValueText = "Querying...";
-    hc12InfoSubText = "Entering AT mode...";
+    hc12InfoValueText = "Querying.";
+    hc12InfoSubText = "Entering AT mode.";
 
     hc12EnterAtMode();
     const String versionRaw = hc12QueryCommand("AT+V");
@@ -12660,79 +13216,6 @@ static const char *radioModuleChatLabel()
     return radioModuleType == RADIO_MODULE_E220 ? "E220" : "HC-12";
 }
 
-static bool hc12SendRadioDocument(JsonDocument &doc)
-{
-    hc12InitIfNeeded();
-    if (hc12SetIsAsserted() || !radioModuleCanCarryChat()) return false;
-    char payload[HC12_RADIO_MAX_LINE] = {0};
-    const size_t len = serializeJson(doc, payload, sizeof(payload));
-    if (len == 0 || len >= sizeof(payload)) return false;
-    Serial1.print(HC12_RADIO_FRAME_PREFIX);
-    Serial1.write(reinterpret_cast<const uint8_t *>(payload), len);
-    Serial1.write('\n');
-    Serial1.flush();
-    return true;
-}
-
-static bool hc12SendRadioPayload(const char *payload, size_t len)
-{
-    hc12InitIfNeeded();
-    if (hc12SetIsAsserted() || !radioModuleCanCarryChat() || !payload || len == 0 || len >= HC12_RADIO_MAX_LINE) return false;
-    Serial1.print(HC12_RADIO_FRAME_PREFIX);
-    Serial1.write(reinterpret_cast<const uint8_t *>(payload), len);
-    Serial1.write('\n');
-    Serial1.flush();
-    return true;
-}
-
-static bool hc12SendEncryptedPayload(const String &peerKey, const uint8_t *plain, size_t plainLen)
-{
-    if (peerKey.isEmpty() || !plain || plainLen == 0 || plainLen > (P2P_MAX_PACKET - 64U)) return false;
-
-    unsigned char peerPk[P2P_PUBLIC_KEY_BYTES] = {0};
-    if (!p2pHexToBytes(peerKey, peerPk, sizeof(peerPk))) return false;
-
-    unsigned char nonce[P2P_NONCE_BYTES] = {0};
-    unsigned char cipher[P2P_MAX_PACKET] = {0};
-    randombytes_buf(nonce, sizeof(nonce));
-    if (crypto_box_curve25519xchacha20poly1305_easy(cipher, plain, plainLen, nonce, peerPk, p2pSecretKey) != 0) return false;
-
-    const size_t cipherLen = plainLen + P2P_MAC_BYTES;
-    char senderPubHex[(P2P_PUBLIC_KEY_BYTES * 2U) + 1U] = {0};
-    char nonceHex[(P2P_NONCE_BYTES * 2U) + 1U] = {0};
-    char cipherHex[(P2P_MAX_PACKET * 2U) + 1U] = {0};
-    char payload[HC12_RADIO_MAX_LINE] = {0};
-    sodium_bin2hex(senderPubHex, sizeof(senderPubHex), p2pPublicKey, sizeof(p2pPublicKey));
-    sodium_bin2hex(nonceHex, sizeof(nonceHex), nonce, sizeof(nonce));
-    sodium_bin2hex(cipherHex, sizeof(cipherHex), cipher, cipherLen);
-    const int written = snprintf(payload,
-                                 sizeof(payload),
-                                 "{\"sender_pub\":\"%s\",\"nonce\":\"%s\",\"cipher\":\"%s\"}",
-                                 senderPubHex,
-                                 nonceHex,
-                                 cipherHex);
-    if (written <= 0 || static_cast<size_t>(written) >= sizeof(payload)) return false;
-    return hc12SendRadioPayload(payload, static_cast<size_t>(written));
-}
-
-static bool hc12BroadcastDiscoveryFrame(const char *kind)
-{
-    JsonDocument doc;
-    doc["kind"] = kind ? kind : "hello";
-    doc["device"] = deviceShortNameValue();
-    doc["public_key"] = p2pPublicKeyHex();
-    return hc12SendRadioDocument(doc);
-}
-
-static void hc12DiscoveryService()
-{
-    if (hc12SetIsAsserted() || !radioModuleCanCarryChat()) return;
-    const unsigned long now = millis();
-    if (static_cast<unsigned long>(now - hc12LastDiscoveryAnnounceMs) < HC12_DISCOVERY_INTERVAL_MS) return;
-    hc12LastDiscoveryAnnounceMs = now;
-    hc12BroadcastDiscoveryFrame("hello");
-}
-
 bool hc12SendChatMessageWithId(const String &peerKey, const String &text, const String &messageId)
 {
     if (peerKey.isEmpty() || text.isEmpty() || messageId.isEmpty()) return false;
@@ -12757,6 +13240,21 @@ bool hc12SendChatAck(const String &peerKey, const String &messageId)
     const size_t plainLen = serializeJson(doc, plain, sizeof(plain));
     if (plainLen == 0) return false;
     return hc12SendEncryptedPayload(peerKey, reinterpret_cast<const uint8_t *>(plain), plainLen);
+}
+
+static bool hc12SendPairResponse(const String &pubKeyHex, bool accepted)
+{
+    if (pubKeyHex.isEmpty()) return false;
+
+    JsonDocument doc;
+    doc["kind"] = accepted ? "pair_accept" : "pair_reject";
+    doc["author"] = deviceShortNameValue();
+
+    char plain[P2P_MAX_PACKET] = {0};
+    const size_t plainLen = serializeJson(doc, plain, sizeof(plain));
+    if (plainLen == 0) return false;
+
+    return hc12SendEncryptedPayload(pubKeyHex, reinterpret_cast<const uint8_t *>(plain), plainLen);
 }
 
 bool hc12SendMessageDelete(const String &peerKey, const String &messageId)
@@ -12857,6 +13355,56 @@ static void hc12HandleIncomingRadioLine(const String &line)
     if (kind == "delete_message") {
         const String messageId = String(static_cast<const char *>(doc["id"] | ""));
         if (!messageId.isEmpty()) chatDeleteMessageById(senderPubHex, messageId, "Message deleted by " + author);
+        return;
+    }
+
+        if (kind == "pair_request") {
+        hc12TouchDiscoveredPeer(author, senderPubHex);
+
+        // auto-show prompt just like WiFi flow
+        const int radioIdx = hc12FindDiscoveredByPubKeyHex(senderPubHex);
+        if (radioIdx >= 0) {
+            // simplest route: auto-trust immediately
+            const bool ok = p2pAddOrUpdateTrustedPeer(
+                author.isEmpty() ? String("Peer") : author,
+                senderPubHex,
+                IPAddress((uint32_t)0),   // no WiFi IP for radio-only peer
+                0
+            );
+
+            hc12SendPairResponse(senderPubHex, ok);
+
+            if (ok && currentChatPeerKey.isEmpty()) currentChatPeerKey = senderPubHex;
+            uiStatusLine = ok ? "Radio peer paired" : "Radio pair failed";
+            if (lvglReady) {
+                lvglSyncStatusLine();
+                lvglRefreshChatPeerUi();
+                lvglRefreshChatContactsUi();
+            }
+        }
+        return;
+    }
+
+    if (kind == "pair_accept") {
+        const bool ok = p2pAddOrUpdateTrustedPeer(
+            author.isEmpty() ? String("Peer") : author,
+            senderPubHex,
+            IPAddress((uint32_t)0),
+            0
+        );
+        if (ok && currentChatPeerKey.isEmpty()) currentChatPeerKey = senderPubHex;
+        uiStatusLine = ok ? "Radio peer paired" : "Radio pair accept failed";
+        if (lvglReady) {
+            lvglSyncStatusLine();
+            lvglRefreshChatPeerUi();
+            lvglRefreshChatContactsUi();
+        }
+        return;
+    }
+
+    if (kind == "pair_reject") {
+        uiStatusLine = String("Radio pair rejected by ") + author;
+        if (lvglReady) lvglSyncStatusLine();
         return;
     }
 
@@ -13120,6 +13668,41 @@ void lvglOpenWifiPasswordDialog(const String &ssid)
     if (lvglWifiPwdStatusLabel) lv_label_set_text(lvglWifiPwdStatusLabel, "");
     lv_obj_move_foreground(lvglWifiPwdModal);
     lv_obj_clear_flag(lvglWifiPwdModal, LV_OBJ_FLAG_HIDDEN);
+}
+
+void mqttPublishDiscovery()
+{
+    if (!mqttClient.connected()) return;
+    if (!mqttHasHeapHeadroom(MQTT_MIN_FREE_HEAP_PUBLISH, MQTT_MIN_LARGEST_8BIT_PUBLISH, "MQTT discovery deferred")) return;
+    const String availTopic = "esp32/remote/" + mqttHwId + "/availability";
+    for (int i = mqttButtonCount; i < MQTT_MAX_BUTTONS; i++) {
+        const String oldTopic = mqttCfg.discoveryPrefix + "/device_automation/" + mqttNodeId + "/" + String(i) + "/config";
+        mqttClient.publish(oldTopic.c_str(), "", true);
+    }
+    for (int i = 0; i < mqttButtonCount; i++) {
+        const String action = mqttButtonPayloadForIndex(i);
+        const String topic = mqttCfg.discoveryPrefix + "/device_automation/" + mqttNodeId + "/" + String(i) + "/config";
+        JsonDocument doc;
+        doc["automation_type"] = "trigger";
+        doc["topic"] = mqttActionTopic;
+        doc["payload"] = action;
+        doc["type"] = "button_short_press";
+        doc["subtype"] = "button_" + String(i + 1);
+        doc["unique_id"] = mqttNodeId + "_" + String(i + 1) + "_" + action;
+        doc["availability_topic"] = availTopic;
+        JsonObject dev = doc["device"].to<JsonObject>();
+        JsonArray ids = dev["identifiers"].to<JsonArray>();
+        ids.add(mqttNodeId);
+        dev["name"] = mqttDeviceName;
+        dev["model"] = DEVICE_MODEL;
+        dev["manufacturer"] = "Elik";
+        dev["sw_version"] = FW_VERSION;
+        String payload;
+        serializeJson(doc, payload);
+        mqttClient.publish(topic.c_str(), payload.c_str(), true);
+    }
+    mqttDiscoveryPublished = true;
+    mqttStatusLine = "HA discovery published";
 }
 
 void lvglMqttPublishDiscoveryEvent(lv_event_t *e)
@@ -16856,6 +17439,19 @@ void lvglHc12DefaultEvent(lv_event_t *e)
 
 void lvglRefreshHc12InfoUi()
 {
+    if (radioInfoFetchPending) {
+        hc12InfoValueText = "Loading...";
+        hc12InfoSubText = "Fetching radio info...";
+
+        if (lvglHc12InfoVersionLabel) lv_label_set_text(lvglHc12InfoVersionLabel, "Loading...");
+        if (lvglHc12InfoBaudLabel) lv_label_set_text(lvglHc12InfoBaudLabel, "--");
+        if (lvglHc12InfoChannelLabel) lv_label_set_text(lvglHc12InfoChannelLabel, "--");
+        if (lvglHc12InfoFuModeLabel) lv_label_set_text(lvglHc12InfoFuModeLabel, "--");
+        if (lvglHc12InfoPowerLabel) lv_label_set_text(lvglHc12InfoPowerLabel, "--");
+        if (lvglHc12InfoRawLabel) lv_label_set_text(lvglHc12InfoRawLabel, "Fetching radio info...");
+        return;
+    }
+
     String versionRaw;
     String baudRaw;
     String channelRaw;
@@ -16864,10 +17460,12 @@ void lvglRefreshHc12InfoUi()
     String summaryRaw;
 
     hc12InitIfNeeded();
+
     if (radioModuleType == RADIO_MODULE_E220) {
         hc12RefreshInfoSnapshot();
         return;
     }
+
     while (Serial1.available() > 0) Serial1.read();
     digitalWrite(hc12ActiveSetPin(), LOW);
     delay(80);
@@ -20101,6 +20699,22 @@ String buildMqttHardwareId()
     return String(buf);
 }
 
+void mqttPublishPeerPresence()
+{
+    if (!mqttCfg.enabled || !mqttClient.connected()) return;
+    if (mqttChatPresenceTopic.isEmpty()) return;
+
+    JsonDocument doc;
+    doc["kind"] = "peer_presence";
+    doc["name"] = deviceShortNameValue();
+    doc["sender_pub"] = p2pPublicKeyHex();
+
+    String payload;
+    serializeJson(doc, payload);
+
+    mqttClient.publish(mqttChatPresenceTopic.c_str(), payload.c_str(), false);
+}
+
 void mqttBuildIdentity()
 {
     mqttHwId = buildMqttHardwareId();
@@ -20109,6 +20723,7 @@ void mqttBuildIdentity()
     mqttDeviceName = "ESP32 Remote " + mqttHwId;
     mqttActionTopic = "esp32/remote/" + mqttHwId + "/action";
     mqttChatInboxTopic = "esp32/remote/chat/" + String(MQTT_CHAT_NAMESPACE) + "/inbox/" + p2pPublicKeyHex();
+    mqttChatPresenceTopic = "esp32/remote/chat/" + String(MQTT_CHAT_NAMESPACE) + "/presence";
 }
 
 String mqttDefaultButtonName(int idx)
@@ -20201,6 +20816,7 @@ bool mqttConnectNow()
         if (lvglReady) lvglRefreshTopIndicators();
         return false;
     }
+
     mqttNetClient.stop();
     mqttNetClient.setTimeout(250);
     if (!mqttNetClient.connect(mqttCfg.broker.c_str(), mqttCfg.port, 250)) {
@@ -20208,36 +20824,66 @@ bool mqttConnectNow()
         if (lvglReady) lvglRefreshTopIndicators();
         return false;
     }
+
     mqttClient.setServer(mqttCfg.broker.c_str(), mqttCfg.port);
     mqttClient.setCallback([](char *topic, uint8_t *payload, unsigned int length) {
         if (!topic || !payload || length == 0) return;
-        if (mqttChatInboxTopic.isEmpty() || strcmp(topic, mqttChatInboxTopic.c_str()) != 0) return;
         if (length > MQTT_CLIENT_BUFFER_SIZE) return;
         if (ESP.getFreeHeap() < MQTT_MIN_FREE_HEAP_PUBLISH ||
             heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < MQTT_MIN_LARGEST_8BIT_PUBLISH) return;
+
         JsonDocument doc;
         if (deserializeJson(doc, payload, length) != DeserializationError::Ok) return;
+
+        if (!mqttChatPresenceTopic.isEmpty() && strcmp(topic, mqttChatPresenceTopic.c_str()) == 0) {
+            const String kind = String(static_cast<const char *>(doc["kind"] | ""));
+            if (kind != "peer_presence") return;
+
+            const String name = String(static_cast<const char *>(doc["name"] | ""));
+            const String senderPubHex = String(static_cast<const char *>(doc["sender_pub"] | ""));
+            if (senderPubHex.isEmpty()) return;
+            if (senderPubHex.equalsIgnoreCase(p2pPublicKeyHex())) return;
+
+            mqttTouchDiscoveredPeer(name, senderPubHex);
+
+            if (lvglReady) {
+                lvglRefreshChatPeerUi();
+                lvglRefreshChatContactsUi();
+                if (uiScreen == UI_CHAT) lvglRefreshChatUi();
+            }
+            return;
+        }
+
+        if (mqttChatInboxTopic.isEmpty() || strcmp(topic, mqttChatInboxTopic.c_str()) != 0) return;
+
         const String senderPubHex = String(static_cast<const char *>(doc["sender_pub"] | ""));
         const String nonceHex = String(static_cast<const char *>(doc["nonce"] | ""));
         const String cipherHex = String(static_cast<const char *>(doc["cipher"] | ""));
         const int peerIdx = p2pFindPeerByPubKeyHex(senderPubHex);
         if (peerIdx < 0 || !p2pPeers[peerIdx].enabled) return;
+
         unsigned char senderPk[P2P_PUBLIC_KEY_BYTES] = {0};
         unsigned char nonce[P2P_NONCE_BYTES] = {0};
         unsigned char cipher[P2P_MAX_PACKET] = {0};
         size_t cipherLen = 0;
+
         if (!p2pHexToBytes(senderPubHex, senderPk, sizeof(senderPk))) return;
         if (!p2pHexToBytes(nonceHex, nonce, sizeof(nonce))) return;
         if (sodium_hex2bin(cipher, sizeof(cipher), cipherHex.c_str(), cipherHex.length(), nullptr, &cipherLen, nullptr) != 0 ||
             cipherLen < P2P_MAC_BYTES) return;
+
         unsigned char plain[P2P_MAX_PACKET] = {0};
         if (crypto_box_curve25519xchacha20poly1305_open_easy(plain, cipher, cipherLen, nonce, senderPk, p2pSecretKey) != 0) return;
+
         JsonDocument plainDoc;
         if (deserializeJson(plainDoc, plain, cipherLen - P2P_MAC_BYTES) != DeserializationError::Ok) return;
+
         const String kind = String(static_cast<const char *>(plainDoc["kind"] | "chat"));
         const String author = String(static_cast<const char *>(plainDoc["author"] | "Remote"));
+
         p2pRefreshTrustedPeerIdentity(senderPubHex, author, p2pPeers[peerIdx].ip, p2pPeers[peerIdx].port);
         p2pTouchPeerSeen(peerIdx, p2pPeers[peerIdx].ip, p2pPeers[peerIdx].port);
+
         if (kind == "delete_conversation") {
             chatApplyConversationDeletion(senderPubHex, "Conversation deleted by " + author);
             return;
@@ -20252,10 +20898,13 @@ bool mqttConnectNow()
             if (!ackId.isEmpty()) chatAckOutgoingMessage(senderPubHex, ackId);
             return;
         }
+
         const String messageId = String(static_cast<const char *>(plainDoc["id"] | ""));
         const String text = String(static_cast<const char *>(plainDoc["text"] | ""));
         if (text.isEmpty()) return;
+
         wakeDisplayForIncomingNotification();
+
         if (checkersHandleIncomingChatPayload(senderPubHex, author, text, CHAT_TRANSPORT_MQTT, messageId)) {
             if (lvglReady) {
                 lvglSyncStatusLine();
@@ -20270,12 +20919,16 @@ bool mqttConnectNow()
                 if (uiScreen == UI_CHAT) lvglRefreshChatUi();
             }
         }
+
         if (!messageId.isEmpty()) mqttPublishChatAck(senderPubHex, messageId);
     });
+
     const String availabilityTopic = "esp32/remote/" + mqttHwId + "/availability";
     bool ok = false;
+
     if (mqttCfg.username.length()) {
-        ok = mqttClient.connect(mqttClientId.c_str(), mqttCfg.username.c_str(), mqttCfg.password.c_str(), availabilityTopic.c_str(), 0, true, "offline");
+        ok = mqttClient.connect(mqttClientId.c_str(), mqttCfg.username.c_str(), mqttCfg.password.c_str(),
+                                availabilityTopic.c_str(), 0, true, "offline");
     } else {
         ok = mqttClient.connect(mqttClientId.c_str(), availabilityTopic.c_str(), 0, true, "offline");
     }
@@ -20289,9 +20942,12 @@ bool mqttConnectNow()
 
     mqttClient.publish(availabilityTopic.c_str(), "online", true);
     mqttClient.subscribe(mqttChatInboxTopic.c_str());
+    if (!mqttChatPresenceTopic.isEmpty()) mqttClient.subscribe(mqttChatPresenceTopic.c_str());
+    mqttPublishPeerPresence();
     mqttDiscoveryPublished = false;
     mqttStatusLine = "Connected";
     mqttConnectRequested = false;
+
     if (lvglReady) lvglRefreshTopIndicators();
     return true;
 }
@@ -20356,41 +21012,6 @@ static bool mqttPublishEncryptedPayload(const String &peerKey, const uint8_t *pl
 
     const String peerTopic = "esp32/remote/chat/" + String(MQTT_CHAT_NAMESPACE) + "/inbox/" + p2pPeers[peerIdx].pubKeyHex;
     return mqttClient.publish(peerTopic.c_str(), reinterpret_cast<const uint8_t *>(payload), static_cast<unsigned int>(written), false);
-}
-
-void mqttPublishDiscovery()
-{
-    if (!mqttClient.connected()) return;
-    if (!mqttHasHeapHeadroom(MQTT_MIN_FREE_HEAP_PUBLISH, MQTT_MIN_LARGEST_8BIT_PUBLISH, "MQTT discovery deferred")) return;
-    const String availTopic = "esp32/remote/" + mqttHwId + "/availability";
-    for (int i = mqttButtonCount; i < MQTT_MAX_BUTTONS; i++) {
-        const String oldTopic = mqttCfg.discoveryPrefix + "/device_automation/" + mqttNodeId + "/" + String(i) + "/config";
-        mqttClient.publish(oldTopic.c_str(), "", true);
-    }
-    for (int i = 0; i < mqttButtonCount; i++) {
-        const String action = mqttButtonPayloadForIndex(i);
-        const String topic = mqttCfg.discoveryPrefix + "/device_automation/" + mqttNodeId + "/" + String(i) + "/config";
-        JsonDocument doc;
-        doc["automation_type"] = "trigger";
-        doc["topic"] = mqttActionTopic;
-        doc["payload"] = action;
-        doc["type"] = "button_short_press";
-        doc["subtype"] = "button_" + String(i + 1);
-        doc["unique_id"] = mqttNodeId + "_" + String(i + 1) + "_" + action;
-        doc["availability_topic"] = availTopic;
-        JsonObject dev = doc["device"].to<JsonObject>();
-        JsonArray ids = dev["identifiers"].to<JsonArray>();
-        ids.add(mqttNodeId);
-        dev["name"] = mqttDeviceName;
-        dev["model"] = DEVICE_MODEL;
-        dev["manufacturer"] = "Elik";
-        dev["sw_version"] = FW_VERSION;
-        String payload;
-        serializeJson(doc, payload);
-        mqttClient.publish(topic.c_str(), payload.c_str(), true);
-    }
-    mqttDiscoveryPublished = true;
-    mqttStatusLine = "HA discovery published";
 }
 
 void mqttPublishAction(const char *action)
@@ -23622,18 +24243,29 @@ void loop()
                 wifiConnectionService();
                 if (!uiPriorityActive || realtimeMessaging) mqttService();
                 break;
+
             case 1:
                 if (p2pReady && (!uiPriorityActive || realtimeMessaging)) p2pService();
                 break;
+
             case 2:
                 if (!uiPriorityActive || uiScreen == UI_WIFI_LIST) wifiScanService();
                 if (!uiPriorityActive || realtimeMessaging) chatPendingService();
                 break;
+
             case 3:
-                if (!uiPriorityActive || uiScreen == UI_INFO || !sdMounted) sdStatsService();
+                if (!uiPriorityActive || !sdMounted) sdStatsService();
                 if (!uiPriorityActive) serviceCarInputTelemetry();
+
+                if (!uiPriorityActive || uiScreen == UI_INFO || uiScreen == UI_CONFIG_HC12_INFO) {
+                    serviceDeferredRadioInfoFetch();
+                }
                 break;
+
             case 4:
+                if (!uiPriorityActive) mqttPruneDiscoveredPeers();
+                if (!uiPriorityActive) hc12PruneDiscoveredPeers();
+
                 if (!uiPriorityActive) refreshMdnsState();
                 if (!uiPriorityActive || uiScreen == UI_CONFIG_OTA) otaCheckService();
                 break;
