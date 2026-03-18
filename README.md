@@ -2,7 +2,7 @@
 
 Firmware for Sunton-style ESP32 touch display boards with an LVGL UI, Wi-Fi/AP tools, SD recovery/file access, MQTT controls, encrypted chat, and optional radio modules.
 
-Current firmware version: **`0.21.01`**
+Current firmware version: **`0.21.02`**
 
 ![ESP32 Remote Render](3D_Models/render1.jpeg)
 
@@ -276,16 +276,16 @@ pio run -e esp32-s3-3248s035-n16r8 -t upload
 
 Do not flash only `firmware.bin` on `ESP32-2432S024C`. That board needs the full release image set written at the correct offsets or it can boot to a blank screen.
 
-For the latest verified release (`v0.21.01`), download these four files from:
+For the latest verified release (`v0.21.02`), download these four files from:
 
-- `https://github.com/elik745i/ESP32-2432S024C-Remote/releases/tag/v0.21.01`
+- `https://github.com/elik745i/ESP32-2432S024C-Remote/releases/tag/v0.21.02`
 
 For `ESP32-2432S024C`, use:
 
-- `esp32-2432s024c-v0.21.01_bootloader.bin` at `0x1000`
-- `esp32-2432s024c-v0.21.01_partitions.bin` at `0x8000`
-- `esp32-2432s024c-v0.21.01_boot_app0.bin` at `0xE000`
-- `esp32-2432s024c-v0.21.01.bin` at `0x10000`
+- `esp32-2432s024c-v0.21.02_bootloader.bin` at `0x1000`
+- `esp32-2432s024c-v0.21.02_partitions.bin` at `0x8000`
+- `esp32-2432s024c-v0.21.02_boot_app0.bin` at `0xE000`
+- `esp32-2432s024c-v0.21.02.bin` at `0x10000`
 
 Using Espressif `Flash Download Tool` on Windows:
 
@@ -303,13 +303,25 @@ If you use `esptool.py`, the equivalent command is:
 
 ```powershell
 esptool.py --chip esp32 --port COMx --baud 460800 write_flash -z `
-  0x1000 esp32-2432s024c-v0.21.01_bootloader.bin `
-  0x8000 esp32-2432s024c-v0.21.01_partitions.bin `
-  0xE000 esp32-2432s024c-v0.21.01_boot_app0.bin `
-  0x10000 esp32-2432s024c-v0.21.01.bin
+  0x1000 esp32-2432s024c-v0.21.02_bootloader.bin `
+  0x8000 esp32-2432s024c-v0.21.02_partitions.bin `
+  0xE000 esp32-2432s024c-v0.21.02_boot_app0.bin `
+  0x10000 esp32-2432s024c-v0.21.02.bin
 ```
 
-The `ESP32-S3-3248S035-N16R8` release currently ships as a single firmware image and can be flashed normally.
+`ESP32-3248S035` uses the same `ESP32` flash layout as `ESP32-2432S024C`:
+
+- `bootloader` at `0x1000`
+- `partitions` at `0x8000`
+- `boot_app0` at `0xE000`
+- `firmware` at `0x10000`
+
+`ESP32-S3-3248S035-N16R8` release assets support full `Flash Download Tool` flashing too:
+
+- `bootloader` at `0x0000`
+- `partitions` at `0x8000`
+- `boot_app0` at `0xE000`
+- `firmware` at `0x10000`
 
 ### Serial monitor
 

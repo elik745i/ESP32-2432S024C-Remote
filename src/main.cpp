@@ -180,7 +180,9 @@ static_assert(TOUCH_IRQ != SD_CS && TOUCH_IRQ != SD_MOSI && TOUCH_IRQ != SD_SCK 
 
 static constexpr unsigned long RADIO_ACK_TIMEOUT_MS = 1500UL;
 static constexpr uint8_t RADIO_MAX_RETRIES = 4;
-static constexpr unsigned long RADIO_POST_TX_GUARD_MS = 40UL;
+static constexpr unsigned long RADIO_POST_TX_GUARD_MS = 25UL;
+static constexpr unsigned long RADIO_TX_TIMING_SLOP_MS = 4UL;
+static constexpr int CHAT_RECENT_MESSAGE_ID_CACHE = 32;
 
 struct RadioTxState {
     bool waitingAck = false;
@@ -192,6 +194,17 @@ struct RadioTxState {
 };
 
 static RadioTxState radioTxState;
+
+struct ChatRecentMessageIdEntry {
+    String peerKey;
+    String messageId;
+};
+
+static ChatRecentMessageIdEntry chatRecentMessageIds[CHAT_RECENT_MESSAGE_ID_CACHE];
+static uint8_t chatRecentMessageIdHead = 0;
+static bool chatPendingOutboxDirty = false;
+static unsigned long chatPendingOutboxFlushAfterMs = 0;
+static unsigned long radioLastTxLeadMs = 0;
 
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
 static constexpr bool AUDIO_BACKEND_SUPPORTED = false;
@@ -324,7 +337,7 @@ static constexpr uint8_t VIBRATION_QUEUE_MAX = 4;
 #endif
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.21.01";
+static constexpr const char *FW_VERSION = "0.21.02";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -1648,7 +1661,9 @@ struct PendingChatMessage {
     String messageId;
     unsigned long createdMs;
     unsigned long lastAttemptMs;
+    unsigned long lastRadioAttemptMs;
     uint8_t attempts;
+    uint8_t radioAttempts;
 };
 
 PendingChatMessage chatPendingMessages[MAX_CHAT_PENDING];
@@ -1787,6 +1802,16 @@ static String chatSafeFileToken(const String &raw);
 static String chatFriendlyLogFilenameForPeer(const String &peerKey);
 static String chatLegacyLogPathForPeer(const String &peerKey);
 static String chatLogPathForPeer(const String &peerKey);
+static bool chatSavePendingOutbox();
+static void chatRememberRecentMessageId(const String &peerKey, const String &messageId);
+static bool chatRecentMessageIdSeen(const String &peerKey, const String &messageId);
+static void chatSchedulePendingOutboxSave(unsigned long delayMs = 200UL);
+static void chatPendingOutboxService();
+static bool chatPeerCanUseP2pTransport(const String &peerKey);
+static bool chatPeerCanUseMqttTransport(const String &peerKey);
+static bool chatPeerCanUseRadioTransport(const String &peerKey);
+static bool chatPeerUsesRadioPath(const String &peerKey);
+static bool chatPeerBlockedByAirplaneMode(const String &peerKey);
 static bool chatHasUnreadMessages();
 static void chatSetPeerUnread(const String &peerKey, bool unread);
 static bool chatSendRawReliableMessage(const String &peerKey, const String &text, bool storeVisible);
@@ -1800,6 +1825,8 @@ static void chatScheduleOpenPeerConversation(const String &peerKey);
 static void lvglDeferredChatOpenFirstUnreadCallback(void *param);
 static bool chatDeleteMessageById(const String &peerKey, const String &messageId, const String &status);
 static bool chatDeleteMessageAt(const String &peerKey, int index);
+static unsigned long e220RuntimeBaud();
+static bool hc12SetIsAsserted();
 static bool checkersHandleIncomingChatPayload(const String &peerKey,
                                               const String &author,
                                               const String &text,
@@ -6785,7 +6812,9 @@ static void chatLoadPendingOutbox()
             msg.text = chatUnescapeLogField(line.substring(p3 + 1, p4));
             msg.createdMs = static_cast<unsigned long>(strtoul(line.substring(p4 + 1).c_str(), nullptr, 10));
             msg.lastAttemptMs = 0;
+            msg.lastRadioAttemptMs = 0;
             msg.attempts = 0;
+            msg.radioAttempts = 0;
         }
         f.close();
     }
@@ -6798,6 +6827,95 @@ static int chatFindPendingIndex(const String &peerKey, const String &messageId)
         if (chatPendingMessages[i].peerKey == peerKey && chatPendingMessages[i].messageId == messageId) return i;
     }
     return -1;
+}
+
+static void chatRememberRecentMessageId(const String &peerKey, const String &messageId)
+{
+    if (peerKey.isEmpty() || messageId.isEmpty()) return;
+    for (int i = 0; i < CHAT_RECENT_MESSAGE_ID_CACHE; ++i) {
+        if (chatRecentMessageIds[i].peerKey == peerKey &&
+            chatRecentMessageIds[i].messageId == messageId) {
+            return;
+        }
+    }
+    chatRecentMessageIds[chatRecentMessageIdHead].peerKey = peerKey;
+    chatRecentMessageIds[chatRecentMessageIdHead].messageId = messageId;
+    chatRecentMessageIdHead = static_cast<uint8_t>((chatRecentMessageIdHead + 1U) % CHAT_RECENT_MESSAGE_ID_CACHE);
+}
+
+static bool chatRecentMessageIdSeen(const String &peerKey, const String &messageId)
+{
+    if (peerKey.isEmpty() || messageId.isEmpty()) return false;
+    for (int i = 0; i < CHAT_RECENT_MESSAGE_ID_CACHE; ++i) {
+        if (chatRecentMessageIds[i].peerKey == peerKey &&
+            chatRecentMessageIds[i].messageId == messageId) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void chatSchedulePendingOutboxSave(unsigned long delayMs)
+{
+    chatPendingOutboxDirty = true;
+    const unsigned long due = millis() + delayMs;
+    if (chatPendingOutboxFlushAfterMs == 0 ||
+        static_cast<long>(due - chatPendingOutboxFlushAfterMs) < 0) {
+        chatPendingOutboxFlushAfterMs = due;
+    }
+}
+
+static void chatPendingOutboxService()
+{
+    if (!chatPendingOutboxDirty) return;
+    if (fsWriteBusy()) return;
+    if (chatPendingOutboxFlushAfterMs != 0 &&
+        static_cast<long>(millis() - chatPendingOutboxFlushAfterMs) < 0) {
+        return;
+    }
+    if (chatSavePendingOutbox()) {
+        chatPendingOutboxDirty = false;
+        chatPendingOutboxFlushAfterMs = 0;
+    } else {
+        chatPendingOutboxFlushAfterMs = millis() + 1000UL;
+    }
+}
+
+static bool chatPeerCanUseP2pTransport(const String &peerKey)
+{
+    if (!p2pReady || peerKey.isEmpty()) return false;
+    const int peerIdx = p2pFindPeerByPubKeyHex(peerKey);
+    if (peerIdx < 0 || !p2pPeers[peerIdx].enabled) return false;
+    return p2pPeers[peerIdx].ip != IPAddress((uint32_t)0);
+}
+
+static bool chatPeerCanUseMqttTransport(const String &peerKey)
+{
+    if (peerKey.isEmpty()) return false;
+    if (!mqttCfg.enabled || !mqttClient.connected()) return false;
+    const int peerIdx = p2pFindPeerByPubKeyHex(peerKey);
+    return peerIdx >= 0 && p2pPeers[peerIdx].enabled;
+}
+
+static bool chatPeerCanUseRadioTransport(const String &peerKey)
+{
+    if (peerKey.isEmpty() || !radioModuleCanCarryChat()) return false;
+    if (hc12SetIsAsserted()) return false;
+    const int peerIdx = p2pFindPeerByPubKeyHex(peerKey);
+    return peerIdx >= 0 && p2pPeers[peerIdx].enabled;
+}
+
+static bool chatPeerUsesRadioPath(const String &peerKey)
+{
+    if (peerKey.isEmpty()) return false;
+    if (chatPeerCanUseRadioTransport(peerKey)) return true;
+    return hc12FindDiscoveredByPubKeyHex(peerKey) >= 0;
+}
+
+static bool chatPeerBlockedByAirplaneMode(const String &peerKey)
+{
+    if (!airplaneModeEnabled) return false;
+    return !chatPeerUsesRadioPath(peerKey);
 }
 
 static void chatRemovePendingForPeer(const String &peerKey)
@@ -6818,7 +6936,7 @@ static void chatRemovePendingForPeer(const String &peerKey)
     }
 
     if (changed) {
-        chatSavePendingOutbox();
+        chatSchedulePendingOutboxSave();
     }
 }
 
@@ -6835,6 +6953,7 @@ static bool chatConversationHasMessageId(const String &peerKey, const String &me
 static bool chatHasLoggedMessageId(const String &peerKey, const String &messageId)
 {
     if (peerKey.isEmpty() || messageId.isEmpty()) return false;
+    if (chatRecentMessageIdSeen(peerKey, messageId)) return true;
     if (!sdEnsureMounted()) return false;
     if (!sdLock()) return false;
     bool found = false;
@@ -6925,6 +7044,7 @@ static void chatStoreMessage(const String &peerKey, const String &author, const 
         if (chatHasLoggedMessageId(peerKey, messageId)) return;
     }
     const bool stored = chatAppendMessageToSd(peerKey, transport, author, text, outgoing, nowMs, messageId);
+    if (stored && !messageId.isEmpty()) chatRememberRecentMessageId(peerKey, messageId);
     const bool conversationOpen = (uiScreen == UI_CHAT) && (currentChatPeerKey == peerKey);
     if (conversationOpen && (stored || !messageId.isEmpty())) {
         chatSetPeerUnread(peerKey, false);
@@ -6949,7 +7069,9 @@ static bool chatQueueOutgoingMessage(const String &peerKey, const String &author
     msg.messageId = messageId;
     msg.createdMs = millis();
     msg.lastAttemptMs = 0;
+    msg.lastRadioAttemptMs = 0;
     msg.attempts = 0;
+    msg.radioAttempts = 0;
     return chatSavePendingOutbox();
 }
 
@@ -7125,22 +7247,23 @@ static bool chatDeleteMessageById(const String &peerKey, const String &messageId
 static bool chatSendRawReliableMessage(const String &peerKey, const String &text, bool storeVisible)
 {
     if (peerKey.isEmpty() || text.isEmpty()) return false;
+    if (chatPeerBlockedByAirplaneMode(peerKey)) return false;
     const String messageId = chatGenerateMessageId();
     chatQueueOutgoingMessage(peerKey, deviceShortNameValue(), text, messageId);
     const bool sentLan = p2pSendChatMessageWithId(peerKey, text, messageId);
     const bool sentGlobal = mqttPublishChatMessageWithId(peerKey, text, messageId);
-    const bool sentRadio = hc12SendChatMessageWithId(peerKey, text, messageId);
+    const bool queuedRadio = chatPeerCanUseRadioTransport(peerKey);
     if (storeVisible) {
         const ChatTransport storedTransport = sentGlobal ? CHAT_TRANSPORT_MQTT
                                                          : (sentLan ? CHAT_TRANSPORT_WIFI
-                                                                    : (sentRadio ? radioSelectedChatTransport() : CHAT_TRANSPORT_WIFI));
+                                                                    : (queuedRadio ? radioSelectedChatTransport() : CHAT_TRANSPORT_WIFI));
         chatStoreMessage(peerKey, "Me", text, true, storedTransport, messageId);
         if (lvglReady) {
             if (uiScreen == UI_CHAT) lvglRefreshChatUi();
             lvglRefreshChatContactsUi();
         }
     }
-    return sentLan || sentGlobal || sentRadio || storeVisible;
+    return sentLan || sentGlobal || queuedRadio || storeVisible;
 }
 
 static bool chatSendAndStoreMessage(const String &peerKey, const String &text)
@@ -7246,7 +7369,7 @@ static bool chatAckOutgoingMessage(const String &peerKey, const String &messageI
         chatPendingMessages[i - 1] = chatPendingMessages[i];
     }
     chatPendingCount--;
-    chatSavePendingOutbox();
+    chatSchedulePendingOutboxSave();
 
     if (currentChatPeerKey == peerKey) {
         for (int i = 0; i < chatMessageCount; ++i) {
@@ -7284,15 +7407,7 @@ static void chatPendingService()
             chatMarkOutgoingFailed(msg.peerKey, msg.messageId);
             for (int j = i + 1; j < chatPendingCount; ++j) chatPendingMessages[j - 1] = chatPendingMessages[j];
             chatPendingCount--;
-            chatSavePendingOutbox();
-            continue;
-        }
-
-        if (msg.attempts >= 5) {
-            chatMarkOutgoingFailed(msg.peerKey, msg.messageId);
-            for (int j = i + 1; j < chatPendingCount; ++j) chatPendingMessages[j - 1] = chatPendingMessages[j];
-            chatPendingCount--;
-            chatSavePendingOutbox();
+            chatSchedulePendingOutboxSave();
             continue;
         }
 
@@ -7310,15 +7425,7 @@ static void chatPendingService()
         // Radio is now handled only by radioChatService().
 
         msg.lastAttemptMs = now;
-        if (msg.attempts < 255) msg.attempts++;
-
-        if (!attempted && msg.attempts >= 5) {
-            chatMarkOutgoingFailed(msg.peerKey, msg.messageId);
-            for (int j = i + 1; j < chatPendingCount; ++j) chatPendingMessages[j - 1] = chatPendingMessages[j];
-            chatPendingCount--;
-            chatSavePendingOutbox();
-            continue;
-        }
+        if (attempted && msg.attempts < 255) msg.attempts++;
 
         ++i;
     }
@@ -7356,27 +7463,33 @@ static void radioChatService()
         if ((unsigned long)(now - radioTxState.sentAtMs) < RADIO_ACK_TIMEOUT_MS) return;
 
         if (radioTxState.retries >= RADIO_MAX_RETRIES) {
-            chatMarkOutgoingFailed(msg->peerKey, msg->messageId);
-
-            const int idx = chatFindPendingIndex(msg->peerKey, msg->messageId);
-            if (idx >= 0) {
-                for (int j = idx + 1; j < chatPendingCount; ++j) {
-                    chatPendingMessages[j - 1] = chatPendingMessages[j];
+            if (!chatPeerCanUseP2pTransport(msg->peerKey) && !chatPeerCanUseMqttTransport(msg->peerKey)) {
+                chatMarkOutgoingFailed(msg->peerKey, msg->messageId);
+                const int idx = chatFindPendingIndex(msg->peerKey, msg->messageId);
+                if (idx >= 0) {
+                    for (int j = idx + 1; j < chatPendingCount; ++j) {
+                        chatPendingMessages[j - 1] = chatPendingMessages[j];
+                    }
+                    chatPendingCount--;
+                    chatSchedulePendingOutboxSave();
                 }
-                chatPendingCount--;
-                chatSavePendingOutbox();
             }
-
             radioTxClear();
             if (lvglReady && uiScreen == UI_CHAT) lvglRefreshChatUi();
             return;
         }
 
+        if (msg->lastRadioAttemptMs != 0 &&
+            static_cast<unsigned long>(now - msg->lastRadioAttemptMs) < CHAT_RETRY_INTERVAL_MS) {
+            return;
+        }
+
         if (hc12SendChatMessageWithId(msg->peerKey, msg->text, msg->messageId)) {
-            msg->lastAttemptMs = now;
-            if (msg->attempts < 255) msg->attempts++;
-            radioTxState.sentAtMs = now;
-            radioTxState.guardUntilMs = now + RADIO_POST_TX_GUARD_MS;
+            const unsigned long txLeadMs = radioLastTxLeadMs;
+            msg->lastRadioAttemptMs = now;
+            if (msg->radioAttempts < 255) msg->radioAttempts++;
+            radioTxState.sentAtMs = now + txLeadMs;
+            radioTxState.guardUntilMs = now + txLeadMs + RADIO_POST_TX_GUARD_MS;
             radioTxState.retries++;
         }
 
@@ -7387,28 +7500,31 @@ static void radioChatService()
     PendingChatMessage *msg = chatFindFirstPendingRadioMessage();
     if (!msg) return;
 
-    if (msg->attempts >= 5) {
-        chatMarkOutgoingFailed(msg->peerKey, msg->messageId);
-        const int idx = chatFindPendingIndex(msg->peerKey, msg->messageId);
-        if (idx >= 0) {
-            for (int j = idx + 1; j < chatPendingCount; ++j) {
-                chatPendingMessages[j - 1] = chatPendingMessages[j];
+    if (msg->radioAttempts >= RADIO_MAX_RETRIES) {
+        if (!chatPeerCanUseP2pTransport(msg->peerKey) && !chatPeerCanUseMqttTransport(msg->peerKey)) {
+            chatMarkOutgoingFailed(msg->peerKey, msg->messageId);
+            const int idx = chatFindPendingIndex(msg->peerKey, msg->messageId);
+            if (idx >= 0) {
+                for (int j = idx + 1; j < chatPendingCount; ++j) {
+                    chatPendingMessages[j - 1] = chatPendingMessages[j];
+                }
+                chatPendingCount--;
+                chatSchedulePendingOutboxSave();
             }
-            chatPendingCount--;
-            chatSavePendingOutbox();
         }
         return;
     }
 
     if (hc12SendChatMessageWithId(msg->peerKey, msg->text, msg->messageId)) {
-        msg->lastAttemptMs = now;
-        if (msg->attempts < 255) msg->attempts++;
+        const unsigned long txLeadMs = radioLastTxLeadMs;
+        msg->lastRadioAttemptMs = now;
+        if (msg->radioAttempts < 255) msg->radioAttempts++;
 
         radioTxState.waitingAck = true;
         radioTxState.peerKey = msg->peerKey;
         radioTxState.messageId = msg->messageId;
-        radioTxState.sentAtMs = now;
-        radioTxState.guardUntilMs = now + RADIO_POST_TX_GUARD_MS;
+        radioTxState.sentAtMs = now + txLeadMs;
+        radioTxState.guardUntilMs = now + txLeadMs + RADIO_POST_TX_GUARD_MS;
         radioTxState.retries = 0;
     }
 }
@@ -7448,7 +7564,7 @@ static bool chatOpenPeerConversation(const String &peerKey)
     chatSetPeerUnread(currentChatPeerKey, false);
     chatReloadRecentMessagesFromSd(currentChatPeerKey);
 
-    if (airplaneModeEnabled) {
+    if (chatPeerBlockedByAirplaneMode(peerKey)) {
         lvglShowChatAirplanePrompt();
         return true;
     }
@@ -7522,6 +7638,7 @@ void chatReloadRecentMessagesFromSd(const String &peerKey)
             msg.author = chatUnescapeLogField(line.substring(p3 + 1, p4));
             msg.text = chatUnescapeLogField((p5 > p4) ? line.substring(p4 + 1, p5) : line.substring(p4 + 1));
             msg.messageId = (p5 > p4) ? chatUnescapeLogField(line.substring(p5 + 1)) : String("");
+            msg.failed = false;
             if (msg.text.isEmpty()) continue;
             if (chatMessageCount < MAX_CHAT_MESSAGES) {
                 chatMessages[chatMessageCount++] = msg;
@@ -10183,10 +10300,6 @@ void lvglHomeNavEvent(lv_event_t *e)
         currentChatPeerKey = "";
         chatClearCache();
     }
-    if (target == UI_CHAT && airplaneModeEnabled) {
-        uiStatusLine = "Airplane mode: chat allowed temporarily";
-        lvglSyncStatusLine();
-    }
     lvglOpenScreen(target, LV_SCR_LOAD_ANIM_MOVE_LEFT);
 }
 
@@ -10197,7 +10310,7 @@ void lvglChatAirplanePromptEvent(lv_event_t *e)
     if (txt && strcmp(txt, "Airplane Off") == 0) {
         applyAirplaneMode(false, "chat_prompt");
     } else {
-        uiStatusLine = "Airplane mode: chat opened read-only";
+        uiStatusLine = "Airplane mode: WiFi chat unavailable";
         lvglSyncStatusLine();
     }
     lvglEnsureScreenBuilt(UI_CHAT);
@@ -10211,8 +10324,8 @@ void lvglChatAirplanePromptEvent(lv_event_t *e)
 void lvglShowChatAirplanePrompt()
 {
     static const char *btns[] = {"Cancel", "Airplane Off", ""};
-    lv_obj_t *m = lv_msgbox_create(nullptr, "Chat Unavailable",
-                                   "Airplane mode is on.\nTurn it off to use chat.",
+    lv_obj_t *m = lv_msgbox_create(nullptr, "WiFi Chat Unavailable",
+                                   "Airplane mode is on.\nTurn it off to use WiFi chat.",
                                    btns, false);
     if (!m) return;
     lvglApplyMsgboxModalStyle(m);
@@ -10345,14 +10458,14 @@ void lvglPowerButtonEvent(lv_event_t *e)
 
 bool lvglChatPromptIfAirplaneBlocked()
 {
-    if (!airplaneModeEnabled) return false;
+    if (!chatPeerBlockedByAirplaneMode(currentChatPeerKey)) return false;
     if (lvglChatInputTa && !currentChatPeerKey.isEmpty()) {
         String text = lv_textarea_get_text(lvglChatInputTa);
         text.trim();
         if (!text.isEmpty()) chatStageDeferredAirplaneMessage(currentChatPeerKey, text);
     }
     lvglShowChatAirplanePrompt();
-    return false;
+    return true;
 }
 
 void lvglOpenChatPeersEvent(lv_event_t *e)
@@ -11141,10 +11254,13 @@ static bool hc12SendRadioPayload(const char *payload, size_t len)
 {
     hc12InitIfNeeded();
     if (hc12SetIsAsserted() || !radioModuleCanCarryChat() || !payload || len == 0 || len >= HC12_RADIO_MAX_LINE) return false;
+    const size_t frameBytes = strlen(HC12_RADIO_FRAME_PREFIX) + len + 1U;
+    const unsigned long baud = (radioModuleType == RADIO_MODULE_E220) ? e220RuntimeBaud() : HC12_BAUD;
+    const unsigned long bits = static_cast<unsigned long>(frameBytes) * 10UL;
+    radioLastTxLeadMs = max<unsigned long>(1UL, ((bits * 1000UL) + (baud - 1UL)) / baud) + RADIO_TX_TIMING_SLOP_MS;
     Serial1.print(HC12_RADIO_FRAME_PREFIX);
     Serial1.write(reinterpret_cast<const uint8_t *>(payload), len);
     Serial1.write('\n');
-    Serial1.flush();
     return true;
 }
 
@@ -11155,11 +11271,7 @@ static bool hc12SendRadioDocument(JsonDocument &doc)
     char payload[HC12_RADIO_MAX_LINE] = {0};
     const size_t len = serializeJson(doc, payload, sizeof(payload));
     if (len == 0 || len >= sizeof(payload)) return false;
-    Serial1.print(HC12_RADIO_FRAME_PREFIX);
-    Serial1.write(reinterpret_cast<const uint8_t *>(payload), len);
-    Serial1.write('\n');
-    Serial1.flush();
-    return true;
+    return hc12SendRadioPayload(payload, len);
 }
 
 static bool hc12SendRadioPing()
@@ -12205,7 +12317,6 @@ void p2pService()
                                                 }
                                             } else if (!isDuplicate) {
                                                 chatStoreMessage(senderPeerKey, author, text, false, CHAT_TRANSPORT_WIFI, messageId);
-                                                chatQueueIncomingMessageBeep();
                                                 uiStatusLine = "Chat received from " + author;
                                                 if (lvglReady) {
                                                     lvglSyncStatusLine();
@@ -13870,22 +13981,22 @@ static void hc12HandleIncomingRadioLine(const String &line)
             }
             return;
         }
+        const bool isDuplicate = !messageId.isEmpty() && chatHasLoggedMessageId(senderPubHex, messageId);
+        if (!messageId.isEmpty()) hc12SendChatAck(senderPubHex, messageId);
         wakeDisplayForIncomingNotification();
         if (checkersHandleIncomingChatPayload(senderPubHex, author, text, radioTransport, messageId)) {
             if (lvglReady) {
                 lvglSyncStatusLine();
                 if (uiScreen == UI_CHAT) lvglRefreshChatUi();
             }
-        } else if (messageId.isEmpty() || !chatHasLoggedMessageId(senderPubHex, messageId)) {
+        } else if (!isDuplicate) {
             chatStoreMessage(senderPubHex, author, text, false, radioTransport, messageId);
-            chatQueueIncomingMessageBeep();
             uiStatusLine = String(radioModuleChatLabel()) + " chat from " + author;
             if (lvglReady) {
                 lvglSyncStatusLine();
                 if (uiScreen == UI_CHAT) lvglRefreshChatUi();
             }
         }
-        if (!messageId.isEmpty()) hc12SendChatAck(senderPubHex, messageId);
         return;
     }
 
@@ -21522,6 +21633,10 @@ bool mqttConnectNow()
         const String messageId = String(static_cast<const char *>(plainDoc["id"] | ""));
         const String text = String(static_cast<const char *>(plainDoc["text"] | ""));
         if (text.isEmpty()) return;
+        const bool isDuplicate = !messageId.isEmpty() && chatHasLoggedMessageId(senderPubHex, messageId);
+
+        // ACK before SD/UI work so the sender can leave transmit mode sooner.
+        if (!messageId.isEmpty()) mqttPublishChatAck(senderPubHex, messageId);
 
         wakeDisplayForIncomingNotification();
 
@@ -21530,17 +21645,14 @@ bool mqttConnectNow()
                 lvglSyncStatusLine();
                 if (uiScreen == UI_CHAT) lvglRefreshChatUi();
             }
-        } else if (messageId.isEmpty() || !chatHasLoggedMessageId(senderPubHex, messageId)) {
+        } else if (!isDuplicate) {
             chatStoreMessage(senderPubHex, author, text, false, CHAT_TRANSPORT_MQTT, messageId);
-            chatQueueIncomingMessageBeep();
             uiStatusLine = "Global chat from " + author;
             if (lvglReady) {
                 lvglSyncStatusLine();
                 if (uiScreen == UI_CHAT) lvglRefreshChatUi();
             }
         }
-
-        if (!messageId.isEmpty()) mqttPublishChatAck(senderPubHex, messageId);
     });
 
     const String availabilityTopic = "esp32/remote/" + mqttHwId + "/availability";
@@ -24909,6 +25021,10 @@ void loop()
     otaUpdateService();
     hc12Service();
     radioChatService();
+    if (!uiPriorityActive || realtimeMessaging || chatPendingCount > 0) {
+        chatPendingService();
+    }
+    chatPendingOutboxService();
     screenshotService(isDown);
     const bool allowSdAutoRetry = (uiScreen == UI_MEDIA) || !displayAwake;
     if (!sdMounted && allowSdAutoRetry && !isDown && !fsWriteBusy() &&
