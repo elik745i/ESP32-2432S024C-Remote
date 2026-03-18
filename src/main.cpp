@@ -221,10 +221,13 @@ static constexpr float AUDIO_VOLUME_CURVE_EXPONENT = 2.0f;
 static constexpr uint8_t VIBRATION_LEDC_CHANNEL = 6;
 static constexpr uint16_t VIBRATION_PWM_HZ = 220;
 static constexpr uint8_t VIBRATION_PWM_RES_BITS = 8;
+static constexpr unsigned long TOUCH_VIBRATION_PULSE_MS = 12UL;
 #endif
 static constexpr uint8_t CHAT_NOTIFY_LEDC_CHANNEL = 7;
 static constexpr uint16_t CHAT_NOTIFY_FREQ_PRIMARY = 1760;
 static constexpr uint16_t CHAT_NOTIFY_FREQ_SECONDARY = 1320;
+static constexpr uint16_t TOUCH_TICK_FREQ = 1240;
+static constexpr unsigned long TOUCH_TICK_MS = 16UL;
 static constexpr unsigned long CHAT_NOTIFY_BEEP1_MS = 70UL;
 static constexpr unsigned long CHAT_NOTIFY_GAP_MS = 55UL;
 static constexpr unsigned long CHAT_NOTIFY_BEEP2_MS = 95UL;
@@ -337,7 +340,7 @@ static constexpr uint8_t VIBRATION_QUEUE_MAX = 4;
 #endif
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.21.02";
+static constexpr const char *FW_VERSION = "0.21.03";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -583,8 +586,11 @@ void chatQueueIncomingMessageVibration();
 void chatMessageVibrationService();
 static void chatMessageBeepPreview();
 static void chatMessageVibrationPreview();
+static void touchFeedbackQueue();
+static void touchFeedbackBeepService();
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
 static void chatMessageVibrationStop(bool clearQueue);
+static void touchFeedbackVibrationService();
 #endif
 bool mediaPathIsFlac(const String &path);
 bool audioFlacSupportedNow(uint32_t *freeHeapOut = nullptr, uint32_t *largestOut = nullptr);
@@ -779,9 +785,18 @@ bool hc12SendChatMessageWithId(const String &peerKey, const String &text, const 
 bool hc12SendMessageDelete(const String &peerKey, const String &messageId);
 bool hc12SendConversationDelete(const String &peerKey);
 bool hc12SendChatAck(const String &peerKey, const String &messageId);
+static String hc12QueryCommand(const char *line, unsigned long totalTimeoutMs = 180UL, unsigned long quietTimeoutMs = 32UL);
+static String e220QueryCommand(const char *line, unsigned long totalTimeoutMs, unsigned long quietTimeoutMs);
+static void hc12EnterAtMode();
+static void hc12ExitAtMode();
+static String e220ValueAfterEquals(String raw);
 static bool infoRefreshPending = false;
 static bool radioInfoFetchPending = false;
 static unsigned long radioInfoFetchDueMs = 0;
+static uint8_t infoRefreshPhase = 0;
+static uint8_t radioInfoFetchStage = 0;
+static bool radioInfoFetchActive = false;
+static unsigned long radioInfoFetchNextMs = 0;
 static void lvglAirplaneButtonDrawEvent(lv_event_t *e);
 String p2pPublicKeyHex();
 static int p2pFindPeerByPubKeyHex(const String &pubKeyHex);
@@ -853,8 +868,8 @@ uint32_t sdStatsLastLoggedRemountSuccess = 0;
 uint32_t sdStatsLastLoggedRemountFailure = 0;
 
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
-static constexpr uint16_t LVGL_BUF_LINES_MIN = 64;
-static constexpr uint16_t LVGL_BUF_LINES_MAX = 120;
+static constexpr uint16_t LVGL_BUF_LINES_MIN = 80;
+static constexpr uint16_t LVGL_BUF_LINES_MAX = 160;
 static constexpr uint16_t UI_ANIM_MS = 88;
 #else
 static constexpr uint16_t LVGL_BUF_LINES_MIN = 32;
@@ -915,6 +930,11 @@ static lv_obj_t *lvglScrSnake3d = nullptr;
 #endif
 static lv_obj_t *lvglStatusLabel = nullptr;
 static lv_obj_t *lvglInfoList = nullptr;
+static lv_obj_t *lvglInfoBatteryCard = nullptr;
+static lv_obj_t *lvglInfoWifiCard = nullptr;
+static lv_obj_t *lvglInfoRadioCard = nullptr;
+static lv_obj_t *lvglInfoLightCard = nullptr;
+static lv_obj_t *lvglInfoSdCard = nullptr;
 static lv_obj_t *lvglInfoBatteryValueLabel = nullptr;
 static lv_obj_t *lvglInfoBatterySubLabel = nullptr;
 static lv_obj_t *lvglInfoWifiValueLabel = nullptr;
@@ -1017,6 +1037,7 @@ static lv_obj_t *lvglChatMenuPanel = nullptr;
 static lv_obj_t *lvglChatPeerList = nullptr;
 static lv_obj_t *lvglChatPeerIdentityLabel = nullptr;
 static lv_obj_t *lvglChatPeerScanBtn = nullptr;
+static unsigned long lvglChatPeerScanRevertAtMs = 0;
 static lv_obj_t *lvglAirplaneBtn = nullptr;
 static lv_obj_t *lvglAirplaneBtnLabel = nullptr;
 static lv_obj_t *lvglApModeBtn = nullptr;
@@ -1040,6 +1061,8 @@ static lv_obj_t *lvglConfigFactoryResetBtn = nullptr;
 static lv_obj_t *lvglConfigWrap = nullptr;
 static lv_obj_t *lvglStyleScreensaverSw = nullptr;
 static lv_obj_t *lvglStyleMenuIconsSw = nullptr;
+static lv_obj_t *lvglStyleTouchVibrationSw = nullptr;
+static lv_obj_t *lvglStyleTouchSoundSw = nullptr;
 static lv_obj_t *lvglStyleButtonFlatBtn = nullptr;
 static lv_obj_t *lvglStyleButtonFlatBtnLabel = nullptr;
 static lv_obj_t *lvglStyleButton3dBtn = nullptr;
@@ -1545,8 +1568,40 @@ enum UiTextId : uint8_t {
     TXT_POWER_OFF,
     TXT_POWER_ACTION_BODY,    
     TXT_FACTORY_RESET_DONE,    
-    TXT_SCREEN
+    TXT_SCREEN,
+    TXT_BATTERY,
+    TXT_RADIO_MODULE,
+    TXT_RADIO_INFO_LOADING,
+    TXT_SCREENSAVER,
+    TXT_3D_ICONS,
+    TXT_TOUCH_VIBRATION,
+    TXT_TOUCH_TICK_SOUND,
+    TXT_BUTTON_STYLE,
+    TXT_FLAT_BUTTONS,
+    TXT_3D_BUTTONS,
+    TXT_BLACK_BUTTONS,
+    TXT_TIMEZONE,
+    TXT_TOP_BAR_CENTER,
+    TXT_SHOW_DEVICE_NAME,
+    TXT_SHOW_TIME,
+    TXT_SCREEN_TIMEOFF,
+    TXT_STYLE_HINT,
+    TXT_SELECT,
+    TXT_SELECTED,
+    TXT_STORED_CALIBRATION,
+    TXT_AUTO_CALIBRATION,
+    TXT_VERSION,
+    TXT_BAUD_RATE,
+    TXT_CHANNEL,
+    TXT_FU_MODE,
+    TXT_RAW,
+    TXT_DISCOVERY,
+    TXT_SCAN,
+    TXT_PEER_DISCOVERY_ENABLED,
+    TXT_PEER_DISCOVERY_DISABLED
 };
+
+enum Hc12ConfigApplyAction : uint8_t;
 
 UiScreen uiScreen = UI_HOME;
 UiScreen screensaverReturnScreen = UI_HOME;
@@ -2323,12 +2378,20 @@ bool chatMessageBeepPinAttached = false;
 uint8_t chatMessageBeepPhase = 0;
 uint8_t chatMessageBeepQueue = 0;
 unsigned long chatMessageBeepDeadlineMs = 0;
+bool touchSoundEnabled = true;
+bool touchFeedbackBeepActive = false;
+unsigned long touchFeedbackBeepDeadlineMs = 0;
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
 bool chatMessageVibrationPinAttached = false;
 bool chatMessageVibrationPinOutput = false;
 uint8_t chatMessageVibrationPhase = 0;
 uint8_t chatMessageVibrationQueue = 0;
 unsigned long chatMessageVibrationDeadlineMs = 0;
+bool touchVibrationEnabled = true;
+bool touchFeedbackVibrationActive = false;
+unsigned long touchFeedbackVibrationDeadlineMs = 0;
+#else
+bool touchVibrationEnabled = true;
 #endif
 
 Preferences wifiPrefs;
@@ -2340,6 +2403,30 @@ Preferences gamePrefs;
 String *hc12TerminalLog = nullptr;
 String hc12InfoValueText = "--";
 String hc12InfoSubText = "Open Info to query module";
+String radioInfoVersionText = "--";
+String radioInfoBaudText = "--";
+String radioInfoChannelText = "--";
+String radioInfoFuModeText = "--";
+String radioInfoPowerText = "--";
+String radioInfoRawText = "--";
+String infoWifiValueText = "--";
+String infoWifiSubText = "Loading...";
+uint8_t infoWifiQualityPercent = 0;
+String infoLightValueText = "--";
+String infoLightSubText = "Loading...";
+uint8_t infoLightPercentValue = 0;
+String infoSdValueText = "--";
+String infoSdSubText = "Loading...";
+uint8_t infoSdPercentValue = 0;
+String infoTempValueText = "--";
+String infoTempSubText = "Loading...";
+uint8_t infoTempBarValue = 0;
+String infoSramValueText = "--";
+String infoSramSubText = "Loading...";
+uint8_t infoSramPercentValue = 0;
+String infoPsramValueText = "--";
+String infoPsramSubText = "Loading...";
+uint8_t infoPsramPercentValue = 0;
 bool hc12SwapUartPins = false;
 int hc12CurrentChannel = HC12_MIN_CHANNEL;
 int hc12CurrentBaudIndex = 3;
@@ -2363,6 +2450,26 @@ uint32_t serialLogWsMinIntervalMs = SERIAL_LOG_RATE_MS_DEFAULT;
 size_t serialLogKeepLines = SERIAL_LOG_RING_SIZE;
 unsigned long serialTerminalStreamUntilMs = 0;
 uint16_t hc12SettleUntilTick = 0;
+enum Hc12ConfigApplyAction : uint8_t {
+    HC12_CFG_APPLY_NONE = 0,
+    HC12_CFG_APPLY_CHANNEL,
+    HC12_CFG_APPLY_BAUD,
+    HC12_CFG_APPLY_MODE,
+    HC12_CFG_APPLY_POWER,
+    HC12_CFG_APPLY_EXTRA
+};
+Hc12ConfigApplyAction hc12ConfigApplyPending = HC12_CFG_APPLY_NONE;
+int hc12ConfigApplyTarget = 0;
+unsigned long hc12ConfigApplyDueMs = 0;
+int hc12CommittedChannel = HC12_MIN_CHANNEL;
+int hc12CommittedBaudIndex = 3;
+int hc12CommittedModeIndex = 2;
+int hc12CommittedPowerLevel = 8;
+int e220CommittedChannel = 23;
+int e220CommittedBaudIndex = 3;
+int e220CommittedAirRateIndex = 2;
+int e220CommittedPowerIndex = 0;
+bool e220CommittedFixedTransmission = false;
 bool recordTelemetryEnabled = false;
 bool systemSoundsEnabled = true;
 bool wsRebootOnDisconnectEnabled = false;
@@ -3776,7 +3883,13 @@ static inline bool uiScreenNeedsRealtimeMessaging()
 
 static inline bool uiPerformancePriorityActive(bool touchDown)
 {
-    return displayAwake && (touchDown || lv_anim_count_running() > 0U);
+    return displayAwake &&
+           (touchDown ||
+            wakeTouchReleaseGuard ||
+            lvglSwipeTracking ||
+            lvglSwipeVisualActive ||
+            lvglSwipeVisualAnimating ||
+            lv_anim_count_running() > 0U);
 }
 
 static inline void lvglSuppressClicksAfterGesture()
@@ -3795,6 +3908,7 @@ static void lvglFilteredClickFlashEvent(lv_event_t *e)
     lv_obj_t *obj = lv_event_get_target(e);
     if (!obj || !lv_obj_is_valid(obj)) return;
 
+    touchFeedbackQueue();
     lv_obj_add_state(obj, LV_STATE_CHECKED);
 
     lv_timer_t *timer = lv_timer_create(
@@ -3971,6 +4085,16 @@ static void lvglApplyStyleScreenControlStyles()
         lv_obj_set_style_bg_color(lvglStyleMenuIconsSw, lv_color_hex(0x48515C), LV_PART_MAIN);
         lv_obj_set_style_bg_color(lvglStyleMenuIconsSw, lv_color_hex(0x3A8F4B), LV_PART_INDICATOR | LV_STATE_CHECKED);
         lv_obj_set_style_bg_color(lvglStyleMenuIconsSw, lv_color_hex(0xDCE7F2), LV_PART_KNOB);
+    }
+    if (lvglStyleTouchVibrationSw) {
+        lv_obj_set_style_bg_color(lvglStyleTouchVibrationSw, lv_color_hex(0x48515C), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(lvglStyleTouchVibrationSw, lv_color_hex(0x3A8F4B), LV_PART_INDICATOR | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_color(lvglStyleTouchVibrationSw, lv_color_hex(0xDCE7F2), LV_PART_KNOB);
+    }
+    if (lvglStyleTouchSoundSw) {
+        lv_obj_set_style_bg_color(lvglStyleTouchSoundSw, lv_color_hex(0x48515C), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(lvglStyleTouchSoundSw, lv_color_hex(0x3A8F4B), LV_PART_INDICATOR | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_color(lvglStyleTouchSoundSw, lv_color_hex(0xDCE7F2), LV_PART_KNOB);
     }
     if (lvglStyleTimeoutSlider) {
         lv_obj_set_style_bg_color(lvglStyleTimeoutSlider, lv_color_hex(0x2A3340), LV_PART_MAIN);
@@ -4655,7 +4779,7 @@ static const char *uiScreenName(UiScreen screen)
         case UI_MEDIA: return tr(TXT_MEDIA);
         case UI_INFO: return tr(TXT_INFO);
         case UI_CONFIG: return tr(TXT_CONFIG);
-        case UI_CONFIG_BATTERY: return "Battery";
+        case UI_CONFIG_BATTERY: return tr(TXT_BATTERY);
         case UI_CONFIG_STYLE: return tr(TXT_STYLE);
         case UI_CONFIG_LANGUAGE: return tr(TXT_LANGUAGE);
         case UI_CONFIG_OTA: return tr(TXT_OTA_UPDATES);
@@ -5358,6 +5482,8 @@ static void saveSoundPrefs()
     uiPrefs.putUChar("sys_vol", mediaVolumePercent);
     uiPrefs.putBool("vib_en", vibrationEnabled);
     uiPrefs.putUChar("vib_int", static_cast<uint8_t>(vibrationIntensity));
+    uiPrefs.putBool("touch_snd", touchSoundEnabled);
+    uiPrefs.putBool("touch_vib", touchVibrationEnabled);
     uiPrefs.end();
 }
 
@@ -5502,6 +5628,36 @@ static const char *tr(UiTextId id)
                 case TXT_POWER_ACTION_BODY: return "Выберите действие:";                
                 case TXT_CANCEL: return "Отмена";
                 case TXT_FACTORY_RESET_DONE: return "Сброс выполнен. Перезагрузка...";                
+                case TXT_BATTERY: return "Батарея";
+                case TXT_RADIO_MODULE: return "Радиомодуль";
+                case TXT_RADIO_INFO_LOADING: return "Загрузка...";
+                case TXT_SCREENSAVER: return "Заставка";
+                case TXT_3D_ICONS: return "3D иконки";
+                case TXT_TOUCH_VIBRATION: return "Вибрация касания";
+                case TXT_TOUCH_TICK_SOUND: return "Звук касания";
+                case TXT_BUTTON_STYLE: return "Стиль кнопок";
+                case TXT_FLAT_BUTTONS: return "Плоские кнопки";
+                case TXT_3D_BUTTONS: return "3D кнопки";
+                case TXT_BLACK_BUTTONS: return "Черные кнопки";
+                case TXT_TIMEZONE: return "Часовой пояс";
+                case TXT_TOP_BAR_CENTER: return "Центр верхней панели";
+                case TXT_SHOW_DEVICE_NAME: return "Показать имя устройства";
+                case TXT_SHOW_TIME: return "Показать время";
+                case TXT_SCREEN_TIMEOFF: return "Таймаут экрана";
+                case TXT_STYLE_HINT: return "Таймаут экрана управляет сном и заставкой. Выключение может отключить питание после простоя для экономии батареи.";
+                case TXT_SELECT: return "Выбрать";
+                case TXT_SELECTED: return "Выбрано";
+                case TXT_STORED_CALIBRATION: return "Сохраненная калибровка";
+                case TXT_AUTO_CALIBRATION: return "Автокалибровка";
+                case TXT_VERSION: return "Версия";
+                case TXT_BAUD_RATE: return "Скорость порта";
+                case TXT_CHANNEL: return "Канал";
+                case TXT_FU_MODE: return "Режим FU";
+                case TXT_RAW: return "Сырой вывод";
+                case TXT_DISCOVERY: return "Поиск";
+                case TXT_SCAN: return "Скан";
+                case TXT_PEER_DISCOVERY_ENABLED: return "Поиск пиров включен";
+                case TXT_PEER_DISCOVERY_DISABLED: return "Поиск пиров выключен";
                 case TXT_SCREEN:
                 default: return "Экран";
             }
@@ -5546,6 +5702,36 @@ static const char *tr(UiTextId id)
                 case TXT_POWER_ACTION_BODY: return "选择操作：";                
                 case TXT_CANCEL: return "取消";
                 case TXT_FACTORY_RESET_DONE: return "恢复出厂完成，正在重启...";                
+                case TXT_BATTERY: return "电池";
+                case TXT_RADIO_MODULE: return "无线模块";
+                case TXT_RADIO_INFO_LOADING: return "加载中...";
+                case TXT_SCREENSAVER: return "屏保";
+                case TXT_3D_ICONS: return "3D 图标";
+                case TXT_TOUCH_VIBRATION: return "触摸振动";
+                case TXT_TOUCH_TICK_SOUND: return "触摸提示音";
+                case TXT_BUTTON_STYLE: return "按钮样式";
+                case TXT_FLAT_BUTTONS: return "扁平按钮";
+                case TXT_3D_BUTTONS: return "3D 按钮";
+                case TXT_BLACK_BUTTONS: return "黑色按钮";
+                case TXT_TIMEZONE: return "时区";
+                case TXT_TOP_BAR_CENTER: return "顶部栏中间";
+                case TXT_SHOW_DEVICE_NAME: return "显示设备名";
+                case TXT_SHOW_TIME: return "显示时间";
+                case TXT_SCREEN_TIMEOFF: return "屏幕超时";
+                case TXT_STYLE_HINT: return "屏幕超时控制睡眠和屏保。关机可在更长时间无操作后关闭硬件电源以节省电池。";
+                case TXT_SELECT: return "选择";
+                case TXT_SELECTED: return "已选择";
+                case TXT_STORED_CALIBRATION: return "已保存校准";
+                case TXT_AUTO_CALIBRATION: return "自动校准";
+                case TXT_VERSION: return "版本";
+                case TXT_BAUD_RATE: return "波特率";
+                case TXT_CHANNEL: return "信道";
+                case TXT_FU_MODE: return "FU 模式";
+                case TXT_RAW: return "原始";
+                case TXT_DISCOVERY: return "发现";
+                case TXT_SCAN: return "扫描";
+                case TXT_PEER_DISCOVERY_ENABLED: return "已启用对等发现";
+                case TXT_PEER_DISCOVERY_DISABLED: return "已禁用对等发现";
                 case TXT_SCREEN:
                 default: return "界面";
             }
@@ -5590,6 +5776,36 @@ static const char *tr(UiTextId id)
                 case TXT_POWER_ACTION_BODY: return "Choisir une action :";                
                 case TXT_CANCEL: return "Annuler";
                 case TXT_FACTORY_RESET_DONE: return "Réinitialisation terminée. Redémarrage...";                
+                case TXT_BATTERY: return "Batterie";
+                case TXT_RADIO_MODULE: return "Module radio";
+                case TXT_RADIO_INFO_LOADING: return "Chargement...";
+                case TXT_SCREENSAVER: return "Economiseur";
+                case TXT_3D_ICONS: return "Icones 3D";
+                case TXT_TOUCH_VIBRATION: return "Vibration tactile";
+                case TXT_TOUCH_TICK_SOUND: return "Clic tactile";
+                case TXT_BUTTON_STYLE: return "Style des boutons";
+                case TXT_FLAT_BUTTONS: return "Boutons plats";
+                case TXT_3D_BUTTONS: return "Boutons 3D";
+                case TXT_BLACK_BUTTONS: return "Boutons noirs";
+                case TXT_TIMEZONE: return "Fuseau horaire";
+                case TXT_TOP_BAR_CENTER: return "Centre barre haute";
+                case TXT_SHOW_DEVICE_NAME: return "Afficher nom appareil";
+                case TXT_SHOW_TIME: return "Afficher heure";
+                case TXT_SCREEN_TIMEOFF: return "Extinction ecran";
+                case TXT_STYLE_HINT: return "Le delai ecran gere le sommeil et l'economiseur. L'arret peut couper l'alimentation apres une longue inactivite pour economiser la batterie.";
+                case TXT_SELECT: return "Choisir";
+                case TXT_SELECTED: return "Choisi";
+                case TXT_STORED_CALIBRATION: return "Calibration enregistree";
+                case TXT_AUTO_CALIBRATION: return "Calibration auto";
+                case TXT_VERSION: return "Version";
+                case TXT_BAUD_RATE: return "Debit";
+                case TXT_CHANNEL: return "Canal";
+                case TXT_FU_MODE: return "Mode FU";
+                case TXT_RAW: return "Brut";
+                case TXT_DISCOVERY: return "Decouverte";
+                case TXT_SCAN: return "Scan";
+                case TXT_PEER_DISCOVERY_ENABLED: return "Decouverte de pairs activee";
+                case TXT_PEER_DISCOVERY_DISABLED: return "Decouverte de pairs desactivee";
                 case TXT_SCREEN:
                 default: return "Ecran";
             }
@@ -5634,6 +5850,36 @@ static const char *tr(UiTextId id)
                 case TXT_POWER_ACTION_BODY: return "Islem secin:";                
                 case TXT_CANCEL: return "İptal";
                 case TXT_FACTORY_RESET_DONE: return "Fabrika ayarı tamamlandı. Yeniden başlatılıyor...";                
+                case TXT_BATTERY: return "Batarya";
+                case TXT_RADIO_MODULE: return "Radyo Modulu";
+                case TXT_RADIO_INFO_LOADING: return "Yukleniyor...";
+                case TXT_SCREENSAVER: return "Ekran koruyucu";
+                case TXT_3D_ICONS: return "3D ikonlar";
+                case TXT_TOUCH_VIBRATION: return "Dokunma titresimi";
+                case TXT_TOUCH_TICK_SOUND: return "Dokunma tik sesi";
+                case TXT_BUTTON_STYLE: return "Buton stili";
+                case TXT_FLAT_BUTTONS: return "Duz butonlar";
+                case TXT_3D_BUTTONS: return "3D butonlar";
+                case TXT_BLACK_BUTTONS: return "Siyah butonlar";
+                case TXT_TIMEZONE: return "Saat dilimi";
+                case TXT_TOP_BAR_CENTER: return "Ust bar ortasi";
+                case TXT_SHOW_DEVICE_NAME: return "Cihaz adini goster";
+                case TXT_SHOW_TIME: return "Saati goster";
+                case TXT_SCREEN_TIMEOFF: return "Ekran zaman asimi";
+                case TXT_STYLE_HINT: return "Ekran zaman asimi uyku ve ekran koruyucuyu yonetir. Kapatma, pili korumak icin uzun hareketsizlikten sonra donanimi kapatabilir.";
+                case TXT_SELECT: return "Sec";
+                case TXT_SELECTED: return "Secildi";
+                case TXT_STORED_CALIBRATION: return "Kayitli kalibrasyon";
+                case TXT_AUTO_CALIBRATION: return "Otomatik kalibrasyon";
+                case TXT_VERSION: return "Surum";
+                case TXT_BAUD_RATE: return "Baud hizi";
+                case TXT_CHANNEL: return "Kanal";
+                case TXT_FU_MODE: return "FU modu";
+                case TXT_RAW: return "Ham";
+                case TXT_DISCOVERY: return "Kesif";
+                case TXT_SCAN: return "Tara";
+                case TXT_PEER_DISCOVERY_ENABLED: return "Es kesfi acildi";
+                case TXT_PEER_DISCOVERY_DISABLED: return "Es kesfi kapatildi";
                 case TXT_SCREEN:
                 default: return "Ekran";
             }
@@ -5674,6 +5920,36 @@ static const char *tr(UiTextId id)
                 case TXT_RESET: return "Ripristina";
                 case TXT_CANCEL: return "Annulla";
                 case TXT_FACTORY_RESET_DONE: return "Ripristino completato. Riavvio...";                
+                case TXT_BATTERY: return "Batteria";
+                case TXT_RADIO_MODULE: return "Modulo radio";
+                case TXT_RADIO_INFO_LOADING: return "Caricamento...";
+                case TXT_SCREENSAVER: return "Salvaschermo";
+                case TXT_3D_ICONS: return "Icone 3D";
+                case TXT_TOUCH_VIBRATION: return "Vibrazione tocco";
+                case TXT_TOUCH_TICK_SOUND: return "Suono tocco";
+                case TXT_BUTTON_STYLE: return "Stile pulsanti";
+                case TXT_FLAT_BUTTONS: return "Pulsanti piatti";
+                case TXT_3D_BUTTONS: return "Pulsanti 3D";
+                case TXT_BLACK_BUTTONS: return "Pulsanti neri";
+                case TXT_TIMEZONE: return "Fuso orario";
+                case TXT_TOP_BAR_CENTER: return "Centro barra alta";
+                case TXT_SHOW_DEVICE_NAME: return "Mostra nome dispositivo";
+                case TXT_SHOW_TIME: return "Mostra ora";
+                case TXT_SCREEN_TIMEOFF: return "Timeout schermo";
+                case TXT_STYLE_HINT: return "Il timeout schermo controlla standby e salvaschermo. Spegnimento puo inviare un arresto hardware dopo lunga inattivita per risparmiare batteria.";
+                case TXT_SELECT: return "Seleziona";
+                case TXT_SELECTED: return "Selezionato";
+                case TXT_STORED_CALIBRATION: return "Calibrazione salvata";
+                case TXT_AUTO_CALIBRATION: return "Calibrazione auto";
+                case TXT_VERSION: return "Versione";
+                case TXT_BAUD_RATE: return "Baud rate";
+                case TXT_CHANNEL: return "Canale";
+                case TXT_FU_MODE: return "Modo FU";
+                case TXT_RAW: return "Grezzo";
+                case TXT_DISCOVERY: return "Scoperta";
+                case TXT_SCAN: return "Scansione";
+                case TXT_PEER_DISCOVERY_ENABLED: return "Ricerca peer attiva";
+                case TXT_PEER_DISCOVERY_DISABLED: return "Ricerca peer disattiva";
                 case TXT_SCREEN:
                 default: return "Schermo";
             }
@@ -5718,6 +5994,36 @@ static const char *tr(UiTextId id)
                 case TXT_POWER_ACTION_BODY: return "Aktion waehlen:";                
                 case TXT_CANCEL: return "Abbrechen";
                 case TXT_FACTORY_RESET_DONE: return "Werkreset abgeschlossen. Neustart...";                
+                case TXT_BATTERY: return "Batterie";
+                case TXT_RADIO_MODULE: return "Funkmodul";
+                case TXT_RADIO_INFO_LOADING: return "Laden...";
+                case TXT_SCREENSAVER: return "Bildschirmschoner";
+                case TXT_3D_ICONS: return "3D Symbole";
+                case TXT_TOUCH_VIBRATION: return "Touch Vibration";
+                case TXT_TOUCH_TICK_SOUND: return "Touch Klickton";
+                case TXT_BUTTON_STYLE: return "Tastenstil";
+                case TXT_FLAT_BUTTONS: return "Flache Tasten";
+                case TXT_3D_BUTTONS: return "3D Tasten";
+                case TXT_BLACK_BUTTONS: return "Schwarze Tasten";
+                case TXT_TIMEZONE: return "Zeitzone";
+                case TXT_TOP_BAR_CENTER: return "Obere Leistenmitte";
+                case TXT_SHOW_DEVICE_NAME: return "Geratename anzeigen";
+                case TXT_SHOW_TIME: return "Uhrzeit anzeigen";
+                case TXT_SCREEN_TIMEOFF: return "Bildschirm Timeout";
+                case TXT_STYLE_HINT: return "Bildschirm Timeout steuert Schlaf und Bildschirmschoner. Ausschalten kann nach langer Inaktivitat die Hardware abschalten, um Batterie zu sparen.";
+                case TXT_SELECT: return "Wahlen";
+                case TXT_SELECTED: return "Gewahlt";
+                case TXT_STORED_CALIBRATION: return "Gespeicherte Kalibrierung";
+                case TXT_AUTO_CALIBRATION: return "Auto Kalibrierung";
+                case TXT_VERSION: return "Version";
+                case TXT_BAUD_RATE: return "Baudrate";
+                case TXT_CHANNEL: return "Kanal";
+                case TXT_FU_MODE: return "FU Modus";
+                case TXT_RAW: return "Roh";
+                case TXT_DISCOVERY: return "Erkennung";
+                case TXT_SCAN: return "Scan";
+                case TXT_PEER_DISCOVERY_ENABLED: return "Peer-Erkennung aktiv";
+                case TXT_PEER_DISCOVERY_DISABLED: return "Peer-Erkennung aus";
                 case TXT_SCREEN:
                 default: return "Bildschirm";
             }
@@ -5762,6 +6068,36 @@ static const char *tr(UiTextId id)
                 case TXT_POWER_ACTION_BODY: return "操作を選択:";                
                 case TXT_CANCEL: return "キャンセル";
                 case TXT_FACTORY_RESET_DONE: return "初期化完了。再起動します...";                
+                case TXT_BATTERY: return "バッテリー";
+                case TXT_RADIO_MODULE: return "無線モジュール";
+                case TXT_RADIO_INFO_LOADING: return "読み込み中...";
+                case TXT_SCREENSAVER: return "スクリーンセーバー";
+                case TXT_3D_ICONS: return "3D アイコン";
+                case TXT_TOUCH_VIBRATION: return "タッチ振動";
+                case TXT_TOUCH_TICK_SOUND: return "タッチ音";
+                case TXT_BUTTON_STYLE: return "ボタンスタイル";
+                case TXT_FLAT_BUTTONS: return "フラットボタン";
+                case TXT_3D_BUTTONS: return "3D ボタン";
+                case TXT_BLACK_BUTTONS: return "黒ボタン";
+                case TXT_TIMEZONE: return "タイムゾーン";
+                case TXT_TOP_BAR_CENTER: return "上部バー中央";
+                case TXT_SHOW_DEVICE_NAME: return "デバイス名を表示";
+                case TXT_SHOW_TIME: return "時刻を表示";
+                case TXT_SCREEN_TIMEOFF: return "画面タイムアウト";
+                case TXT_STYLE_HINT: return "画面タイムアウトはスリープとスクリーンセーバーを制御します。電源オフは長時間未操作後にハードウェア電源を切って節電できます。";
+                case TXT_SELECT: return "選択";
+                case TXT_SELECTED: return "選択済み";
+                case TXT_STORED_CALIBRATION: return "保存済み校正";
+                case TXT_AUTO_CALIBRATION: return "自動校正";
+                case TXT_VERSION: return "バージョン";
+                case TXT_BAUD_RATE: return "ボーレート";
+                case TXT_CHANNEL: return "チャンネル";
+                case TXT_FU_MODE: return "FU モード";
+                case TXT_RAW: return "生データ";
+                case TXT_DISCOVERY: return "検出";
+                case TXT_SCAN: return "スキャン";
+                case TXT_PEER_DISCOVERY_ENABLED: return "ピア検出オン";
+                case TXT_PEER_DISCOVERY_DISABLED: return "ピア検出オフ";
                 case TXT_SCREEN:
                 default: return "画面";
             }
@@ -5806,6 +6142,36 @@ static const char *tr(UiTextId id)
                 case TXT_POWER_ACTION_BODY: return "동작을 선택하세요:";                
                 case TXT_CANCEL: return "취소";
                 case TXT_FACTORY_RESET_DONE: return "공장 초기화 완료. 재부팅 중...";                
+                case TXT_BATTERY: return "배터리";
+                case TXT_RADIO_MODULE: return "라디오 모듈";
+                case TXT_RADIO_INFO_LOADING: return "로딩 중...";
+                case TXT_SCREENSAVER: return "화면 보호기";
+                case TXT_3D_ICONS: return "3D 아이콘";
+                case TXT_TOUCH_VIBRATION: return "터치 진동";
+                case TXT_TOUCH_TICK_SOUND: return "터치 클릭음";
+                case TXT_BUTTON_STYLE: return "버튼 스타일";
+                case TXT_FLAT_BUTTONS: return "평면 버튼";
+                case TXT_3D_BUTTONS: return "3D 버튼";
+                case TXT_BLACK_BUTTONS: return "검은 버튼";
+                case TXT_TIMEZONE: return "시간대";
+                case TXT_TOP_BAR_CENTER: return "상단 바 중앙";
+                case TXT_SHOW_DEVICE_NAME: return "장치 이름 표시";
+                case TXT_SHOW_TIME: return "시간 표시";
+                case TXT_SCREEN_TIMEOFF: return "화면 시간 초과";
+                case TXT_STYLE_HINT: return "화면 시간 초과는 절전과 화면 보호기를 제어합니다. 전원 끄기는 오래 비활성 상태일 때 하드웨어 전원을 꺼 배터리를 절약할 수 있습니다.";
+                case TXT_SELECT: return "선택";
+                case TXT_SELECTED: return "선택됨";
+                case TXT_STORED_CALIBRATION: return "저장된 보정";
+                case TXT_AUTO_CALIBRATION: return "자동 보정";
+                case TXT_VERSION: return "버전";
+                case TXT_BAUD_RATE: return "보드레이트";
+                case TXT_CHANNEL: return "채널";
+                case TXT_FU_MODE: return "FU 모드";
+                case TXT_RAW: return "원시";
+                case TXT_DISCOVERY: return "검색";
+                case TXT_SCAN: return "스캔";
+                case TXT_PEER_DISCOVERY_ENABLED: return "피어 검색 켜짐";
+                case TXT_PEER_DISCOVERY_DISABLED: return "피어 검색 꺼짐";
                 case TXT_SCREEN:
                 default: return "화면";
             }
@@ -5851,6 +6217,36 @@ static const char *tr(UiTextId id)
                 case TXT_POWER_ACTION_BODY: return "Choose action:";                
                 case TXT_CANCEL: return "Cancel";
                 case TXT_FACTORY_RESET_DONE: return "Factory reset complete. Rebooting...";                
+                case TXT_BATTERY: return "Battery";
+                case TXT_RADIO_MODULE: return "Radio Module";
+                case TXT_RADIO_INFO_LOADING: return "Loading...";
+                case TXT_SCREENSAVER: return "Screensaver";
+                case TXT_3D_ICONS: return "3D Icons";
+                case TXT_TOUCH_VIBRATION: return "Touch Vibration";
+                case TXT_TOUCH_TICK_SOUND: return "Touch Tick Sound";
+                case TXT_BUTTON_STYLE: return "Button Style";
+                case TXT_FLAT_BUTTONS: return "Flat Buttons";
+                case TXT_3D_BUTTONS: return "3D Buttons";
+                case TXT_BLACK_BUTTONS: return "Black Buttons";
+                case TXT_TIMEZONE: return "Timezone";
+                case TXT_TOP_BAR_CENTER: return "Top Bar Center";
+                case TXT_SHOW_DEVICE_NAME: return "Show Device Name";
+                case TXT_SHOW_TIME: return "Show Time";
+                case TXT_SCREEN_TIMEOFF: return "Screen Timeoff";
+                case TXT_STYLE_HINT: return "Screen Timeoff controls sleep/screensaver. Power Off can send a hardware shutdown signal after longer inactivity to save battery.";
+                case TXT_SELECT: return "Select";
+                case TXT_SELECTED: return "Selected";
+                case TXT_STORED_CALIBRATION: return "Stored Calibration";
+                case TXT_AUTO_CALIBRATION: return "Auto Calibration";
+                case TXT_VERSION: return "Version";
+                case TXT_BAUD_RATE: return "Baud Rate";
+                case TXT_CHANNEL: return "Channel";
+                case TXT_FU_MODE: return "FU Mode";
+                case TXT_RAW: return "Raw";
+                case TXT_DISCOVERY: return "Discovery";
+                case TXT_SCAN: return "Scan";
+                case TXT_PEER_DISCOVERY_ENABLED: return "Peer discovery enabled";
+                case TXT_PEER_DISCOVERY_DISABLED: return "Peer discovery disabled";
                 case TXT_SCREEN:
                 default: return "Screen";
             }
@@ -5947,21 +6343,22 @@ static void lvglApplyMomentaryButtonStyle(lv_obj_t *btn, lv_obj_t *label, lv_col
 
     if (lvglBlackButtonThemeActive()) {
         const lv_color_t blackBody = lv_color_hex(UI_BUTTON_BLACK_BODY_HEX);
-        const lv_color_t pressedCol = lv_color_hex(UI_BUTTON_BLACK_PRESSED_HEX);
-        const lv_color_t flashColor = lv_color_hex(UI_BUTTON_BLACK_FLASH_HEX);
+        const lv_color_t activeGreen = lvglActiveToggleGreen(compact);
+        const lv_color_t pressedCol = lv_color_mix(lv_color_black(), activeGreen, compact ? 44 : 58);
+        const lv_color_t flashColor = lv_color_mix(lv_color_white(), activeGreen, compact ? 70 : 86);
         lv_obj_set_style_bg_color(btn, blackBody, LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_bg_grad_color(btn, blackBody, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_color(btn, pressedCol, LV_PART_MAIN | LV_STATE_PRESSED);
-        lv_obj_set_style_bg_grad_color(btn, pressedCol, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_color(btn, activeGreen, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_grad_color(btn, activeGreen, LV_PART_MAIN | LV_STATE_PRESSED);
         lv_obj_set_style_bg_color(btn, flashColor, LV_PART_MAIN | LV_STATE_CHECKED);
         lv_obj_set_style_bg_grad_color(btn, flashColor, LV_PART_MAIN | LV_STATE_CHECKED);
-        lv_obj_set_style_bg_color(btn, flashColor, LV_PART_MAIN | LV_STATE_CHECKED | LV_STATE_PRESSED);
-        lv_obj_set_style_bg_grad_color(btn, flashColor, LV_PART_MAIN | LV_STATE_CHECKED | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_color(btn, pressedCol, LV_PART_MAIN | LV_STATE_CHECKED | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_grad_color(btn, pressedCol, LV_PART_MAIN | LV_STATE_CHECKED | LV_STATE_PRESSED);
         lv_obj_set_style_border_width(btn, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_border_color(btn, lv_color_hex(UI_BUTTON_BLACK_BORDER_HEX), LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_border_opa(btn, static_cast<lv_opa_t>(84), LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_border_width(btn, 1, LV_PART_MAIN | LV_STATE_PRESSED);
-        lv_obj_set_style_border_color(btn, lv_color_hex(UI_BUTTON_BLACK_BORDER_ACTIVE_HEX), LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_border_color(btn, lv_color_mix(lv_color_white(), activeGreen, 104), LV_PART_MAIN | LV_STATE_PRESSED);
         lv_obj_set_style_shadow_width(btn, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_shadow_width(btn, 0, LV_PART_MAIN | LV_STATE_PRESSED);
         lv_obj_set_style_translate_y(btn, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -7044,6 +7441,10 @@ static void chatStoreMessage(const String &peerKey, const String &author, const 
         if (chatHasLoggedMessageId(peerKey, messageId)) return;
     }
     const bool stored = chatAppendMessageToSd(peerKey, transport, author, text, outgoing, nowMs, messageId);
+    if (!outgoing && (stored || !messageId.isEmpty())) {
+        chatQueueIncomingMessageBeep();
+        chatQueueIncomingMessageVibration();
+    }
     if (stored && !messageId.isEmpty()) chatRememberRecentMessageId(peerKey, messageId);
     const bool conversationOpen = (uiScreen == UI_CHAT) && (currentChatPeerKey == peerKey);
     if (conversationOpen && (stored || !messageId.isEmpty())) {
@@ -7051,8 +7452,6 @@ static void chatStoreMessage(const String &peerKey, const String &author, const 
         chatAddMessage(author, text, outgoing, transport, messageId);
     } else if (!outgoing) {
         chatSetPeerUnread(peerKey, true);
-        chatQueueIncomingMessageBeep();
-        chatQueueIncomingMessageVibration();
     }
 }
 
@@ -7787,6 +8186,10 @@ void saveP2pConfig()
         p2pPrefs.putBool((String("peer_en_") + i).c_str(), (i < p2pPeerCount) ? p2pPeers[i].enabled : false);
     }
     p2pPrefs.end();
+
+    uiPrefs.begin("ui", false);
+    uiPrefs.putBool("chat_disc", p2pDiscoveryEnabled);
+    uiPrefs.end();
 }
 
 void loadP2pConfig()
@@ -7794,7 +8197,7 @@ void loadP2pConfig()
     p2pPeerCount = 0;
     p2pDiscoveredCount = 0;
     p2pPrefs.begin("p2p", false);
-    p2pDiscoveryEnabled = p2pPrefs.getBool("discover_en", true);
+    p2pDiscoveryEnabled = p2pPrefs.getBool("discover_en", p2pDiscoveryEnabled);
 
     String pubHex = p2pPrefs.getString("pub", "");
     size_t secLen = p2pPrefs.getBytesLength("sec");
@@ -7834,6 +8237,12 @@ void loadP2pConfig()
 void lvglRefreshWifiList();
 void lvglRefreshMediaList();
 void lvglRefreshInfoPanel(bool refreshIndicators = true);
+static void queueInfoRefresh(bool includeRadio = false);
+static void queueRadioInfoFetch(unsigned long delayMs = 20UL);
+static void cancelRadioInfoFetch();
+static void applyRadioInfoLabels();
+static void queueHc12ConfigApply(Hc12ConfigApplyAction action, int target);
+static void serviceDeferredHc12ConfigApply();
 void lvglMediaPlayStopEvent(lv_event_t *e);
 void lvglMediaPrevTrackEvent(lv_event_t *e);
 void lvglMediaNextTrackEvent(lv_event_t *e);
@@ -7862,6 +8271,8 @@ void lvglOpenStyleScreenEvent(lv_event_t *e);
 void lvglOpenLanguageScreenEvent(lv_event_t *e);
 void lvglStyleScreensaverToggleEvent(lv_event_t *e);
 void lvglStyleMenuIconsToggleEvent(lv_event_t *e);
+void lvglStyleTouchVibrationToggleEvent(lv_event_t *e);
+void lvglStyleTouchSoundToggleEvent(lv_event_t *e);
 void lvglStyleButtonFlatEvent(lv_event_t *e);
 void lvglStyleButton3dEvent(lv_event_t *e);
 void lvglStyleButtonBlackEvent(lv_event_t *e);
@@ -7909,6 +8320,7 @@ static bool hc12ApplyChannel(int channel);
 static bool hc12ApplyBaudIndex(int index);
 static bool hc12ApplyModeIndex(int index);
 static bool hc12ApplyPowerLevel(int level);
+static bool e220ApplyTransferMode(bool fixedTransmission);
 static void loadPersistedRadioSettings();
 static void savePersistedRadioSettings();
 static bool hc12FactoryReset();
@@ -8004,6 +8416,51 @@ inline void lvglLoadScreen(lv_obj_t *target, lv_scr_load_anim_t anim)
     }
 }
 
+static void queueInfoRefresh(bool includeRadio)
+{
+    infoRefreshPending = true;
+    infoRefreshPhase = 0;
+    if (includeRadio) queueRadioInfoFetch();
+}
+
+static void queueRadioInfoFetch(unsigned long delayMs)
+{
+    radioInfoFetchPending = true;
+    radioInfoFetchActive = false;
+    radioInfoFetchStage = 0;
+    radioInfoFetchDueMs = millis() + delayMs;
+    radioInfoFetchNextMs = radioInfoFetchDueMs;
+    hc12InfoValueText = tr(TXT_RADIO_INFO_LOADING);
+    hc12InfoSubText = tr(TXT_RADIO_INFO_LOADING);
+    radioInfoVersionText = tr(TXT_RADIO_INFO_LOADING);
+    radioInfoBaudText = "--";
+    radioInfoChannelText = "--";
+    radioInfoFuModeText = "--";
+    radioInfoPowerText = "--";
+    radioInfoRawText = tr(TXT_RADIO_INFO_LOADING);
+    applyRadioInfoLabels();
+}
+
+static void cancelRadioInfoFetch()
+{
+    if (radioInfoFetchActive) hc12ExitAtMode();
+    radioInfoFetchPending = false;
+    radioInfoFetchActive = false;
+    radioInfoFetchStage = 0;
+}
+
+static void applyRadioInfoLabels()
+{
+    if (lvglInfoHc12ValueLabel) lvglLabelSetTextIfChanged(lvglInfoHc12ValueLabel, hc12InfoValueText);
+    if (lvglInfoHc12SubLabel) lvglLabelSetTextIfChanged(lvglInfoHc12SubLabel, hc12InfoSubText);
+    if (lvglHc12InfoVersionLabel) lvglLabelSetTextIfChanged(lvglHc12InfoVersionLabel, radioInfoVersionText);
+    if (lvglHc12InfoBaudLabel) lvglLabelSetTextIfChanged(lvglHc12InfoBaudLabel, radioInfoBaudText);
+    if (lvglHc12InfoChannelLabel) lvglLabelSetTextIfChanged(lvglHc12InfoChannelLabel, radioInfoChannelText);
+    if (lvglHc12InfoFuModeLabel) lvglLabelSetTextIfChanged(lvglHc12InfoFuModeLabel, radioInfoFuModeText);
+    if (lvglHc12InfoPowerLabel) lvglLabelSetTextIfChanged(lvglHc12InfoPowerLabel, radioInfoPowerText);
+    if (lvglHc12InfoRawLabel) lvglLabelSetTextIfChanged(lvglHc12InfoRawLabel, radioInfoRawText);
+}
+
 static void serviceInfoRefresh()
 {
     if (!infoRefreshPending) return;
@@ -8012,33 +8469,267 @@ static void serviceInfoRefresh()
         return;
     }
 
+    if (infoRefreshPhase == 0) {
+        const bool connected = wifiConnectedSafe();
+        const String ssid = connected ? wifiSsidSafe() : String("Disconnected");
+        const String ip = connected ? wifiIpSafe() : String("-");
+        const int rssi = connected ? static_cast<int>(wifiRssiSafe()) : -127;
+        infoWifiQualityPercent = connected ? wifiQualityPercentFromRssi(rssi) : 0;
+        infoWifiValueText = connected ? String(infoWifiQualityPercent) + "%" : String("Offline");
+        if (connected) infoWifiSubText = ssid + "  |  " + ip + "  |  " + String(rssi) + "dBm";
+        else if (apModeActive) infoWifiSubText = "AP " + savedApSsid + "  |  " + WiFi.softAPIP().toString() + "  |  Touch to Config > WiFi Config to connect";
+        else infoWifiSubText = "AP " + savedApSsid + "  |  Touch to Config > WiFi Config to connect";
+
+        infoLightPercentValue = lightPercent;
+        infoLightValueText = String(lightPercent) + "%";
+        infoLightSubText = String("Display ") + (displayAwake ? "awake" : "sleeping") +
+                           "  |  Backlight " + String(displayBrightnessPercent) +
+                           "%  |  raw " + String(lightRawAdc);
+        infoRefreshPhase = 1;
+        lvglRefreshInfoPanel();
+        return;
+    }
+
+    const float tempC = temperatureRead();
+    infoTempBarValue = 0;
+    if (!isnan(tempC) && tempC > 0.0f) {
+        float clamped = tempC;
+        if (clamped < 0.0f) clamped = 0.0f;
+        if (clamped > INFO_TEMP_BAR_MAX_C) clamped = INFO_TEMP_BAR_MAX_C;
+        infoTempBarValue = static_cast<uint8_t>(clamped + 0.5f);
+        infoTempValueText = String(static_cast<int>(tempC + 0.5f)) + "C";
+    } else {
+        infoTempValueText = "--";
+    }
+    infoTempSubText = String("ESP32 die temp  |  target range under ") + String(INFO_TEMP_WARN_C) + "C";
+
+    const uint32_t freeHeap = static_cast<uint32_t>(ESP.getFreeHeap());
+    const uint32_t heapTotal = static_cast<uint32_t>(ESP.getHeapSize());
+    const uint32_t largest8 = static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    infoSramPercentValue = heapTotal > 0U ? static_cast<uint8_t>((freeHeap * 100ULL) / heapTotal) : 0U;
+    infoSramValueText = String(infoSramPercentValue) + "%";
+    infoSramSubText = String("Free ") + String(static_cast<unsigned long long>(freeHeap / 1024ULL)) +
+                      " / " + String(static_cast<unsigned long long>(heapTotal / 1024ULL)) +
+                      " KB  |  Largest block " + String(static_cast<unsigned long long>(largest8 / 1024ULL)) + " KB";
+
+    const uint32_t psramFree = boardHasUsablePsram()
+                                   ? static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM))
+                                   : 0U;
+    const uint32_t psramTotal = boardHasUsablePsram()
+                                    ? static_cast<uint32_t>(heap_caps_get_total_size(MALLOC_CAP_SPIRAM))
+                                    : 0U;
+    infoPsramPercentValue = psramTotal > 0U ? static_cast<uint8_t>((psramFree * 100ULL) / psramTotal) : 0U;
+    infoPsramValueText = psramTotal > 0U ? String(infoPsramPercentValue) + "%" : String("Off");
+    infoPsramSubText = psramTotal > 0U
+                           ? String("Free ") + String(static_cast<unsigned long long>(psramFree / (1024ULL * 1024ULL))) +
+                                 " / " + String(static_cast<unsigned long long>(psramTotal / (1024ULL * 1024ULL))) + " MB"
+                           : String("PSRAM unavailable");
+
+    uint64_t sdTotal = 0;
+    uint64_t sdUsed = 0;
+    if (sdMounted) {
+        sdTotal = SD.totalBytes();
+        sdUsed = SD.usedBytes();
+    }
+    infoSdPercentValue = (sdTotal > 0) ? static_cast<uint8_t>((sdUsed * 100ULL) / sdTotal) : 0U;
+    infoSdValueText = sdTotal > 0 ? String(infoSdPercentValue) + "%" : String(sdMounted ? "--" : "Off");
+    infoSdSubText = sdTotal > 0
+                        ? String("Used ") + String(static_cast<unsigned long long>(sdUsed / (1024ULL * 1024ULL))) +
+                              " / " + String(static_cast<unsigned long long>(sdTotal / (1024ULL * 1024ULL))) +
+                              " MB  |  Free " + String(static_cast<unsigned long long>((sdTotal - sdUsed) / (1024ULL * 1024ULL))) + " MB"
+                        : String(sdMounted ? "Capacity unavailable" : "Card offline");
+
     infoRefreshPending = false;
-    hc12RefreshInfoSnapshot();
-    lvglRefreshInfoPanel();
+    infoRefreshPhase = 0;
+    lvglRefreshInfoPanel(false);
 }
 
 static void serviceDeferredRadioInfoFetch()
 {
     if (!radioInfoFetchPending) return;
-    if (static_cast<unsigned long>(millis() - radioInfoFetchDueMs) < 0UL) return;
-
     if (uiScreen != UI_INFO && uiScreen != UI_CONFIG_HC12_INFO) {
-        radioInfoFetchPending = false;
+        cancelRadioInfoFetch();
         return;
     }
 
-    radioInfoFetchPending = false;
+    const unsigned long now = millis();
+    const unsigned long dueMs = radioInfoFetchActive ? radioInfoFetchNextMs : radioInfoFetchDueMs;
+    if (static_cast<long>(now - dueMs) < 0) return;
 
-    if (uiScreen == UI_INFO) {
-        hc12RefreshInfoSnapshot();
-        lvglRefreshInfoPanel(false);
+    if (!radioInfoFetchActive) {
+        hc12InitIfNeeded();
+        hc12EnterAtMode();
+        radioInfoFetchActive = true;
+        radioInfoFetchStage = 1;
+        radioInfoFetchNextMs = millis() + (radioModuleType == RADIO_MODULE_E220 ? 30UL : 0UL);
         return;
     }
 
-    if (uiScreen == UI_CONFIG_HC12_INFO) {
-        lvglRefreshHc12InfoUi();
-        return;
+    if (radioModuleType == RADIO_MODULE_E220) {
+        static String modelRaw;
+        static String fwRaw;
+        static String uartRaw;
+        static String channelRaw;
+        static String rateRaw;
+        static String powerRaw;
+        static String transRaw;
+        switch (radioInfoFetchStage) {
+            case 1: modelRaw = e220QueryCommand("AT+DEVTYPE=?"); radioInfoFetchStage = 2; radioInfoFetchNextMs = millis() + 20UL; return;
+            case 2: fwRaw = e220QueryCommand("AT+FWCODE=?"); radioInfoFetchStage = 3; radioInfoFetchNextMs = millis() + 20UL; return;
+            case 3: uartRaw = e220QueryCommand("AT+UART=?"); radioInfoFetchStage = 4; radioInfoFetchNextMs = millis() + 20UL; return;
+            case 4: channelRaw = e220QueryCommand("AT+CHANNEL=?"); radioInfoFetchStage = 5; radioInfoFetchNextMs = millis() + 20UL; return;
+            case 5: rateRaw = e220QueryCommand("AT+RATE=?"); radioInfoFetchStage = 6; radioInfoFetchNextMs = millis() + 20UL; return;
+            case 6: powerRaw = e220QueryCommand("AT+POWER=?"); radioInfoFetchStage = 7; radioInfoFetchNextMs = millis() + 20UL; return;
+            case 7: transRaw = e220QueryCommand("AT+TRANS=?"); radioInfoFetchStage = 8; radioInfoFetchNextMs = millis(); return;
+            default:
+                hc12ExitAtMode();
+                radioInfoFetchPending = false;
+                radioInfoFetchActive = false;
+                radioInfoFetchStage = 0;
+                radioInfoVersionText = e220ValueAfterEquals(modelRaw);
+                if (radioInfoVersionText.isEmpty()) radioInfoVersionText = "No Reply";
+                const String fwVal = e220ValueAfterEquals(fwRaw);
+                hc12InfoValueText = radioInfoVersionText;
+                hc12InfoSubText = fwVal.isEmpty() ? String("No firmware response") : String("FW ") + fwVal;
+                radioInfoBaudText = e220ValueAfterEquals(uartRaw); if (radioInfoBaudText.isEmpty()) radioInfoBaudText = "--";
+                radioInfoChannelText = e220ValueAfterEquals(channelRaw); if (radioInfoChannelText.isEmpty()) radioInfoChannelText = "--";
+                radioInfoFuModeText = e220ValueAfterEquals(transRaw); if (radioInfoFuModeText.isEmpty()) radioInfoFuModeText = "--";
+                radioInfoPowerText = e220ValueAfterEquals(powerRaw); if (radioInfoPowerText.isEmpty()) radioInfoPowerText = "--";
+                radioInfoRawText = String("UART ") + (radioInfoBaudText == "--" ? String("--") : radioInfoBaudText) +
+                                   " | RATE " + (e220ValueAfterEquals(rateRaw).isEmpty() ? String("--") : e220ValueAfterEquals(rateRaw)) +
+                                   " | TRANS " + (radioInfoFuModeText == "--" ? String("--") : radioInfoFuModeText);
+                applyRadioInfoLabels();
+                if (uiScreen == UI_INFO) lvglRefreshInfoPanel(false);
+                return;
+        }
     }
+
+    static String versionRaw;
+    static String baudRaw;
+    static String channelRaw;
+    static String fuRaw;
+    static String powerRaw;
+    static String summaryRaw;
+    switch (radioInfoFetchStage) {
+        case 1: versionRaw = hc12QueryCommand("AT+V"); radioInfoFetchStage = 2; radioInfoFetchNextMs = millis(); return;
+        case 2: baudRaw = hc12QueryCommand("AT+RB"); radioInfoFetchStage = 3; radioInfoFetchNextMs = millis(); return;
+        case 3: channelRaw = hc12QueryCommand("AT+RC"); radioInfoFetchStage = 4; radioInfoFetchNextMs = millis(); return;
+        case 4: fuRaw = hc12QueryCommand("AT+RF"); radioInfoFetchStage = 5; radioInfoFetchNextMs = millis(); return;
+        case 5: powerRaw = hc12QueryCommand("AT+RP"); radioInfoFetchStage = 6; radioInfoFetchNextMs = millis(); return;
+        case 6: summaryRaw = hc12QueryCommand("AT+RX", 220UL, 40UL); radioInfoFetchStage = 7; radioInfoFetchNextMs = millis(); return;
+        default:
+            hc12ExitAtMode();
+            radioInfoFetchPending = false;
+            radioInfoFetchActive = false;
+            radioInfoFetchStage = 0;
+            radioInfoVersionText = hc12CompactResponse(versionRaw);
+            if (radioInfoVersionText.isEmpty()) radioInfoVersionText = "No Reply";
+            radioInfoBaudText = hc12FieldValue(baudRaw, "B");
+            if (radioInfoBaudText != "--" && radioInfoBaudText.indexOf("baud") < 0 && radioInfoBaudText.indexOf("bps") < 0) radioInfoBaudText += " bps";
+            radioInfoChannelText = hc12FieldValue(channelRaw, "RC");
+            if (radioInfoChannelText != "--") radioInfoChannelText = "CH" + radioInfoChannelText;
+            radioInfoFuModeText = hc12FieldValue(fuRaw, "FU");
+            if (radioInfoFuModeText != "--") radioInfoFuModeText = "FU" + radioInfoFuModeText;
+            radioInfoPowerText = hc12FieldValue(powerRaw, "RP:");
+            if (radioInfoPowerText == "--") radioInfoPowerText = hc12FieldValue(powerRaw, "RP");
+            radioInfoRawText = hc12CompactResponse(summaryRaw);
+            if (radioInfoRawText.isEmpty()) radioInfoRawText = "No summary response";
+            hc12InfoValueText = radioInfoVersionText;
+            hc12InfoSubText = radioInfoRawText;
+            applyRadioInfoLabels();
+            if (uiScreen == UI_INFO) lvglRefreshInfoPanel(false);
+            return;
+    }
+}
+
+static void queueHc12ConfigApply(Hc12ConfigApplyAction action, int target)
+{
+    if (action == HC12_CFG_APPLY_NONE) return;
+
+    if (hc12ConfigApplyPending == HC12_CFG_APPLY_NONE) {
+        hc12CommittedChannel = hc12CurrentChannel;
+        hc12CommittedBaudIndex = hc12CurrentBaudIndex;
+        hc12CommittedModeIndex = hc12CurrentModeIndex;
+        hc12CommittedPowerLevel = hc12CurrentPowerLevel;
+        e220CommittedChannel = e220CurrentChannel;
+        e220CommittedBaudIndex = e220CurrentBaudIndex;
+        e220CommittedAirRateIndex = e220CurrentAirRateIndex;
+        e220CommittedPowerIndex = e220CurrentPowerIndex;
+        e220CommittedFixedTransmission = e220CurrentFixedTransmission;
+    }
+
+    hc12ConfigApplyPending = action;
+    hc12ConfigApplyTarget = target;
+    hc12ConfigApplyDueMs = millis() + 12UL;
+
+    switch (action) {
+        case HC12_CFG_APPLY_CHANNEL:
+            if (radioModuleType == RADIO_MODULE_HC12) hc12CurrentChannel = constrain(target, HC12_MIN_CHANNEL, HC12_MAX_CHANNEL);
+            else e220CurrentChannel = constrain(target, E220_MIN_CHANNEL, E220_MAX_CHANNEL);
+            hc12ConfigStatusText = "Applying channel...";
+            break;
+        case HC12_CFG_APPLY_BAUD:
+            if (radioModuleType == RADIO_MODULE_HC12) hc12CurrentBaudIndex = constrain(target, 0, static_cast<int>(sizeof(HC12_SUPPORTED_BAUDS) / sizeof(HC12_SUPPORTED_BAUDS[0])) - 1);
+            else e220CurrentBaudIndex = constrain(target, 0, static_cast<int>(sizeof(E220_UART_BAUD_VALUES) / sizeof(E220_UART_BAUD_VALUES[0])) - 1);
+            hc12ConfigStatusText = "Applying baud...";
+            break;
+        case HC12_CFG_APPLY_MODE:
+            if (radioModuleType == RADIO_MODULE_HC12) hc12CurrentModeIndex = constrain(target, 0, 3);
+            else e220CurrentAirRateIndex = constrain(target, 0, static_cast<int>(sizeof(E220_AIR_RATE_OPTIONS) / sizeof(E220_AIR_RATE_OPTIONS[0])) - 1);
+            hc12ConfigStatusText = "Applying mode...";
+            break;
+        case HC12_CFG_APPLY_POWER:
+            if (radioModuleType == RADIO_MODULE_HC12) hc12CurrentPowerLevel = constrain(target, 1, 8);
+            else e220CurrentPowerIndex = constrain(target, 0, 3);
+            hc12ConfigStatusText = "Applying power...";
+            break;
+        case HC12_CFG_APPLY_EXTRA:
+            e220CurrentFixedTransmission = target != 0;
+            hc12ConfigStatusText = "Applying transfer mode...";
+            break;
+        default:
+            break;
+    }
+
+    if (lvglReady && uiScreen == UI_CONFIG_HC12) lvglRefreshHc12ConfigUi();
+}
+
+static void serviceDeferredHc12ConfigApply()
+{
+    if (hc12ConfigApplyPending == HC12_CFG_APPLY_NONE) return;
+    if (lvglTouchDown || wakeTouchReleaseGuard || lvglSwipeTracking || lvglSwipeVisualAnimating) return;
+    if ((uiDeferredFlags & UI_DEFERRED_HC12_SETTLE_PENDING) &&
+        static_cast<int16_t>(static_cast<uint16_t>(millis()) - hc12SettleUntilTick) < 0) return;
+    if (static_cast<long>(millis() - hc12ConfigApplyDueMs) < 0) return;
+
+    const Hc12ConfigApplyAction action = hc12ConfigApplyPending;
+    const int target = hc12ConfigApplyTarget;
+    hc12ConfigApplyPending = HC12_CFG_APPLY_NONE;
+
+    bool ok = false;
+    switch (action) {
+        case HC12_CFG_APPLY_CHANNEL: ok = hc12ApplyChannel(target); break;
+        case HC12_CFG_APPLY_BAUD: ok = hc12ApplyBaudIndex(target); break;
+        case HC12_CFG_APPLY_MODE: ok = hc12ApplyModeIndex(target); break;
+        case HC12_CFG_APPLY_POWER: ok = hc12ApplyPowerLevel(target); break;
+        case HC12_CFG_APPLY_EXTRA: ok = e220ApplyTransferMode(target != 0); break;
+        default: return;
+    }
+
+    if (!ok) {
+        hc12CurrentChannel = hc12CommittedChannel;
+        hc12CurrentBaudIndex = hc12CommittedBaudIndex;
+        hc12CurrentModeIndex = hc12CommittedModeIndex;
+        hc12CurrentPowerLevel = hc12CommittedPowerLevel;
+        e220CurrentChannel = e220CommittedChannel;
+        e220CurrentBaudIndex = e220CommittedBaudIndex;
+        e220CurrentAirRateIndex = e220CommittedAirRateIndex;
+        e220CurrentPowerIndex = e220CommittedPowerIndex;
+        e220CurrentFixedTransmission = e220CommittedFixedTransmission;
+        if (hc12ConfigStatusText.indexOf("reverted") < 0) hc12ConfigStatusText += " | reverted";
+    }
+
+    if (lvglReady && uiScreen == UI_CONFIG_HC12) lvglRefreshHc12ConfigUi();
 }
 
 static bool uiScreenSupportsSwipeBack(UiScreen screen)
@@ -8195,7 +8886,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
 
             lvglChatMenuBtn = makeSmallBtn(chatOps, LV_SYMBOL_LIST, 34, 28, lv_color_hex(0x2F6D86), lvglToggleChatMenuEvent, nullptr);
             lvglChatDiscoveryBtn = makeSmallBtn(chatOps,
-                                                lvglSymbolText(LV_SYMBOL_WIFI, "Discovery").c_str(),
+                                                lvglSymbolText(LV_SYMBOL_WIFI, tr(TXT_DISCOVERY)).c_str(),
                                                 102,
                                                 28,
                                                 p2pDiscoveryEnabled ? lv_color_hex(0x3A7A3A) : lv_color_hex(0x4E5D6C),
@@ -8338,7 +9029,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
 
             lvglChatPeerScanBtn = makeSmallBtn(
                 peerOps,
-                lvglSymbolText(LV_SYMBOL_REFRESH, "Scan").c_str(),
+                lvglSymbolText(LV_SYMBOL_REFRESH, tr(TXT_SCAN)).c_str(),
                 74, 26,
                 lv_color_hex(0x2F6D86),
                 lvglChatPeerActionEvent,
@@ -8457,8 +9148,13 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             break;
         }
         case UI_INFO: {
-            lvglScrInfo = lvglCreateScreenBase("Info", true);
+            lvglScrInfo = lvglCreateScreenBase(tr(TXT_INFO), true);
             lvglInfoList = lv_obj_create(lvglScrInfo);
+            lvglInfoBatteryCard = nullptr;
+            lvglInfoWifiCard = nullptr;
+            lvglInfoRadioCard = nullptr;
+            lvglInfoLightCard = nullptr;
+            lvglInfoSdCard = nullptr;
             lv_obj_set_size(lvglInfoList, lv_pct(100), UI_CONTENT_H);
             lv_obj_align(lvglInfoList, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
             lv_obj_set_style_bg_opa(lvglInfoList, LV_OPA_TRANSP, 0);
@@ -8471,30 +9167,30 @@ void lvglEnsureScreenBuilt(UiScreen screen)
 
             {
                 lv_obj_t *tmp = nullptr;
-                lv_obj_t *card = lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_BATTERY_FULL, "Battery", lv_color_hex(0x52B788),
-                                                    &lvglInfoBatteryValueLabel, &lvglInfoBatterySubLabel, &tmp);
-                lvglRegisterReorderableItem(card, "ord_info", "battery");
+                lvglInfoBatteryCard = lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_BATTERY_FULL, tr(TXT_BATTERY), lv_color_hex(0x52B788),
+                                                         &lvglInfoBatteryValueLabel, &lvglInfoBatterySubLabel, &tmp);
+                lvglRegisterReorderableItem(lvglInfoBatteryCard, "ord_info", "battery");
             }
             {
                 lv_obj_t *tmp = nullptr;
-                lv_obj_t *card = lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_WIFI, "WiFi Strength", lv_color_hex(0x4FC3F7),
-                                                    &lvglInfoWifiValueLabel, &lvglInfoWifiSubLabel, &tmp);
-                lvglRegisterReorderableItem(card, "ord_info", "wifi");
+                lvglInfoWifiCard = lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_WIFI, "WiFi Strength", lv_color_hex(0x4FC3F7),
+                                                      &lvglInfoWifiValueLabel, &lvglInfoWifiSubLabel, &tmp);
+                lvglRegisterReorderableItem(lvglInfoWifiCard, "ord_info", "wifi");
             }
-            lv_obj_t *hc12InfoCard = lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_SETTINGS, "Radio Info", lv_color_hex(0x7A5C2E),
-                                                        &lvglInfoHc12ValueLabel, &lvglInfoHc12SubLabel);
-            lvglRegisterReorderableItem(hc12InfoCard, "ord_info", "hc12");
+            lvglInfoRadioCard = lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_SETTINGS, tr(TXT_HC12_INFO), lv_color_hex(0x7A5C2E),
+                                                   &lvglInfoHc12ValueLabel, &lvglInfoHc12SubLabel);
+            lvglRegisterReorderableItem(lvglInfoRadioCard, "ord_info", "hc12");
             {
                 lv_obj_t *tmp = nullptr;
-                lv_obj_t *card = lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_EYE_OPEN, "Lighting", lv_color_hex(0xF4B942),
-                                                    &lvglInfoLightValueLabel, &lvglInfoLightSubLabel, &tmp);
-                lvglRegisterReorderableItem(card, "ord_info", "light");
+                lvglInfoLightCard = lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_EYE_OPEN, "Lighting", lv_color_hex(0xF4B942),
+                                                       &lvglInfoLightValueLabel, &lvglInfoLightSubLabel, &tmp);
+                lvglRegisterReorderableItem(lvglInfoLightCard, "ord_info", "light");
             }
             {
                 lv_obj_t *tmp = nullptr;
-                lv_obj_t *card = lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_SD_CARD, "SD Card", lv_color_hex(0xE59F45),
+                lvglInfoSdCard = lvglCreateInfoCard(lvglInfoList, LV_SYMBOL_SD_CARD, "SD Card", lv_color_hex(0xE59F45),
                                                     nullptr, nullptr, &tmp);
-                lvglRegisterReorderableItem(card, "ord_info", "sd");
+                lvglRegisterReorderableItem(lvglInfoSdCard, "ord_info", "sd");
             }
             {
                 lv_obj_t *tmp = nullptr;
@@ -8571,7 +9267,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglConfigWifiBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_WIFI_CONFIG), lv_color_hex(0x3A8F4B), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_WIFI_LIST)));
             lvglConfigHc12Btn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_HC12_CONFIG), lv_color_hex(0x7A5C2E), lvglOpenHc12ScreenEvent, nullptr);
             lvglConfigStyleBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_STYLE), lv_color_hex(0x2D6D8E), lvglOpenStyleScreenEvent, nullptr);
-            lvglConfigBatteryBtn = lvglCreateMenuButton(lvglConfigWrap, "Battery", lv_color_hex(0x6C7E2C), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CONFIG_BATTERY)));
+            lvglConfigBatteryBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_BATTERY), lv_color_hex(0x6C7E2C), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CONFIG_BATTERY)));
             lvglConfigMqttBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_MQTT_CONFIG), lv_color_hex(0x6D4B9A), lvglOpenMqttCfgEvent, nullptr);
             lvglConfigMqttControlsBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_MQTT_CONTROLS), lv_color_hex(0x2D6D8E), lvglOpenMqttCtrlEvent, nullptr);
             lvglConfigScreenshotBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_SCREENSHOT), lv_color_hex(0x6B5B2A), lvglScreenshotEvent, nullptr);
@@ -8802,7 +9498,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             break;
         }
         case UI_CONFIG_BATTERY: {
-            lvglScrBatteryTrain = lvglCreateScreenBase("Battery", false);
+            lvglScrBatteryTrain = lvglCreateScreenBase(tr(TXT_BATTERY), false);
             lvglBatteryTrainStatusLabel = nullptr;
             lvglBatteryTrainCurrentLabel = nullptr;
             lvglBatteryTrainFullLabel = nullptr;
@@ -8834,7 +9530,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_clear_flag(stateCard, LV_OBJ_FLAG_SCROLLABLE);
 
             lv_obj_t *stateTitle = lv_label_create(stateCard);
-            lv_label_set_text(stateTitle, "Stored Calibration");
+            lv_label_set_text(stateTitle, tr(TXT_STORED_CALIBRATION));
             lv_obj_set_style_text_color(stateTitle, lv_color_hex(0xE5ECF3), 0);
 
             auto makeBatteryInfoLabel = [&](lv_obj_t **out, lv_color_t color) {
@@ -8870,7 +9566,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
                               "Reset clears stored anchors and starts charge training. FULL stores the current top voltage and restores your power setting. "
                               "DISCHARGE forces Power Off to Never until the next low-battery cutoff is learned. Auto Calibration must be confirmed and only then enables the background learning algorithm.");
 
-            makeSmallBtn(wrap, "Reset", DISPLAY_WIDTH - 20, 40, lv_color_hex(0x8D5F1E), lvglBatteryTrainResetEvent, nullptr);
+            makeSmallBtn(wrap, tr(TXT_RESET), DISPLAY_WIDTH - 20, 40, lv_color_hex(0x8D5F1E), lvglBatteryTrainResetEvent, nullptr);
 
             lv_obj_t *buttonRow = lv_obj_create(wrap);
             lv_obj_set_size(buttonRow, lv_pct(100), LV_SIZE_CONTENT);
@@ -8883,13 +9579,13 @@ void lvglEnsureScreenBuilt(UiScreen screen)
 
             lvglBatteryTrainFullBtn = makeSmallBtn(buttonRow, "FULL", (DISPLAY_WIDTH - 30) / 2, 42, lv_color_hex(0x2F7A45), lvglBatteryTrainFullEvent, nullptr);
             lvglBatteryTrainDischargeBtn = makeSmallBtn(buttonRow, "DISCHARGE", (DISPLAY_WIDTH - 30) / 2, 42, lv_color_hex(0x8A3A2E), lvglBatteryTrainDischargeEvent, nullptr);
-            lvglBatteryTrainAutoBtn = makeSmallBtn(wrap, "Auto Calibration", DISPLAY_WIDTH - 20, 40, lv_color_hex(0x345D8A), lvglBatteryTrainAutoEvent, nullptr);
+            lvglBatteryTrainAutoBtn = makeSmallBtn(wrap, tr(TXT_AUTO_CALIBRATION), DISPLAY_WIDTH - 20, 40, lv_color_hex(0x345D8A), lvglBatteryTrainAutoEvent, nullptr);
             lvglRefreshBatteryTrainButtonIcons();
             lvglRefreshBatteryTrainUi();
             break;
         }
         case UI_CONFIG_STYLE: {
-            lvglScrStyle = lvglCreateScreenBase("Style", false);
+            lvglScrStyle = lvglCreateScreenBase(tr(TXT_STYLE), false);
             lvglStyleButtonFlatBtn = nullptr;
             lvglStyleButtonFlatBtnLabel = nullptr;
             lvglStyleButton3dBtn = nullptr;
@@ -8897,6 +9593,8 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglStyleButtonBlackBtn = nullptr;
             lvglStyleButtonBlackBtnLabel = nullptr;
             lvglStyleMenuIconsSw = nullptr;
+            lvglStyleTouchVibrationSw = nullptr;
+            lvglStyleTouchSoundSw = nullptr;
             lvglStyleTimezoneDd = nullptr;
             lvglStyleTopCenterNameBtn = nullptr;
             lvglStyleTopCenterNameBtnLabel = nullptr;
@@ -8923,7 +9621,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_clear_flag(screensaverRow, LV_OBJ_FLAG_SCROLLABLE);
 
             lv_obj_t *screensaverLbl = lv_label_create(screensaverRow);
-            lv_label_set_text(screensaverLbl, "Screensaver");
+            lv_label_set_text(screensaverLbl, tr(TXT_SCREENSAVER));
             lv_obj_set_style_text_color(screensaverLbl, lv_color_hex(0xE5ECF3), 0);
             lv_obj_set_flex_grow(screensaverLbl, 1);
 
@@ -8944,7 +9642,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_clear_flag(menuIconsRow, LV_OBJ_FLAG_SCROLLABLE);
 
             lv_obj_t *menuIconsLbl = lv_label_create(menuIconsRow);
-            lv_label_set_text(menuIconsLbl, "3D Icons");
+            lv_label_set_text(menuIconsLbl, tr(TXT_3D_ICONS));
             lv_obj_set_style_text_color(menuIconsLbl, lv_color_hex(0xE5ECF3), 0);
             lv_obj_set_flex_grow(menuIconsLbl, 1);
 
@@ -8953,6 +9651,48 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_add_event_cb(lvglStyleMenuIconsSw, lvglGestureBlockEvent, LV_EVENT_PRESSED, nullptr);
             lv_obj_add_event_cb(lvglStyleMenuIconsSw, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
             lv_obj_add_event_cb(lvglStyleMenuIconsSw, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
+
+            lv_obj_t *touchVibrationRow = lv_obj_create(wrap);
+            lv_obj_set_size(touchVibrationRow, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_color(touchVibrationRow, lv_color_hex(0x18222D), 0);
+            lv_obj_set_style_border_width(touchVibrationRow, 0, 0);
+            lv_obj_set_style_radius(touchVibrationRow, 12, 0);
+            lv_obj_set_style_pad_all(touchVibrationRow, 12, 0);
+            lv_obj_set_style_pad_column(touchVibrationRow, 8, 0);
+            lv_obj_set_flex_flow(touchVibrationRow, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(touchVibrationRow, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *touchVibrationLbl = lv_label_create(touchVibrationRow);
+            lv_label_set_text(touchVibrationLbl, tr(TXT_TOUCH_VIBRATION));
+            lv_obj_set_style_text_color(touchVibrationLbl, lv_color_hex(0xE5ECF3), 0);
+            lv_obj_set_flex_grow(touchVibrationLbl, 1);
+
+            lvglStyleTouchVibrationSw = lv_switch_create(touchVibrationRow);
+            lv_obj_add_event_cb(lvglStyleTouchVibrationSw, lvglStyleTouchVibrationToggleEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+            lv_obj_add_event_cb(lvglStyleTouchVibrationSw, lvglGestureBlockEvent, LV_EVENT_PRESSED, nullptr);
+            lv_obj_add_event_cb(lvglStyleTouchVibrationSw, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
+            lv_obj_add_event_cb(lvglStyleTouchVibrationSw, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
+
+            lv_obj_t *touchSoundRow = lv_obj_create(wrap);
+            lv_obj_set_size(touchSoundRow, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_color(touchSoundRow, lv_color_hex(0x18222D), 0);
+            lv_obj_set_style_border_width(touchSoundRow, 0, 0);
+            lv_obj_set_style_radius(touchSoundRow, 12, 0);
+            lv_obj_set_style_pad_all(touchSoundRow, 12, 0);
+            lv_obj_set_style_pad_column(touchSoundRow, 8, 0);
+            lv_obj_set_flex_flow(touchSoundRow, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(touchSoundRow, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *touchSoundLbl = lv_label_create(touchSoundRow);
+            lv_label_set_text(touchSoundLbl, tr(TXT_TOUCH_TICK_SOUND));
+            lv_obj_set_style_text_color(touchSoundLbl, lv_color_hex(0xE5ECF3), 0);
+            lv_obj_set_flex_grow(touchSoundLbl, 1);
+
+            lvglStyleTouchSoundSw = lv_switch_create(touchSoundRow);
+            lv_obj_add_event_cb(lvglStyleTouchSoundSw, lvglStyleTouchSoundToggleEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+            lv_obj_add_event_cb(lvglStyleTouchSoundSw, lvglGestureBlockEvent, LV_EVENT_PRESSED, nullptr);
+            lv_obj_add_event_cb(lvglStyleTouchSoundSw, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
+            lv_obj_add_event_cb(lvglStyleTouchSoundSw, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
 
             lv_obj_t *buttonStyleWrap = lv_obj_create(wrap);
             lv_obj_set_size(buttonStyleWrap, lv_pct(100), LV_SIZE_CONTENT);
@@ -8965,7 +9705,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_clear_flag(buttonStyleWrap, LV_OBJ_FLAG_SCROLLABLE);
 
             lv_obj_t *buttonStyleHdr = lv_label_create(buttonStyleWrap);
-            lv_label_set_text(buttonStyleHdr, "Button Style");
+            lv_label_set_text(buttonStyleHdr, tr(TXT_BUTTON_STYLE));
             lv_obj_set_style_text_color(buttonStyleHdr, lv_color_hex(0xE5ECF3), 0);
 
             auto makeStyleRow = [&](lv_obj_t *parentWrap,
@@ -8996,7 +9736,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
                 lv_obj_add_event_cb(btn, lvglFilteredClickFlashEvent, LV_EVENT_CLICKED, nullptr);
                 lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, nullptr);
                 lv_obj_t *lbl = lv_label_create(btn);
-                lv_label_set_text(lbl, "Select");
+                lv_label_set_text(lbl, tr(TXT_SELECT));
                 lv_obj_center(lbl);
                 lvglRegisterStyledButton(btn, accent, true);
                 *btnOut = btn;
@@ -9004,19 +9744,19 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             };
 
             makeStyleRow(buttonStyleWrap,
-                         "Flat Buttons",
+                         tr(TXT_FLAT_BUTTONS),
                          lv_color_hex(uiButtonStyleFlatSelectorColor),
                          &lvglStyleButtonFlatBtn,
                          &lvglStyleButtonFlatBtnLabel,
                          lvglStyleButtonFlatEvent);
             makeStyleRow(buttonStyleWrap,
-                         "3D Buttons",
+                         tr(TXT_3D_BUTTONS),
                          lv_color_hex(uiButtonStyle3dSelectorColor),
                          &lvglStyleButton3dBtn,
                          &lvglStyleButton3dBtnLabel,
                          lvglStyleButton3dEvent);
             makeStyleRow(buttonStyleWrap,
-                         "Black Buttons",
+                         tr(TXT_BLACK_BUTTONS),
                          lv_color_hex(UI_BUTTON_BLACK_BODY_HEX),
                          &lvglStyleButtonBlackBtn,
                          &lvglStyleButtonBlackBtnLabel,
@@ -9033,7 +9773,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_clear_flag(tzWrap, LV_OBJ_FLAG_SCROLLABLE);
 
             lv_obj_t *tzHdr = lv_label_create(tzWrap);
-            lv_label_set_text(tzHdr, "Timezone");
+            lv_label_set_text(tzHdr, tr(TXT_TIMEZONE));
             lv_obj_set_style_text_color(tzHdr, lv_color_hex(0xE5ECF3), 0);
 
             lvglStyleTimezoneDd = lv_dropdown_create(tzWrap);
@@ -9060,17 +9800,17 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_clear_flag(topCenterWrap, LV_OBJ_FLAG_SCROLLABLE);
 
             lv_obj_t *topCenterHdr = lv_label_create(topCenterWrap);
-            lv_label_set_text(topCenterHdr, "Top Bar Center");
+            lv_label_set_text(topCenterHdr, tr(TXT_TOP_BAR_CENTER));
             lv_obj_set_style_text_color(topCenterHdr, lv_color_hex(0xE5ECF3), 0);
 
             makeStyleRow(topCenterWrap,
-                         "Show Device Name",
+                         tr(TXT_SHOW_DEVICE_NAME),
                          lv_color_hex(0x3F4A57),
                          &lvglStyleTopCenterNameBtn,
                          &lvglStyleTopCenterNameBtnLabel,
                          lvglStyleTopCenterNameEvent);
             makeStyleRow(topCenterWrap,
-                         "Show Time",
+                         tr(TXT_SHOW_TIME),
                          lv_color_hex(0x3F4A57),
                          &lvglStyleTopCenterTimeBtn,
                          &lvglStyleTopCenterTimeBtnLabel,
@@ -9096,7 +9836,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_clear_flag(timeHdr, LV_OBJ_FLAG_SCROLLABLE);
 
             lv_obj_t *timeLbl = lv_label_create(timeHdr);
-            lv_label_set_text(timeLbl, "Screen Timeoff");
+            lv_label_set_text(timeLbl, tr(TXT_SCREEN_TIMEOFF));
             lv_obj_set_style_text_color(timeLbl, lv_color_hex(0xE5ECF3), 0);
             lv_obj_set_flex_grow(timeLbl, 1);
 
@@ -9125,7 +9865,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_clear_flag(powerWrap, LV_OBJ_FLAG_SCROLLABLE);
 
             lv_obj_t *powerHdr = lv_label_create(powerWrap);
-            lv_label_set_text(powerHdr, "Power Off");
+            lv_label_set_text(powerHdr, tr(TXT_POWER_OFF));
             lv_obj_set_style_text_color(powerHdr, lv_color_hex(0xE5ECF3), 0);
 
             lvglStylePowerOffDropdown = lv_dropdown_create(powerWrap);
@@ -9145,7 +9885,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_width(hint, lv_pct(100));
             lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
             lv_obj_set_style_text_color(hint, lv_color_hex(0x9FB0C2), 0);
-            lv_label_set_text(hint, "Screen Timeoff controls sleep/screensaver. Power Off can send a hardware shutdown signal after longer inactivity to save battery.");
+            lv_label_set_text(hint, tr(TXT_STYLE_HINT));
             lvglRefreshStyleUi();
             break;
         }
@@ -9347,7 +10087,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             };
 
             lvglRadioModuleHeader = lv_label_create(wrap);
-            lv_label_set_text(lvglRadioModuleHeader, "Radio Module");
+            lv_label_set_text(lvglRadioModuleHeader, tr(TXT_RADIO_MODULE));
             lv_obj_set_style_text_color(lvglRadioModuleHeader, lv_color_hex(0xE5ECF3), 0);
 
             lvglRadioModuleDropdown = lv_dropdown_create(wrap);
@@ -9363,9 +10103,9 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_add_event_cb(lvglRadioModuleDropdown, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
             lv_obj_add_event_cb(lvglRadioModuleDropdown, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
 
-            lv_obj_t *hc12ChannelCard = makeSelectorRow("Channel", lv_color_hex(0x7A5C2E), lvglHc12PrevChannelEvent, lvglHc12NextChannelEvent,
+            lv_obj_t *hc12ChannelCard = makeSelectorRow(tr(TXT_CHANNEL), lv_color_hex(0x7A5C2E), lvglHc12PrevChannelEvent, lvglHc12NextChannelEvent,
                                                         &lvglRadioChannelTitleLabel, &lvglHc12ChannelValueLabel, &lvglHc12ChannelSubLabel);
-            lv_obj_t *hc12BaudCard = makeSelectorRow("Baud Rate", lv_color_hex(0x2F6D86), lvglHc12PrevBaudEvent, lvglHc12NextBaudEvent,
+            lv_obj_t *hc12BaudCard = makeSelectorRow(tr(TXT_BAUD_RATE), lv_color_hex(0x2F6D86), lvglHc12PrevBaudEvent, lvglHc12NextBaudEvent,
                                                     &lvglRadioBaudTitleLabel, &lvglHc12BaudValueLabel, &lvglHc12BaudSubLabel);
             lv_obj_t *hc12ModeCard = makeSelectorRow("Transmission Mode", lv_color_hex(0x355E8A), lvglHc12PrevModeEvent, lvglHc12NextModeEvent,
                                                     &lvglRadioModeTitleLabel, &lvglHc12ModeValueLabel, &lvglHc12ModeSubLabel);
@@ -9413,7 +10153,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             }
 
             lv_obj_t *hc12TerminalBtn = lvglCreateMenuButton(wrap, lvglSymbolText(LV_SYMBOL_KEYBOARD, "Radio Terminal").c_str(), lv_color_hex(0x2F6D86), lvglOpenHc12TerminalEvent, nullptr);
-            lv_obj_t *hc12InfoBtn = lvglCreateMenuButton(wrap, lvglSymbolText(LV_SYMBOL_LIST, "Radio Info").c_str(), lv_color_hex(0x7A5C2E), lvglOpenHc12InfoEvent, nullptr);
+            lv_obj_t *hc12InfoBtn = lvglCreateMenuButton(wrap, lvglSymbolText(LV_SYMBOL_LIST, tr(TXT_HC12_INFO)).c_str(), lv_color_hex(0x7A5C2E), lvglOpenHc12InfoEvent, nullptr);
 
             lv_obj_t *hintCard = lv_obj_create(wrap);
             lv_obj_set_width(hintCard, lv_pct(100));
@@ -9522,7 +10262,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             break;
         }
         case UI_CONFIG_HC12_INFO: {
-            lvglScrHc12Info = lvglCreateScreenBase("Radio Info", false);
+            lvglScrHc12Info = lvglCreateScreenBase(tr(TXT_HC12_INFO), false);
             lv_obj_t *wrap = lv_obj_create(lvglScrHc12Info);
             lv_obj_set_size(wrap, lv_pct(100), UI_CONTENT_H);
             lv_obj_align(wrap, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
@@ -9558,12 +10298,12 @@ void lvglEnsureScreenBuilt(UiScreen screen)
                 return card;
             };
 
-            lv_obj_t *hc12InfoVersionCard = makeInfoLine("Version", &lvglHc12InfoVersionLabel);
-            lv_obj_t *hc12InfoBaudCard = makeInfoLine("Baud Rate", &lvglHc12InfoBaudLabel);
-            lv_obj_t *hc12InfoChannelCard = makeInfoLine("Channel", &lvglHc12InfoChannelLabel);
-            lv_obj_t *hc12InfoFuCard = makeInfoLine("FU Mode", &lvglHc12InfoFuModeLabel);
-            lv_obj_t *hc12InfoPowerCard = makeInfoLine("Power", &lvglHc12InfoPowerLabel);
-            lv_obj_t *hc12InfoRawCard = makeInfoLine("Raw", &lvglHc12InfoRawLabel);
+            lv_obj_t *hc12InfoVersionCard = makeInfoLine(tr(TXT_VERSION), &lvglHc12InfoVersionLabel);
+            lv_obj_t *hc12InfoBaudCard = makeInfoLine(tr(TXT_BAUD_RATE), &lvglHc12InfoBaudLabel);
+            lv_obj_t *hc12InfoChannelCard = makeInfoLine(tr(TXT_CHANNEL), &lvglHc12InfoChannelLabel);
+            lv_obj_t *hc12InfoFuCard = makeInfoLine(tr(TXT_FU_MODE), &lvglHc12InfoFuModeLabel);
+            lv_obj_t *hc12InfoPowerCard = makeInfoLine(tr(TXT_POWER), &lvglHc12InfoPowerLabel);
+            lv_obj_t *hc12InfoRawCard = makeInfoLine(tr(TXT_RAW), &lvglHc12InfoRawLabel);
             lvglRegisterReorderableItem(hc12InfoVersionCard, "ord_hci", "ver");
             lvglRegisterReorderableItem(hc12InfoBaudCard, "ord_hci", "baud");
             lvglRegisterReorderableItem(hc12InfoChannelCard, "ord_hci", "chan");
@@ -9571,6 +10311,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglRegisterReorderableItem(hc12InfoPowerCard, "ord_hci", "power");
             lvglRegisterReorderableItem(hc12InfoRawCard, "ord_hci", "raw");
             lvglApplySavedOrder(wrap, "ord_hci");
+            applyRadioInfoLabels();
             break;
         }
         case UI_SCREENSAVER: {
@@ -10185,9 +10926,7 @@ void lvglOpenScreen(UiScreen screen, lv_scr_load_anim_t anim)
     } else if (screen == UI_MEDIA) {
         lvglQueueMediaRefresh();
     } else if (screen == UI_INFO) {
-        infoRefreshPending = true;
-        radioInfoFetchPending = true;
-        radioInfoFetchDueMs = millis() + 20UL;
+        queueInfoRefresh(true);
         lvglRefreshInfoPanel();        
     } else if (screen == UI_CONFIG) {
         lvglRefreshConfigUi();
@@ -10205,6 +10944,7 @@ void lvglOpenScreen(UiScreen screen, lv_scr_load_anim_t anim)
     } else if (screen == UI_CONFIG_HC12_TERMINAL) {
         lvglRefreshHc12Ui();
     } else if (screen == UI_CONFIG_HC12_INFO) {
+        queueRadioInfoFetch();
         lvglRefreshHc12InfoUi();
     }
     lvglRefreshTopIndicators();
@@ -10482,8 +11222,15 @@ void lvglChatDiscoveryToggleEvent(lv_event_t *e)
     p2pDiscoveryEnabled = !p2pDiscoveryEnabled;
     saveP2pConfig();
     lvglApplyChatDiscoveryButtonStyle();
-    uiStatusLine = p2pDiscoveryEnabled ? "Peer discovery enabled" : "Peer discovery disabled";
+    uiStatusLine = p2pDiscoveryEnabled ? tr(TXT_PEER_DISCOVERY_ENABLED) : tr(TXT_PEER_DISCOVERY_DISABLED);
     lvglSyncStatusLine();
+    if (!p2pDiscoveryEnabled) {
+        hc12LastDiscoveryAnnounceMs = millis();
+    } else {
+        hc12LastDiscoveryAnnounceMs = 0;
+        p2pLastDiscoverAnnounceMs = 0;
+    }
+    if (uiScreen == UI_CHAT_PEERS) lvglRefreshChatPeerUi();
 }
 
 void saveApModePref(bool enabled)
@@ -11234,15 +11981,20 @@ void lvglSetChatPeerScanButtonStatus(const char *text, uint32_t revertDelayMs)
     if (!lvglChatPeerScanBtn) return;
     lv_obj_t *label = lv_obj_get_child(lvglChatPeerScanBtn, 0);
     if (!label) return;
-    lv_label_set_text(label, lvglSymbolText(LV_SYMBOL_REFRESH, text ? text : "Scan").c_str());
-    if (revertDelayMs == 0) return;
+    lv_label_set_text(label, lvglSymbolText(LV_SYMBOL_REFRESH, text ? text : tr(TXT_SCAN)).c_str());
+    if (revertDelayMs == 0) {
+        lvglChatPeerScanRevertAtMs = 0;
+        return;
+    }
+    lvglChatPeerScanRevertAtMs = millis() + revertDelayMs;
     lv_timer_t *timer = lv_timer_create(
         [](lv_timer_t *timer) {
             lv_obj_t *btn = static_cast<lv_obj_t *>(timer ? timer->user_data : nullptr);
             if (btn) {
                 lv_obj_t *lbl = lv_obj_get_child(btn, 0);
-                if (lbl) lv_label_set_text(lbl, lvglSymbolText(LV_SYMBOL_REFRESH, "Scan").c_str());
+                if (lbl) lv_label_set_text(lbl, lvglSymbolText(LV_SYMBOL_REFRESH, tr(TXT_SCAN)).c_str());
             }
+            lvglChatPeerScanRevertAtMs = 0;
             if (timer) lv_timer_del(timer);
         },
         revertDelayMs,
@@ -11294,6 +12046,7 @@ static bool hc12SendRadioPong()
 
 static bool hc12BroadcastDiscoveryFrame(const char *kind)
 {
+    if (!p2pDiscoveryEnabled) return false;
     JsonDocument doc;
     doc["kind"] = kind ? kind : "hello";
     doc["device"] = deviceShortNameValue();
@@ -11303,6 +12056,7 @@ static bool hc12BroadcastDiscoveryFrame(const char *kind)
 
 static void hc12DiscoveryService()
 {
+    if (!p2pDiscoveryEnabled) return;
     if (hc12SetIsAsserted() || !radioModuleCanCarryChat()) return;
     if (radioTxBusy()) return;   // ADD THIS LINE
     if (p2pPairRequestPending) return;
@@ -11600,8 +12354,15 @@ void lvglRefreshChatPeerUi()
 
     if (lvglChatDiscoveryBtn) {
         lv_obj_t *label = lv_obj_get_child(lvglChatDiscoveryBtn, 0);
-        if (label) lv_label_set_text(label, lvglSymbolText(LV_SYMBOL_WIFI, "Discovery").c_str());
+        if (label) lv_label_set_text(label, lvglSymbolText(LV_SYMBOL_WIFI, tr(TXT_DISCOVERY)).c_str());
         lvglApplyChatDiscoveryButtonStyle();
+    }
+
+    if (lvglChatPeerScanBtn) {
+        lv_obj_t *scanLabel = lv_obj_get_child(lvglChatPeerScanBtn, 0);
+        if (scanLabel && lvglChatPeerScanRevertAtMs == 0) {
+            lv_label_set_text(scanLabel, lvglSymbolText(LV_SYMBOL_REFRESH, tr(TXT_SCAN)).c_str());
+        }
     }
 
     if (lvglChatPeerIdentityLabel) {
@@ -12367,22 +13128,8 @@ void lvglRefreshInfoPanel(bool refreshIndicators)
         sampleTopIndicators();
         lvglRefreshTopIndicators();
     }
-    const bool connected = wifiConnectedSafe();
-    const String ssid = connected ? wifiSsidSafe() : String("Disconnected");
-    const String ip = connected ? wifiIpSafe() : String("-");
-    const int rssi = connected ? static_cast<int>(wifiRssiSafe()) : -127;
-    const uint8_t wifiQuality = connected ? wifiQualityPercentFromRssi(rssi) : 0;
-    const float tempC = temperatureRead();
-    uint8_t tempBarValue = 0;
-    if (!isnan(tempC) && tempC > 0.0f) {
-        float clamped = tempC;
-        if (clamped < 0.0f) clamped = 0.0f;
-        if (clamped > INFO_TEMP_BAR_MAX_C) clamped = INFO_TEMP_BAR_MAX_C;
-        tempBarValue = static_cast<uint8_t>(clamped + 0.5f);
-    }
-    const uint32_t freeHeap = static_cast<uint32_t>(ESP.getFreeHeap());
-    const uint32_t heapTotal = static_cast<uint32_t>(ESP.getHeapSize());
     const uint32_t largest8 = static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    const uint32_t freeHeap = static_cast<uint32_t>(ESP.getFreeHeap());
     const uint32_t psramFree = boardHasUsablePsram()
                                    ? static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM))
                                    : 0U;
@@ -12395,15 +13142,9 @@ void lvglRefreshInfoPanel(bool refreshIndicators)
              batteryCentivolts / 100,
              abs(batteryCentivolts % 100),
              batteryCharging ? "Charging" : "On battery");
-    lv_obj_t *batteryCard = lvglFindInfoCardByTitle("Battery");
-    lv_obj_t *wifiCard = lvglFindInfoCardByTitle("WiFi Strength");
-    lv_obj_t *lightCard = lvglFindInfoCardByTitle("Lighting");
-
     if (lvglInfoBatteryValueLabel) lvglLabelSetTextIfChanged(lvglInfoBatteryValueLabel, String(batteryPercent) + "%");
-    if (lvglInfoBatterySubLabel) {
-        lvglLabelSetTextIfChanged(lvglInfoBatterySubLabel, batteryBuf);
-    }
-    if (lv_obj_t *batteryBar = lvglInfoCardBar(batteryCard)) {
+    if (lvglInfoBatterySubLabel) lvglLabelSetTextIfChanged(lvglInfoBatterySubLabel, batteryBuf);
+    if (lv_obj_t *batteryBar = lvglInfoCardBar(lvglInfoBatteryCard)) {
         lvglBarSetValueIfChanged(batteryBar, static_cast<int32_t>(batteryPercent), LV_ANIM_ON);
         lv_color_t batteryColor = lv_color_hex(0x52B788);
         if (batteryPercent <= 20) batteryColor = lv_color_hex(0xD95C5C);
@@ -12411,123 +13152,71 @@ void lvglRefreshInfoPanel(bool refreshIndicators)
         lvglSetInfoBarColor(batteryBar, batteryColor);
     }
 
-    if (lvglInfoWifiValueLabel) lvglLabelSetTextIfChanged(lvglInfoWifiValueLabel, connected ? String(wifiQuality) + "%" : String("Offline"));
-    if (lvglInfoWifiSubLabel) {
-        if (connected) lvglLabelSetTextIfChanged(lvglInfoWifiSubLabel, ssid + "  |  " + ip + "  |  " + String(rssi) + "dBm");
-        else if (apModeActive) lvglLabelSetTextIfChanged(lvglInfoWifiSubLabel, "AP " + savedApSsid + "  |  " + WiFi.softAPIP().toString() + "  |  Touch to Config > WiFi Config to connect");
-        else lvglLabelSetTextIfChanged(lvglInfoWifiSubLabel, "AP " + savedApSsid + "  |  Touch to Config > WiFi Config to connect");
-    }
-    if (lv_obj_t *wifiBar = lvglInfoCardBar(wifiCard)) {
-        lvglBarSetValueIfChanged(wifiBar, static_cast<int32_t>(connected ? wifiQuality : 0U), LV_ANIM_ON);
+    if (lvglInfoWifiValueLabel) lvglLabelSetTextIfChanged(lvglInfoWifiValueLabel, infoWifiValueText);
+    if (lvglInfoWifiSubLabel) lvglLabelSetTextIfChanged(lvglInfoWifiSubLabel, infoWifiSubText);
+    if (lv_obj_t *wifiBar = lvglInfoCardBar(lvglInfoWifiCard)) {
+        lvglBarSetValueIfChanged(wifiBar, static_cast<int32_t>(infoWifiQualityPercent), LV_ANIM_ON);
         lv_color_t wifiColor = lv_color_hex(0x4A5563);
-        if (connected) {
+        if (infoWifiQualityPercent > 0U) {
             wifiColor = lv_color_hex(0x4FC3F7);
-            if (wifiQuality <= 25) wifiColor = lv_color_hex(0xD95C5C);
-            else if (wifiQuality <= 55) wifiColor = lv_color_hex(0xF2C35E);
+            if (infoWifiQualityPercent <= 25) wifiColor = lv_color_hex(0xD95C5C);
+            else if (infoWifiQualityPercent <= 55) wifiColor = lv_color_hex(0xF2C35E);
         }
         lvglSetInfoBarColor(wifiBar, wifiColor);
     }
 
-    if (lvglInfoHc12ValueLabel) lvglLabelSetTextIfChanged(lvglInfoHc12ValueLabel, hc12InfoValueText);
-    if (lvglInfoHc12SubLabel) lvglLabelSetTextIfChanged(lvglInfoHc12SubLabel, hc12InfoSubText);
+    applyRadioInfoLabels();
 
-    if (lvglInfoLightValueLabel) lvglLabelSetTextIfChanged(lvglInfoLightValueLabel, String(lightPercent) + "%");
-    if (lvglInfoLightSubLabel) {
-        lvglLabelSetTextIfChanged(lvglInfoLightSubLabel,
-                                  String("Display ") + (displayAwake ? "awake" : "sleeping") +
-                                  "  |  Backlight " + String(displayBrightnessPercent) +
-                                  "%  |  raw " + String(lightRawAdc));
-    }
-    if (lv_obj_t *lightBar = lvglInfoCardBar(lightCard)) {
-        lvglBarSetValueIfChanged(lightBar, static_cast<int32_t>(lightPercent), LV_ANIM_ON);
+    if (lvglInfoLightValueLabel) lvglLabelSetTextIfChanged(lvglInfoLightValueLabel, infoLightValueText);
+    if (lvglInfoLightSubLabel) lvglLabelSetTextIfChanged(lvglInfoLightSubLabel, infoLightSubText);
+    if (lv_obj_t *lightBar = lvglInfoCardBar(lvglInfoLightCard)) {
+        lvglBarSetValueIfChanged(lightBar, static_cast<int32_t>(infoLightPercentValue), LV_ANIM_ON);
         lv_color_t lightColor = lv_color_hex(0x4A5563);
-        if (lightPercent >= 75) lightColor = lv_color_hex(0xF4B942);
-        else if (lightPercent >= 35) lightColor = lv_color_hex(0xF2C35E);
+        if (infoLightPercentValue >= 75) lightColor = lv_color_hex(0xF4B942);
+        else if (infoLightPercentValue >= 35) lightColor = lv_color_hex(0xF2C35E);
         else lightColor = lv_color_hex(0x6AAEE6);
         lvglSetInfoBarColor(lightBar, lightColor);
     }
 
-    lv_obj_t *sdCard = lvglFindInfoCardByTitle("SD Card");
-    uint64_t sdTotal = 0;
-    uint64_t sdUsed = 0;
-    if (sdMounted) {
-        sdTotal = SD.totalBytes();
-        sdUsed = SD.usedBytes();
+    if (lv_obj_t *sdValue = lvglInfoCardValueLabel(lvglInfoSdCard)) {
+        lvglLabelSetTextIfChanged(sdValue, infoSdValueText);
     }
-    const uint8_t sdPct = (sdTotal > 0) ? static_cast<uint8_t>((sdUsed * 100ULL) / sdTotal) : 0U;
-    if (lv_obj_t *sdValue = lvglInfoCardValueLabel(sdCard)) {
-        if (sdTotal > 0) lvglLabelSetTextIfChanged(sdValue, String(sdPct) + "%");
-        else lvglLabelSetTextIfChanged(sdValue, sdMounted ? "--" : "Off");
+    if (lv_obj_t *sdSub = lvglInfoCardSubLabel(lvglInfoSdCard)) {
+        lvglLabelSetTextIfChanged(sdSub, infoSdSubText);
     }
-    if (lv_obj_t *sdSub = lvglInfoCardSubLabel(sdCard)) {
-        if (sdTotal > 0) {
-            lvglLabelSetTextIfChanged(sdSub,
-                                      "Used " + String(static_cast<unsigned long long>(sdUsed / (1024ULL * 1024ULL))) +
-                                      " / " + String(static_cast<unsigned long long>(sdTotal / (1024ULL * 1024ULL))) +
-                                      " MB  |  Free " + String(static_cast<unsigned long long>((sdTotal - sdUsed) / (1024ULL * 1024ULL))) + " MB");
-        } else {
-            lvglLabelSetTextIfChanged(sdSub, sdMounted ? "Capacity unavailable" : "Card offline");
-        }
-    }
-    if (lv_obj_t *sdBar = lvglInfoCardBar(sdCard)) {
-        lvglBarSetValueIfChanged(sdBar, static_cast<int32_t>(sdTotal > 0 ? sdPct : 0U), LV_ANIM_ON);
+    if (lv_obj_t *sdBar = lvglInfoCardBar(lvglInfoSdCard)) {
+        lvglBarSetValueIfChanged(sdBar, static_cast<int32_t>(infoSdPercentValue), LV_ANIM_ON);
         lv_color_t sdColor = lv_color_hex(0xE59F45);
-        if (sdPct >= 90) sdColor = lv_color_hex(0xD95C5C);
-        else if (sdPct >= 75) sdColor = lv_color_hex(0xF2C35E);
-        lvglSetInfoBarColor(sdBar, sdTotal > 0 ? sdColor : lv_color_hex(0x3A4150));
+        if (infoSdPercentValue >= 90) sdColor = lv_color_hex(0xD95C5C);
+        else if (infoSdPercentValue >= 75) sdColor = lv_color_hex(0xF2C35E);
+        lvglSetInfoBarColor(sdBar, infoSdPercentValue > 0U ? sdColor : lv_color_hex(0x3A4150));
     }
 
-    const uint32_t sramUsed = (heapTotal >= freeHeap) ? (heapTotal - freeHeap) : 0U;
-    const uint8_t sramPct = (heapTotal > 0) ? static_cast<uint8_t>((static_cast<uint64_t>(sramUsed) * 100ULL) / heapTotal) : 0U;
     if (lv_obj_t *sramValue = lvglInfoCardValueLabel(lvglInfoSramCard)) {
-        lvglLabelSetTextIfChanged(sramValue, String(sramPct) + "%");
+        lvglLabelSetTextIfChanged(sramValue, infoSramValueText);
     }
     if (lv_obj_t *sramSub = lvglInfoCardSubLabel(lvglInfoSramCard)) {
-        lvglLabelSetTextIfChanged(sramSub,
-                                  "Used " + String(static_cast<unsigned long>(sramUsed / 1024U)) +
-                                  " / " + String(static_cast<unsigned long>(heapTotal / 1024U)) +
-                                  " KB  |  Free " + String(static_cast<unsigned long>(freeHeap / 1024U)) + " KB");
+        lvglLabelSetTextIfChanged(sramSub, infoSramSubText);
     }
     if (lv_obj_t *sramBar = lvglInfoCardBar(lvglInfoSramCard)) {
-        lvglBarSetValueIfChanged(sramBar, static_cast<int32_t>(sramPct), LV_ANIM_ON);
+        lvglBarSetValueIfChanged(sramBar, static_cast<int32_t>(infoSramPercentValue), LV_ANIM_ON);
         lv_color_t sramColor = lv_color_hex(0x4FC3F7);
-        if (sramPct >= 85) sramColor = lv_color_hex(0xD95C5C);
-        else if (sramPct >= 65) sramColor = lv_color_hex(0xF2C35E);
+        if (infoSramPercentValue >= 85) sramColor = lv_color_hex(0xD95C5C);
+        else if (infoSramPercentValue >= 65) sramColor = lv_color_hex(0xF2C35E);
         lvglSetInfoBarColor(sramBar, sramColor);
     }
 
-    const uint32_t psramUsed = (psramTotal >= psramFree) ? (psramTotal - psramFree) : 0U;
-    const uint32_t psramPctTenths = (psramTotal > 0)
-                                        ? static_cast<uint32_t>((static_cast<uint64_t>(psramUsed) * 1000ULL + (psramTotal / 2ULL)) / psramTotal)
-                                        : 0U;
-    const uint8_t psramPct = static_cast<uint8_t>(min<uint32_t>(100U, (psramPctTenths + 5U) / 10U));
     if (lv_obj_t *psramValue = lvglInfoCardValueLabel(lvglInfoPsramCard)) {
-        if (psramTotal > 0) {
-            if (psramPctTenths < 100U) {
-                lvglLabelSetTextIfChanged(psramValue,
-                                          String(static_cast<unsigned int>(psramPctTenths / 10U)) + "." +
-                                          String(static_cast<unsigned int>(psramPctTenths % 10U)) + "%");
-            } else {
-                lvglLabelSetTextIfChanged(psramValue, String(static_cast<unsigned int>(psramPct)) + "%");
-            }
-        }
-        else lvglLabelSetTextIfChanged(psramValue, "--");
+        lvglLabelSetTextIfChanged(psramValue, infoPsramValueText);
     }
     if (lv_obj_t *psramSub = lvglInfoCardSubLabel(lvglInfoPsramCard)) {
-        if (psramTotal > 0) {
-            lvglLabelSetTextIfChanged(psramSub,
-                                      "Used " + String(static_cast<unsigned long>(psramUsed / 1024U)) +
-                                      " / " + String(static_cast<unsigned long>(psramTotal / 1024U)) +
-                                      " KB  |  Free " + String(static_cast<unsigned long>(psramFree / 1024U)) + " KB");
-        } else {
-            lvglLabelSetTextIfChanged(psramSub, "Not available on this board");
-        }
+        lvglLabelSetTextIfChanged(psramSub, infoPsramSubText);
     }
     if (lv_obj_t *psramBar = lvglInfoCardBar(lvglInfoPsramCard)) {
-        lvglBarSetValueIfChanged(psramBar, static_cast<int32_t>(psramTotal > 0 ? psramPct : 0U), LV_ANIM_ON);
+        lvglBarSetValueIfChanged(psramBar, static_cast<int32_t>(infoPsramPercentValue), LV_ANIM_ON);
         lv_color_t psramColor = lv_color_hex(0x9B7CF2);
-        if (psramPct >= 85) psramColor = lv_color_hex(0xD95C5C);
-        else if (psramPct >= 65) psramColor = lv_color_hex(0xF2C35E);
+        if (infoPsramPercentValue >= 85) psramColor = lv_color_hex(0xD95C5C);
+        else if (infoPsramPercentValue >= 65) psramColor = lv_color_hex(0xF2C35E);
         lvglSetInfoBarColor(psramBar, psramTotal > 0 ? psramColor : lv_color_hex(0x3A4150));
     }
 
@@ -12552,21 +13241,14 @@ void lvglRefreshInfoPanel(bool refreshIndicators)
     }
 
     if (lv_obj_t *tempValue = lvglInfoCardValueLabel(lvglInfoTempCard)) {
-        if (!isnan(tempC) && tempC > 0.0f) {
-            char tempBuf[16];
-            const int tempTenths = static_cast<int>(tempC * 10.0f + 0.5f);
-            snprintf(tempBuf, sizeof(tempBuf), "%d.%dC", tempTenths / 10, abs(tempTenths % 10));
-            lv_label_set_text(tempValue, tempBuf);
-        } else {
-            lv_label_set_text(tempValue, "--");
-        }
+        lvglLabelSetTextIfChanged(tempValue, infoTempValueText);
     }
-    if (lv_obj_t *tempSub = lvglInfoCardSubLabel(lvglInfoTempCard)) lv_label_set_text_fmt(tempSub, "ESP32 die temp  |  target range under %uC", INFO_TEMP_WARN_C);
+    if (lv_obj_t *tempSub = lvglInfoCardSubLabel(lvglInfoTempCard)) lvglLabelSetTextIfChanged(tempSub, infoTempSubText);
     if (lv_obj_t *tempBar = lvglInfoCardBar(lvglInfoTempCard)) {
-        lv_bar_set_value(tempBar, static_cast<int32_t>(tempBarValue), LV_ANIM_OFF);
+        lv_bar_set_value(tempBar, static_cast<int32_t>(infoTempBarValue), LV_ANIM_OFF);
         lv_color_t tempColor = lv_color_hex(0x4FC3F7);
-        if (tempBarValue >= INFO_TEMP_HOT_C) tempColor = lv_color_hex(0xD95C5C);
-        else if (tempBarValue >= INFO_TEMP_WARN_C) tempColor = lv_color_hex(0xF2C35E);
+        if (infoTempBarValue >= INFO_TEMP_HOT_C) tempColor = lv_color_hex(0xD95C5C);
+        else if (infoTempBarValue >= INFO_TEMP_WARN_C) tempColor = lv_color_hex(0xF2C35E);
         lvglSetInfoBarColor(tempBar, tempColor);
     }
 
@@ -13127,7 +13809,7 @@ static void hc12SendLine(const String &line)
     Serial1.flush();
 }
 
-static String hc12QueryCommand(const char *line, unsigned long totalTimeoutMs = 180UL, unsigned long quietTimeoutMs = 32UL)
+static String hc12QueryCommand(const char *line, unsigned long totalTimeoutMs, unsigned long quietTimeoutMs)
 {
     hc12InitIfNeeded();
     while (Serial1.available() > 0) Serial1.read();
@@ -15574,6 +16256,24 @@ void lvglStyleMenuIconsToggleEvent(lv_event_t *e)
     lvglRefreshStyleUi();
 }
 
+void lvglStyleTouchVibrationToggleEvent(lv_event_t *e)
+{
+    if (lvglStyleUiSyncing) return;
+    lv_obj_t *target = e ? lv_event_get_target(e) : nullptr;
+    touchVibrationEnabled = target && lv_obj_has_state(target, LV_STATE_CHECKED);
+    saveSoundPrefs();
+    lvglRefreshStyleUi();
+}
+
+void lvglStyleTouchSoundToggleEvent(lv_event_t *e)
+{
+    if (lvglStyleUiSyncing) return;
+    lv_obj_t *target = e ? lv_event_get_target(e) : nullptr;
+    touchSoundEnabled = target && lv_obj_has_state(target, LV_STATE_CHECKED);
+    saveSoundPrefs();
+    lvglRefreshStyleUi();
+}
+
 void lvglStyleButtonFlatEvent(lv_event_t *e)
 {
     (void)e;
@@ -15788,6 +16488,20 @@ void lvglRefreshStyleUi()
             else lv_obj_clear_state(lvglStyleMenuIconsSw, LV_STATE_CHECKED);
         }
     }
+    if (lvglStyleTouchVibrationSw) {
+        const bool checked = lv_obj_has_state(lvglStyleTouchVibrationSw, LV_STATE_CHECKED);
+        if (touchVibrationEnabled != checked) {
+            if (touchVibrationEnabled) lv_obj_add_state(lvglStyleTouchVibrationSw, LV_STATE_CHECKED);
+            else lv_obj_clear_state(lvglStyleTouchVibrationSw, LV_STATE_CHECKED);
+        }
+    }
+    if (lvglStyleTouchSoundSw) {
+        const bool checked = lv_obj_has_state(lvglStyleTouchSoundSw, LV_STATE_CHECKED);
+        if (touchSoundEnabled != checked) {
+            if (touchSoundEnabled) lv_obj_add_state(lvglStyleTouchSoundSw, LV_STATE_CHECKED);
+            else lv_obj_clear_state(lvglStyleTouchSoundSw, LV_STATE_CHECKED);
+        }
+    }
     if (lvglStyleTimeoutSlider) {
         const int32_t sliderValue = static_cast<int32_t>(clampIdleTimeoutMs(displayIdleTimeoutMs) / LCD_IDLE_TIMEOUT_STEP_MS);
         if (lv_slider_get_value(lvglStyleTimeoutSlider) != sliderValue) {
@@ -15811,7 +16525,7 @@ void lvglRefreshStyleUi()
         }
     }
     if (lvglStyleButtonFlatBtn && lvglStyleButtonFlatBtnLabel) {
-        lvglLabelSetTextIfChanged(lvglStyleButtonFlatBtnLabel, uiButtonStyleMode == UI_BUTTON_STYLE_FLAT ? "Selected" : "Select");
+        lvglLabelSetTextIfChanged(lvglStyleButtonFlatBtnLabel, uiButtonStyleMode == UI_BUTTON_STYLE_FLAT ? tr(TXT_SELECTED) : tr(TXT_SELECT));
         lvglApplyPersistentToggleButtonStyle(lvglStyleButtonFlatBtn,
                                              lvglStyleButtonFlatBtnLabel,
                                              uiButtonStyleMode == UI_BUTTON_STYLE_FLAT,
@@ -15820,7 +16534,7 @@ void lvglRefreshStyleUi()
                                              true);
     }
     if (lvglStyleButton3dBtn && lvglStyleButton3dBtnLabel) {
-        lvglLabelSetTextIfChanged(lvglStyleButton3dBtnLabel, uiButtonStyleMode == UI_BUTTON_STYLE_3D ? "Selected" : "Select");
+        lvglLabelSetTextIfChanged(lvglStyleButton3dBtnLabel, uiButtonStyleMode == UI_BUTTON_STYLE_3D ? tr(TXT_SELECTED) : tr(TXT_SELECT));
         lvglApplyPersistentToggleButtonStyle(lvglStyleButton3dBtn,
                                              lvglStyleButton3dBtnLabel,
                                              uiButtonStyleMode == UI_BUTTON_STYLE_3D,
@@ -15829,7 +16543,7 @@ void lvglRefreshStyleUi()
                                              true);
     }
     if (lvglStyleButtonBlackBtn && lvglStyleButtonBlackBtnLabel) {
-        lvglLabelSetTextIfChanged(lvglStyleButtonBlackBtnLabel, uiButtonStyleMode == UI_BUTTON_STYLE_BLACK ? "Selected" : "Select");
+        lvglLabelSetTextIfChanged(lvglStyleButtonBlackBtnLabel, uiButtonStyleMode == UI_BUTTON_STYLE_BLACK ? tr(TXT_SELECTED) : tr(TXT_SELECT));
         lvglApplyPersistentToggleButtonStyle(lvglStyleButtonBlackBtn,
                                              lvglStyleButtonBlackBtnLabel,
                                              uiButtonStyleMode == UI_BUTTON_STYLE_BLACK,
@@ -15838,7 +16552,7 @@ void lvglRefreshStyleUi()
                                              true);
     }
     if (lvglStyleTopCenterNameBtn && lvglStyleTopCenterNameBtnLabel) {
-        lvglLabelSetTextIfChanged(lvglStyleTopCenterNameBtnLabel, topBarCenterMode == TOP_BAR_CENTER_NAME ? "Selected" : "Select");
+        lvglLabelSetTextIfChanged(lvglStyleTopCenterNameBtnLabel, topBarCenterMode == TOP_BAR_CENTER_NAME ? tr(TXT_SELECTED) : tr(TXT_SELECT));
         lvglApplyPersistentToggleButtonStyle(lvglStyleTopCenterNameBtn,
                                              lvglStyleTopCenterNameBtnLabel,
                                              topBarCenterMode == TOP_BAR_CENTER_NAME,
@@ -15847,7 +16561,7 @@ void lvglRefreshStyleUi()
                                              true);
     }
     if (lvglStyleTopCenterTimeBtn && lvglStyleTopCenterTimeBtnLabel) {
-        lvglLabelSetTextIfChanged(lvglStyleTopCenterTimeBtnLabel, topBarCenterMode == TOP_BAR_CENTER_TIME ? "Selected" : "Select");
+        lvglLabelSetTextIfChanged(lvglStyleTopCenterTimeBtnLabel, topBarCenterMode == TOP_BAR_CENTER_TIME ? tr(TXT_SELECTED) : tr(TXT_SELECT));
         lvglApplyPersistentToggleButtonStyle(lvglStyleTopCenterTimeBtn,
                                              lvglStyleTopCenterTimeBtnLabel,
                                              topBarCenterMode == TOP_BAR_CENTER_TIME,
@@ -17050,7 +17764,8 @@ void lvglService()
 
     if (uiScreen == UI_INFO && !lvglTouchDown && (now - lvglLastInfoRefreshMs) >= 2500UL) {
         lvglLastInfoRefreshMs = now;
-        lvglRefreshInfoPanel();
+        queueInfoRefresh(false);
+        lvglRefreshInfoPanel(false);
     }
 }
 
@@ -17954,8 +18669,8 @@ void lvglRefreshHc12ConfigUi()
         const uint16_t selected = static_cast<uint16_t>(radioModuleType);
         if (lv_dropdown_get_selected(lvglRadioModuleDropdown) != selected) lv_dropdown_set_selected(lvglRadioModuleDropdown, selected);
     }
-    if (lvglRadioChannelTitleLabel) lv_label_set_text(lvglRadioChannelTitleLabel, "Channel");
-    if (lvglRadioBaudTitleLabel) lv_label_set_text(lvglRadioBaudTitleLabel, radioModuleType == RADIO_MODULE_HC12 ? "Baud Rate" : "UART Baud");
+    if (lvglRadioChannelTitleLabel) lv_label_set_text(lvglRadioChannelTitleLabel, tr(TXT_CHANNEL));
+    if (lvglRadioBaudTitleLabel) lv_label_set_text(lvglRadioBaudTitleLabel, tr(TXT_BAUD_RATE));
     if (lvglRadioModeTitleLabel) lv_label_set_text(lvglRadioModeTitleLabel, radioModuleType == RADIO_MODULE_HC12 ? "Transmission Mode" : "Air Data Rate");
     if (lvglRadioPowerTitleLabel) lv_label_set_text(lvglRadioPowerTitleLabel, "Transmission Power");
     if (radioModuleType == RADIO_MODULE_HC12) {
@@ -18017,11 +18732,7 @@ void lvglHc12PrevChannelEvent(lv_event_t *e)
     const int currentChannel = radioModuleType == RADIO_MODULE_HC12 ? hc12CurrentChannel : e220CurrentChannel;
     const int minChannel = radioModuleType == RADIO_MODULE_HC12 ? HC12_MIN_CHANNEL : E220_MIN_CHANNEL;
     const int maxChannel = radioModuleType == RADIO_MODULE_HC12 ? HC12_MAX_CHANNEL : E220_MAX_CHANNEL;
-    if (hc12ApplyChannel(currentChannel <= minChannel ? maxChannel : (currentChannel - 1))) {
-        lvglRefreshHc12ConfigUi();
-    } else {
-        lvglRefreshHc12ConfigUi();
-    }
+    queueHc12ConfigApply(HC12_CFG_APPLY_CHANNEL, currentChannel <= minChannel ? maxChannel : (currentChannel - 1));
 }
 
 void lvglHc12NextChannelEvent(lv_event_t *e)
@@ -18030,11 +18741,7 @@ void lvglHc12NextChannelEvent(lv_event_t *e)
     const int currentChannel = radioModuleType == RADIO_MODULE_HC12 ? hc12CurrentChannel : e220CurrentChannel;
     const int minChannel = radioModuleType == RADIO_MODULE_HC12 ? HC12_MIN_CHANNEL : E220_MIN_CHANNEL;
     const int maxChannel = radioModuleType == RADIO_MODULE_HC12 ? HC12_MAX_CHANNEL : E220_MAX_CHANNEL;
-    if (hc12ApplyChannel(currentChannel >= maxChannel ? minChannel : (currentChannel + 1))) {
-        lvglRefreshHc12ConfigUi();
-    } else {
-        lvglRefreshHc12ConfigUi();
-    }
+    queueHc12ConfigApply(HC12_CFG_APPLY_CHANNEL, currentChannel >= maxChannel ? minChannel : (currentChannel + 1));
 }
 
 void lvglHc12PrevBaudEvent(lv_event_t *e)
@@ -18045,8 +18752,7 @@ void lvglHc12PrevBaudEvent(lv_event_t *e)
                               : static_cast<int>(sizeof(E220_UART_BAUD_VALUES) / sizeof(E220_UART_BAUD_VALUES[0]));
     int next = (radioModuleType == RADIO_MODULE_HC12 ? hc12CurrentBaudIndex : e220CurrentBaudIndex) - 1;
     if (next < 0) next = baudCount - 1;
-    hc12ApplyBaudIndex(next);
-    lvglRefreshHc12ConfigUi();
+    queueHc12ConfigApply(HC12_CFG_APPLY_BAUD, next);
 }
 
 void lvglHc12NextBaudEvent(lv_event_t *e)
@@ -18057,8 +18763,7 @@ void lvglHc12NextBaudEvent(lv_event_t *e)
                               : static_cast<int>(sizeof(E220_UART_BAUD_VALUES) / sizeof(E220_UART_BAUD_VALUES[0]));
     int next = (radioModuleType == RADIO_MODULE_HC12 ? hc12CurrentBaudIndex : e220CurrentBaudIndex) + 1;
     if (next >= baudCount) next = 0;
-    hc12ApplyBaudIndex(next);
-    lvglRefreshHc12ConfigUi();
+    queueHc12ConfigApply(HC12_CFG_APPLY_BAUD, next);
 }
 
 void lvglHc12PrevModeEvent(lv_event_t *e)
@@ -18067,8 +18772,7 @@ void lvglHc12PrevModeEvent(lv_event_t *e)
     int maxIndex = radioModuleType == RADIO_MODULE_HC12 ? 3 : 7;
     int next = (radioModuleType == RADIO_MODULE_HC12 ? hc12CurrentModeIndex : e220CurrentAirRateIndex) - 1;
     if (next < 0) next = maxIndex;
-    hc12ApplyModeIndex(next);
-    lvglRefreshHc12ConfigUi();
+    queueHc12ConfigApply(HC12_CFG_APPLY_MODE, next);
 }
 
 void lvglHc12NextModeEvent(lv_event_t *e)
@@ -18077,8 +18781,7 @@ void lvglHc12NextModeEvent(lv_event_t *e)
     int maxIndex = radioModuleType == RADIO_MODULE_HC12 ? 3 : 7;
     int next = (radioModuleType == RADIO_MODULE_HC12 ? hc12CurrentModeIndex : e220CurrentAirRateIndex) + 1;
     if (next > maxIndex) next = 0;
-    hc12ApplyModeIndex(next);
-    lvglRefreshHc12ConfigUi();
+    queueHc12ConfigApply(HC12_CFG_APPLY_MODE, next);
 }
 
 void lvglHc12PrevPowerEvent(lv_event_t *e)
@@ -18090,8 +18793,7 @@ void lvglHc12PrevPowerEvent(lv_event_t *e)
     } else {
         if (next < 0) next = 3;
     }
-    hc12ApplyPowerLevel(next);
-    lvglRefreshHc12ConfigUi();
+    queueHc12ConfigApply(HC12_CFG_APPLY_POWER, next);
 }
 
 void lvglHc12NextPowerEvent(lv_event_t *e)
@@ -18103,8 +18805,7 @@ void lvglHc12NextPowerEvent(lv_event_t *e)
     } else {
         if (next > 3) next = 0;
     }
-    hc12ApplyPowerLevel(next);
-    lvglRefreshHc12ConfigUi();
+    queueHc12ConfigApply(HC12_CFG_APPLY_POWER, next);
 }
 
 void lvglRadioPrevPinSwapEvent(lv_event_t *e)
@@ -18148,16 +18849,14 @@ void lvglHc12PrevExtraEvent(lv_event_t *e)
 {
     (void)e;
     if (radioModuleType != RADIO_MODULE_E220) return;
-    e220ApplyTransferMode(!e220CurrentFixedTransmission);
-    lvglRefreshHc12ConfigUi();
+    queueHc12ConfigApply(HC12_CFG_APPLY_EXTRA, e220CurrentFixedTransmission ? 0 : 1);
 }
 
 void lvglHc12NextExtraEvent(lv_event_t *e)
 {
     (void)e;
     if (radioModuleType != RADIO_MODULE_E220) return;
-    e220ApplyTransferMode(!e220CurrentFixedTransmission);
-    lvglRefreshHc12ConfigUi();
+    queueHc12ConfigApply(HC12_CFG_APPLY_EXTRA, e220CurrentFixedTransmission ? 0 : 1);
 }
 
 void lvglHc12DefaultEvent(lv_event_t *e)
@@ -18171,74 +18870,14 @@ void lvglHc12DefaultEvent(lv_event_t *e)
 void lvglRefreshHc12InfoUi()
 {
     if (radioInfoFetchPending) {
-        hc12InfoValueText = "Loading...";
-        hc12InfoSubText = "Fetching radio info...";
-
-        if (lvglHc12InfoVersionLabel) lv_label_set_text(lvglHc12InfoVersionLabel, "Loading...");
-        if (lvglHc12InfoBaudLabel) lv_label_set_text(lvglHc12InfoBaudLabel, "--");
-        if (lvglHc12InfoChannelLabel) lv_label_set_text(lvglHc12InfoChannelLabel, "--");
-        if (lvglHc12InfoFuModeLabel) lv_label_set_text(lvglHc12InfoFuModeLabel, "--");
-        if (lvglHc12InfoPowerLabel) lv_label_set_text(lvglHc12InfoPowerLabel, "--");
-        if (lvglHc12InfoRawLabel) lv_label_set_text(lvglHc12InfoRawLabel, "Fetching radio info...");
-        return;
+        radioInfoVersionText = tr(TXT_RADIO_INFO_LOADING);
+        radioInfoBaudText = "--";
+        radioInfoChannelText = "--";
+        radioInfoFuModeText = "--";
+        radioInfoPowerText = "--";
+        radioInfoRawText = tr(TXT_RADIO_INFO_LOADING);
     }
-
-    String versionRaw;
-    String baudRaw;
-    String channelRaw;
-    String fuRaw;
-    String powerRaw;
-    String summaryRaw;
-
-    hc12InitIfNeeded();
-
-    if (radioModuleType == RADIO_MODULE_E220) {
-        hc12RefreshInfoSnapshot();
-        return;
-    }
-
-    while (Serial1.available() > 0) Serial1.read();
-    digitalWrite(hc12ActiveSetPin(), LOW);
-    delay(80);
-
-    versionRaw = hc12QueryCommand("AT+V");
-    baudRaw = hc12QueryCommand("AT+RB");
-    channelRaw = hc12QueryCommand("AT+RC");
-    fuRaw = hc12QueryCommand("AT+RF");
-    powerRaw = hc12QueryCommand("AT+RP");
-    summaryRaw = hc12QueryCommand("AT+RX", 220UL, 40UL);
-
-    digitalWrite(hc12ActiveSetPin(), HIGH);
-    delay(40);
-    uiDeferredFlags &= static_cast<uint8_t>(~(UI_DEFERRED_HC12_SETTLE_PENDING | UI_DEFERRED_HC12_TARGET_ASSERTED));
-
-    String version = hc12CompactResponse(versionRaw);
-    if (version.isEmpty()) version = "No reply";
-
-    String baud = hc12FieldValue(baudRaw, "B");
-    if (baud != "--" && baud.indexOf("baud") < 0 && baud.indexOf("bps") < 0) baud += " bps";
-
-    String channel = hc12FieldValue(channelRaw, "RC");
-    if (channel != "--") channel = "CH" + channel;
-
-    String fuMode = hc12FieldValue(fuRaw, "FU");
-    if (fuMode != "--") fuMode = "FU" + fuMode;
-
-    String power = hc12FieldValue(powerRaw, "RP:");
-    if (power == "--") power = hc12FieldValue(powerRaw, "RP");
-
-    String raw = hc12CompactResponse(summaryRaw);
-    if (raw.isEmpty()) raw = "No summary response";
-
-    hc12InfoValueText = version;
-    hc12InfoSubText = raw;
-
-    if (lvglHc12InfoVersionLabel) lv_label_set_text(lvglHc12InfoVersionLabel, version.c_str());
-    if (lvglHc12InfoBaudLabel) lv_label_set_text(lvglHc12InfoBaudLabel, baud.c_str());
-    if (lvglHc12InfoChannelLabel) lv_label_set_text(lvglHc12InfoChannelLabel, channel.c_str());
-    if (lvglHc12InfoFuModeLabel) lv_label_set_text(lvglHc12InfoFuModeLabel, fuMode.c_str());
-    if (lvglHc12InfoPowerLabel) lv_label_set_text(lvglHc12InfoPowerLabel, power.c_str());
-    if (lvglHc12InfoRawLabel) lv_label_set_text(lvglHc12InfoRawLabel, raw.c_str());
+    applyRadioInfoLabels();
 }
 
 static const int8_t TETRIS_BASE[7][4][2] = {
@@ -19837,6 +20476,20 @@ void chatQueueIncomingMessageVibration()
 #endif
 }
 
+static void touchFeedbackQueue()
+{
+    if (touchSoundEnabled && chatMessageBeepCanPlay()) {
+        touchFeedbackBeepActive = true;
+        touchFeedbackBeepDeadlineMs = 0;
+    }
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+    if (touchVibrationEnabled && vibrationEnabled) {
+        touchFeedbackVibrationActive = true;
+        touchFeedbackVibrationDeadlineMs = 0;
+    }
+#endif
+}
+
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
 static uint32_t chatMessageVibrationDuty()
 {
@@ -19912,6 +20565,40 @@ void chatMessageBeepService()
     chatMessageBeepStartStep(chatMessageBeepPhase);
 }
 
+static void touchFeedbackBeepService()
+{
+    if (!touchFeedbackBeepActive) return;
+    if (!touchSoundEnabled || !chatMessageBeepCanPlay()) {
+        touchFeedbackBeepActive = false;
+        touchFeedbackBeepDeadlineMs = 0;
+        return;
+    }
+    if (chatMessageBeepPhase != 0 || chatMessageBeepQueue > 0) {
+        touchFeedbackBeepActive = false;
+        touchFeedbackBeepDeadlineMs = 0;
+        return;
+    }
+
+    const unsigned long now = millis();
+    if (touchFeedbackBeepDeadlineMs == 0) {
+        if (!chatMessageBeepEnsurePinAttached()) {
+            touchFeedbackBeepActive = false;
+            return;
+        }
+        ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, 0);
+        delayMicroseconds(150);
+        ledcWriteTone(CHAT_NOTIFY_LEDC_CHANNEL, TOUCH_TICK_FREQ);
+        ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, min<uint32_t>(chatMessageBeepDuty(), 220U));
+        touchFeedbackBeepDeadlineMs = now + TOUCH_TICK_MS;
+        return;
+    }
+
+    if (static_cast<long>(now - touchFeedbackBeepDeadlineMs) < 0) return;
+    chatMessageBeepStop(false);
+    touchFeedbackBeepActive = false;
+    touchFeedbackBeepDeadlineMs = 0;
+}
+
 void chatMessageVibrationService()
 {
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
@@ -19948,6 +20635,44 @@ void chatMessageVibrationService()
     }
 #endif
 }
+
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+static void touchFeedbackVibrationService()
+{
+    if (!touchFeedbackVibrationActive) return;
+    if (!touchVibrationEnabled || !vibrationEnabled) {
+        touchFeedbackVibrationActive = false;
+        touchFeedbackVibrationDeadlineMs = 0;
+        return;
+    }
+    if (chatMessageVibrationPhase != 0 || chatMessageVibrationQueue > 0) {
+        touchFeedbackVibrationActive = false;
+        touchFeedbackVibrationDeadlineMs = 0;
+        return;
+    }
+
+    const unsigned long now = millis();
+    if (touchFeedbackVibrationDeadlineMs == 0) {
+        if (!chatMessageVibrationEnsurePinAttached()) {
+            touchFeedbackVibrationActive = false;
+            return;
+        }
+        ledcWrite(VIBRATION_LEDC_CHANNEL, chatMessageVibrationDuty());
+        touchFeedbackVibrationDeadlineMs = now + TOUCH_VIBRATION_PULSE_MS;
+        return;
+    }
+
+    if (static_cast<long>(now - touchFeedbackVibrationDeadlineMs) < 0) return;
+    ledcWrite(VIBRATION_LEDC_CHANNEL, 0);
+    ledcDetachPin(VIBRATION_MOTOR_PIN);
+    pinMode(VIBRATION_MOTOR_PIN, OUTPUT);
+    digitalWrite(VIBRATION_MOTOR_PIN, LOW);
+    chatMessageVibrationPinAttached = false;
+    chatMessageVibrationPinOutput = false;
+    touchFeedbackVibrationActive = false;
+    touchFeedbackVibrationDeadlineMs = 0;
+}
+#endif
 
 bool audioEnsureBackendReady(const char *reason)
 {
@@ -20594,10 +21319,13 @@ void appendUiSettings(JsonDocument &doc)
     doc["SystemSounds"] = uiPrefs.getBool("sys_snd", systemSoundsEnabled) ? 1 : 0;
     doc["SystemVolume"] = uiPrefs.getUChar("sys_vol", mediaVolumePercent);
     doc["VibrationEnabled"] = uiPrefs.getBool("vib_en", vibrationEnabled) ? 1 : 0;
+    doc["TouchSoundEnabled"] = uiPrefs.getBool("touch_snd", touchSoundEnabled) ? 1 : 0;
+    doc["TouchVibrationEnabled"] = uiPrefs.getBool("touch_vib", touchVibrationEnabled) ? 1 : 0;
     doc["DisplayBrightness"] = uiPrefs.getUChar("disp_bri", displayBrightnessPercent);
     doc["DeviceName"] = uiPrefs.getString("dev_name", deviceShortNameValue());
     doc["WsRebootOnDisconnect"] = uiPrefs.getBool("ws_reboot", wsRebootOnDisconnectEnabled) ? 1 : 0;
     doc["AirplaneMode"] = uiPrefs.getBool("airplane", airplaneModeEnabled) ? 1 : 0;
+    doc["ChatDiscoveryEnabled"] = p2pDiscoveryEnabled ? 1 : 0;
     doc["ButtonStyle"] = uiPrefs.getUChar("btn_style", static_cast<uint8_t>(uiButtonStyleMode));
     doc["Menu3DIcons"] = uiPrefs.getBool("menu_3d_i", menuCustomIconsEnabled) ? 1 : 0;
     doc["DisplayLanguage"] = uiPrefs.getUChar("lang", static_cast<uint8_t>(uiLanguage));
@@ -20665,6 +21393,9 @@ void loadUiRuntimeConfig()
                                                                    static_cast<uint8_t>(VIBRATION_INTENSITY_LOW),
                                                                    static_cast<uint8_t>(VIBRATION_INTENSITY_HIGH)));
     vibrationEnabled = uiPrefs.getBool("vib_en", true);
+    touchSoundEnabled = uiPrefs.getBool("touch_snd", true);
+    touchVibrationEnabled = uiPrefs.getBool("touch_vib", true);
+    p2pDiscoveryEnabled = uiPrefs.getBool("chat_disc", p2pDiscoveryEnabled);
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
     radioModuleType = static_cast<RadioModuleType>(constrain(uiPrefs.getUChar("radio_mod", static_cast<uint8_t>(RADIO_MODULE_HC12)),
                                                              static_cast<uint8_t>(RADIO_MODULE_HC12),
@@ -20896,6 +21627,24 @@ bool handleUiSettingMessage(const char *msg)
         applyAirplaneMode(airplaneModeEnabled, "ws_setting");
         return true;
     }
+    else if (strcmp(key, "ChatDiscoveryEnabled") == 0) {
+        p2pDiscoveryEnabled = atoi(value) != 0;
+        uiPrefs.putBool("chat_disc", p2pDiscoveryEnabled);
+        uiPrefs.end();
+        saveP2pConfig();
+        if (!p2pDiscoveryEnabled) {
+            hc12LastDiscoveryAnnounceMs = millis();
+            p2pLastDiscoverAnnounceMs = millis();
+        } else {
+            hc12LastDiscoveryAnnounceMs = 0;
+            p2pLastDiscoverAnnounceMs = 0;
+        }
+        if (lvglReady) {
+            lvglApplyChatDiscoveryButtonStyle();
+            if (uiScreen == UI_CHAT_PEERS) lvglRefreshChatPeerUi();
+        }
+        return true;
+    }
     else if (strcmp(key, "ButtonStyle") == 0 && parseIntMessageValue(value, parsed)) {
         if (parsed == static_cast<int>(UI_BUTTON_STYLE_FLAT)) uiButtonStyleMode = UI_BUTTON_STYLE_FLAT;
         else if (parsed == static_cast<int>(UI_BUTTON_STYLE_BLACK)) uiButtonStyleMode = UI_BUTTON_STYLE_BLACK;
@@ -20950,6 +21699,16 @@ bool handleUiSettingMessage(const char *msg)
             lvglTopIndicatorStateValid = false;
             lvglRefreshTopIndicators();
         }
+    }
+    else if (strcmp(key, "TouchSoundEnabled") == 0) {
+        touchSoundEnabled = atoi(value) != 0;
+        uiPrefs.putBool("touch_snd", touchSoundEnabled);
+        if (lvglReady) lvglRefreshStyleUi();
+    }
+    else if (strcmp(key, "TouchVibrationEnabled") == 0) {
+        touchVibrationEnabled = atoi(value) != 0;
+        uiPrefs.putBool("touch_vib", touchVibrationEnabled);
+        if (lvglReady) lvglRefreshStyleUi();
     }
     else if (strcmp(key, "VibrationIntensity") == 0 && parseIntMessageValue(value, parsed)) {
         vibrationIntensity = static_cast<VibrationIntensity>(constrain(parsed,
@@ -25003,6 +25762,7 @@ void loop()
             case 3:
                 if (!uiPriorityActive || !sdMounted) sdStatsService();
                 if (!uiPriorityActive) serviceCarInputTelemetry();
+                if (!uiPriorityActive || uiScreen == UI_INFO) serviceInfoRefresh();
 
                 if (!uiPriorityActive || uiScreen == UI_INFO || uiScreen == UI_CONFIG_HC12_INFO) {
                     serviceDeferredRadioInfoFetch();
@@ -25020,6 +25780,9 @@ void loop()
     }
     otaUpdateService();
     hc12Service();
+    if ((!uiPriorityActive || uiScreen == UI_CONFIG_HC12) && hc12ConfigApplyPending != HC12_CFG_APPLY_NONE) {
+        serviceDeferredHc12ConfigApply();
+    }
     radioChatService();
     if (!uiPriorityActive || realtimeMessaging || chatPendingCount > 0) {
         chatPendingService();
@@ -25044,6 +25807,10 @@ void loop()
     audioService();
     chatMessageBeepService();
     chatMessageVibrationService();
+    touchFeedbackBeepService();
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+    touchFeedbackVibrationService();
+#endif
     const bool decoderRunning = audioBackendReady && audio && audio->isRunning();
     if (wasRunning && !decoderRunning && mediaIsPlaying && !mediaPaused) {
         mediaIsPlaying = false;
