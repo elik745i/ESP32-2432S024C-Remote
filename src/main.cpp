@@ -375,7 +375,8 @@ static constexpr uint8_t E220_AIR_RATE_OPTIONS[] = {0, 1, 2, 3, 4, 5, 6, 7};
 static const char *const E220_AIR_RATE_LABELS[] = {"2.4k", "2.4k", "2.4k", "4.8k", "9.6k", "19.2k", "38.4k", "62.5k"};
 static constexpr int8_t E220_POWER_DBM[] = {22, 17, 13, 10};
 static constexpr char HC12_RADIO_FRAME_PREFIX[] = "@RMT|";
-static constexpr size_t HC12_RADIO_MAX_LINE = 1216;
+static constexpr size_t HC12_RADIO_MAX_LINE = 1216;   // payload only
+static constexpr size_t HC12_RADIO_MAX_RX_LINE = HC12_RADIO_MAX_LINE + 16; // prefix + slack
 static constexpr int MAX_HC12_DISCOVERED = 8;
 static constexpr int MAX_MQTT_DISCOVERED = 8;
 static constexpr unsigned long HC12_DISCOVERY_INTERVAL_MS = 8000UL;
@@ -1158,6 +1159,10 @@ static bool p2pDiscoveryEnabled = true;
 static bool p2pPairPromptVisible = false;
 static bool p2pPairRequestPending = false;
 static int p2pPairRequestDiscoveredIdx = -1;
+static String p2pPairRequestPeerKey;
+static String p2pPairRequestPeerName;
+static IPAddress p2pPairRequestPeerIp((uint32_t)0);
+static uint16_t p2pPairRequestPeerPort = 0;
 static bool lvglOtaPostUpdatePopupVisible = false;
 static bool lvglOtaUpdatePromptVisible = false;
 struct LvglTopIndicatorState {
@@ -1507,6 +1512,10 @@ enum UiTextId : uint8_t {
     TXT_FACTORY_RESET_BODY,
     TXT_RESET,
     TXT_CANCEL,
+    TXT_RESTART,
+    TXT_POWER,
+    TXT_POWER_OFF,
+    TXT_POWER_ACTION_BODY,    
     TXT_FACTORY_RESET_DONE,    
     TXT_SCREEN
 };
@@ -5439,6 +5448,10 @@ static const char *tr(UiTextId id)
                 case TXT_FACTORY_RESET_TITLE: return "Сброс до заводских";
                 case TXT_FACTORY_RESET_BODY: return "Удалить сохранённые настройки, Wi-Fi, радио, MQTT, калибровку батареи, данные чата и перезагрузить?";
                 case TXT_RESET: return "Сбросить";
+                case TXT_RESTART: return "Перезапуск";
+                case TXT_POWER: return "Питание";
+                case TXT_POWER_OFF: return "Выключить";
+                case TXT_POWER_ACTION_BODY: return "Выберите действие:";                
                 case TXT_CANCEL: return "Отмена";
                 case TXT_FACTORY_RESET_DONE: return "Сброс выполнен. Перезагрузка...";                
                 case TXT_SCREEN:
@@ -5479,6 +5492,10 @@ static const char *tr(UiTextId id)
                 case TXT_FACTORY_RESET_TITLE: return "恢复出厂设置";
                 case TXT_FACTORY_RESET_BODY: return "删除已保存的设置、Wi-Fi、无线电、MQTT、电池校准、聊天数据并重启？";
                 case TXT_RESET: return "重置";
+                case TXT_RESTART: return "重启";
+                case TXT_POWER: return "电源";
+                case TXT_POWER_OFF: return "关机";
+                case TXT_POWER_ACTION_BODY: return "选择操作：";                
                 case TXT_CANCEL: return "取消";
                 case TXT_FACTORY_RESET_DONE: return "恢复出厂完成，正在重启...";                
                 case TXT_SCREEN:
@@ -5519,6 +5536,10 @@ static const char *tr(UiTextId id)
                 case TXT_FACTORY_RESET_TITLE: return "Réinitialisation usine";
                 case TXT_FACTORY_RESET_BODY: return "Effacer les réglages enregistrés, le Wi-Fi, la radio, MQTT, la calibration batterie, les données de chat, puis redémarrer ?";
                 case TXT_RESET: return "Réinitialiser";
+                case TXT_RESTART: return "Redemarrer";
+                case TXT_POWER: return "Alimentation";
+                case TXT_POWER_OFF: return "Eteindre";
+                case TXT_POWER_ACTION_BODY: return "Choisir une action :";                
                 case TXT_CANCEL: return "Annuler";
                 case TXT_FACTORY_RESET_DONE: return "Réinitialisation terminée. Redémarrage...";                
                 case TXT_SCREEN:
@@ -5559,6 +5580,10 @@ static const char *tr(UiTextId id)
                 case TXT_FACTORY_RESET_TITLE: return "Fabrika Ayarlarına Dön";
                 case TXT_FACTORY_RESET_BODY: return "Kaydedilmiş ayarlar, Wi-Fi, radyo, MQTT, pil kalibrasyonu ve sohbet verileri silinip cihaz yeniden başlatılsın mı?";
                 case TXT_RESET: return "Sıfırla";
+                case TXT_RESTART: return "Yeniden Baslat";
+                case TXT_POWER: return "Guc";
+                case TXT_POWER_OFF: return "Kapat";
+                case TXT_POWER_ACTION_BODY: return "Islem secin:";                
                 case TXT_CANCEL: return "İptal";
                 case TXT_FACTORY_RESET_DONE: return "Fabrika ayarı tamamlandı. Yeniden başlatılıyor...";                
                 case TXT_SCREEN:
@@ -5639,6 +5664,10 @@ static const char *tr(UiTextId id)
                 case TXT_FACTORY_RESET_TITLE: return "Auf Werkseinstellungen";
                 case TXT_FACTORY_RESET_BODY: return "Gespeicherte Einstellungen, WLAN, Funk, MQTT, Batteriekalibrierung und Chatdaten löschen und neu starten?";
                 case TXT_RESET: return "Zurücksetzen";
+                case TXT_RESTART: return "Neustart";
+                case TXT_POWER: return "Strom";
+                case TXT_POWER_OFF: return "Ausschalten";
+                case TXT_POWER_ACTION_BODY: return "Aktion waehlen:";                
                 case TXT_CANCEL: return "Abbrechen";
                 case TXT_FACTORY_RESET_DONE: return "Werkreset abgeschlossen. Neustart...";                
                 case TXT_SCREEN:
@@ -5679,6 +5708,10 @@ static const char *tr(UiTextId id)
                 case TXT_FACTORY_RESET_TITLE: return "工場出荷時リセット";
                 case TXT_FACTORY_RESET_BODY: return "保存された設定、Wi-Fi、無線、MQTT、バッテリー校正、チャットデータを消去して再起動しますか？";
                 case TXT_RESET: return "リセット";
+                case TXT_RESTART: return "再起動";
+                case TXT_POWER: return "電源";
+                case TXT_POWER_OFF: return "電源オフ";
+                case TXT_POWER_ACTION_BODY: return "操作を選択:";                
                 case TXT_CANCEL: return "キャンセル";
                 case TXT_FACTORY_RESET_DONE: return "初期化完了。再起動します...";                
                 case TXT_SCREEN:
@@ -5719,6 +5752,10 @@ static const char *tr(UiTextId id)
                 case TXT_FACTORY_RESET_TITLE: return "공장 초기화";
                 case TXT_FACTORY_RESET_BODY: return "저장된 설정, Wi-Fi, 라디오, MQTT, 배터리 보정, 채팅 데이터를 지우고 재부팅할까요?";
                 case TXT_RESET: return "초기화";
+                case TXT_RESTART: return "재시작";
+                case TXT_POWER: return "전원";
+                case TXT_POWER_OFF: return "전원 끄기";
+                case TXT_POWER_ACTION_BODY: return "동작을 선택하세요:";                
                 case TXT_CANCEL: return "취소";
                 case TXT_FACTORY_RESET_DONE: return "공장 초기화 완료. 재부팅 중...";                
                 case TXT_SCREEN:
@@ -5760,6 +5797,10 @@ static const char *tr(UiTextId id)
                 case TXT_FACTORY_RESET_TITLE: return "Factory Reset";
                 case TXT_FACTORY_RESET_BODY: return "Erase saved settings, WiFi, radio, MQTT, battery calibration, chat data, and reboot?";
                 case TXT_RESET: return "Reset";
+                case TXT_RESTART: return "Restart";
+                case TXT_POWER: return "Power";
+                case TXT_POWER_OFF: return "Power Off";
+                case TXT_POWER_ACTION_BODY: return "Choose action:";                
                 case TXT_CANCEL: return "Cancel";
                 case TXT_FACTORY_RESET_DONE: return "Factory reset complete. Rebooting...";                
                 case TXT_SCREEN:
@@ -7292,6 +7333,22 @@ static int p2pFindDiscoveredByPubKeyHex(const String &pubKeyHex)
     return -1;
 }
 
+static void p2pDeduplicateTrustedPeers()
+{
+    for (int i = 0; i < p2pPeerCount; ++i) {
+        for (int j = i + 1; j < p2pPeerCount; ) {
+            if (p2pPeers[i].pubKeyHex.equalsIgnoreCase(p2pPeers[j].pubKeyHex)) {
+                for (int k = j + 1; k < p2pPeerCount; ++k) {
+                    p2pPeers[k - 1] = p2pPeers[k];
+                }
+                p2pPeerCount--;
+            } else {
+                ++j;
+            }
+        }
+    }
+}
+
 static void p2pTouchPeerSeen(int idx, const IPAddress &ip, uint16_t port)
 {
     if (!p2pPeers || idx < 0 || idx >= p2pPeerCount) return;
@@ -7407,6 +7464,9 @@ void loadP2pConfig()
         p2pPeers[i].unread = false;
         p2pPeers[i].lastSeenMs = 0;
     }
+
+    p2pDeduplicateTrustedPeers();
+
     p2pPrefs.end();
     saveP2pConfig();
 }
@@ -7472,7 +7532,7 @@ void lvglChatAirplanePromptEvent(lv_event_t *e);
 void lvglShowChatAirplanePrompt();
 bool lvglChatPromptIfAirplaneBlocked();
 void lvglPowerButtonEvent(lv_event_t *e);
-void lvglPowerConfirmEvent(lv_event_t *e);
+void lvglPowerDialogEvent(lv_event_t *e);
 void lvglScreenshotEvent(lv_event_t *e);
 void lvglStatusPush(const String &line);
 void lvglBrightnessEvent(lv_event_t *e);
@@ -9881,8 +9941,8 @@ void lvglHomeNavEvent(lv_event_t *e)
         chatClearCache();
     }
     if (target == UI_CHAT && airplaneModeEnabled) {
-        lvglShowChatAirplanePrompt();
-        return;
+        uiStatusLine = "Airplane mode: chat allowed temporarily";
+        lvglSyncStatusLine();
     }
     lvglOpenScreen(target, LV_SCR_LOAD_ANIM_MOVE_LEFT);
 }
@@ -9977,16 +10037,33 @@ static void powerOffSignalPulse()
     digitalWrite(POWER_OFF_SIGNAL_PIN, HIGH);
 }
 
-void lvglPowerConfirmEvent(lv_event_t *e)
+void lvglPowerDialogEvent(lv_event_t *e)
 {
     lv_obj_t *msgbox = lv_event_get_current_target(e);
     const char *txt = lv_msgbox_get_active_btn_text(msgbox);
+    if (!txt) {
+        lv_msgbox_close(msgbox);
+        return;
+    }
+
+    if (strcmp(txt, tr(TXT_RESTART)) == 0) {
+        lv_msgbox_close(msgbox);
+        uiStatusLine = "Restarting...";
+        if (lvglReady) lvglSyncStatusLine();
+        delay(120);
+        ESP.restart();
+        return;
+    }
+
+    if (strcmp(txt, tr(TXT_POWER_OFF)) == 0) {
+        lv_msgbox_close(msgbox);
+        uiStatusLine = "Power-off signal sent";
+        if (lvglReady) lvglSyncStatusLine();
+        powerOffSignalPulse();
+        return;
+    }
+
     lv_msgbox_close(msgbox);
-    if (!txt) return;
-    if (strcmp(txt, "Power Off") != 0) return;
-    uiStatusLine = "Power-off signal sent";
-    if (lvglReady) lvglSyncStatusLine();
-    powerOffSignalPulse();
 }
 
 void lvglPowerButtonEvent(lv_event_t *e)
@@ -9996,20 +10073,28 @@ void lvglPowerButtonEvent(lv_event_t *e)
         lvglStatusPush("Power signal unavailable");
         return;
     }
-    static const char *btns[] = {"Cancel", "Power Off", ""};
+
+    static const char *btns[4];
+    btns[0] = tr(TXT_CANCEL);
+    btns[1] = tr(TXT_RESTART);
+    btns[2] = tr(TXT_POWER_OFF);
+    btns[3] = "";
+
     lv_obj_t *m = lv_msgbox_create(nullptr,
-                                   "Power Off",
-                                   "Send power-off signal on GPIO21?",
+                                   tr(TXT_POWER),
+                                   tr(TXT_POWER_ACTION_BODY),
                                    btns,
                                    false);
     if (!m) return;
+
     lvglApplyMsgboxModalStyle(m);
     lv_obj_center(m);
     lv_obj_set_width(m, min<int16_t>(DISPLAY_WIDTH - 24, 270));
-    lv_obj_add_event_cb(m, lvglPowerConfirmEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+    lv_obj_add_event_cb(m, lvglPowerDialogEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+
     lv_obj_t *btnMatrix = lv_msgbox_get_btns(m);
     if (btnMatrix) {
-        lv_btnmatrix_set_btn_ctrl(btnMatrix, 1, LV_BTNMATRIX_CTRL_CHECKABLE);
+        lv_btnmatrix_set_btn_ctrl(btnMatrix, 2, LV_BTNMATRIX_CTRL_CHECKABLE);
         lv_obj_set_style_bg_color(btnMatrix, lv_color_hex(0xA33F3F), LV_PART_ITEMS | LV_STATE_DEFAULT);
         lv_obj_set_style_bg_color(btnMatrix, lv_color_hex(0x7F2D2D), LV_PART_ITEMS | LV_STATE_PRESSED);
     }
@@ -10024,7 +10109,7 @@ bool lvglChatPromptIfAirplaneBlocked()
         if (!text.isEmpty()) chatStageDeferredAirplaneMessage(currentChatPeerKey, text);
     }
     lvglShowChatAirplanePrompt();
-    return true;
+    return false;
 }
 
 void lvglOpenChatPeersEvent(lv_event_t *e)
@@ -10820,6 +10905,24 @@ static bool hc12SendRadioDocument(JsonDocument &doc)
     return true;
 }
 
+static bool hc12SendRadioPing()
+{
+    JsonDocument doc;
+    doc["kind"] = "rping";
+    doc["device"] = deviceShortNameValue();
+    doc["ms"] = millis();
+    return hc12SendRadioDocument(doc);
+}
+
+static bool hc12SendRadioPong()
+{
+    JsonDocument doc;
+    doc["kind"] = "rpong";
+    doc["device"] = deviceShortNameValue();
+    doc["ms"] = millis();
+    return hc12SendRadioDocument(doc);
+}
+
 static bool hc12BroadcastDiscoveryFrame(const char *kind)
 {
     JsonDocument doc;
@@ -10832,10 +10935,21 @@ static bool hc12BroadcastDiscoveryFrame(const char *kind)
 static void hc12DiscoveryService()
 {
     if (hc12SetIsAsserted() || !radioModuleCanCarryChat()) return;
+    if (p2pPairRequestPending) return;
+    if (!currentChatPeerKey.isEmpty()) return;
+
+    static unsigned long nextDiscoveryMs = 0;
     const unsigned long now = millis();
-    if (static_cast<unsigned long>(now - hc12LastDiscoveryAnnounceMs) < HC12_DISCOVERY_INTERVAL_MS) return;
-    hc12LastDiscoveryAnnounceMs = now;
+
+    if (nextDiscoveryMs == 0) {
+        nextDiscoveryMs = now + 1500UL + (unsigned long)random(0, 2500);
+        return;
+    }
+
+    if ((long)(now - nextDiscoveryMs) < 0) return;
+
     hc12BroadcastDiscoveryFrame("hello");
+    nextDiscoveryMs = now + HC12_DISCOVERY_INTERVAL_MS + (unsigned long)random(0, 2000);
 }
 
 static bool hc12SendEncryptedPayload(const String &peerKey, const uint8_t *plain, size_t plainLen)
@@ -10844,6 +10958,11 @@ static bool hc12SendEncryptedPayload(const String &peerKey, const uint8_t *plain
 
     unsigned char peerPk[P2P_PUBLIC_KEY_BYTES] = {0};
     if (!p2pHexToBytes(peerKey, peerPk, sizeof(peerPk))) return false;
+
+    if (uiScreen == UI_CONFIG_HC12_TERMINAL) {
+        hc12AppendTerminal((String("[RADIO] tx to peerKey=") + peerKey + "\n").c_str());
+        hc12AppendTerminal((String("[RADIO] tx myPub=") + p2pPublicKeyHex() + "\n").c_str());
+    }
 
     unsigned char nonce[P2P_NONCE_BYTES] = {0};
     unsigned char cipher[P2P_MAX_PACKET] = {0};
@@ -10864,6 +10983,12 @@ static bool hc12SendEncryptedPayload(const String &peerKey, const uint8_t *plain
                                  senderPubHex,
                                  nonceHex,
                                  cipherHex);
+
+    if (uiScreen == UI_CONFIG_HC12_TERMINAL) {
+        hc12AppendTerminal((String("[RADIO] enc written=") + String(written) +
+                            " max=" + String(sizeof(payload)) + "\n").c_str());
+    }
+
     if (written <= 0 || static_cast<size_t>(written) >= sizeof(payload)) return false;
     return hc12SendRadioPayload(payload, static_cast<size_t>(written));
 }
@@ -11625,6 +11750,8 @@ bool p2pAddOrUpdateTrustedPeer(const String &name, const String &pubKeyHex, cons
     p2pPeers[idx].enabled = true;
     p2pPeers[idx].unread = false;
     p2pPeers[idx].lastSeenMs = millis();
+
+    p2pDeduplicateTrustedPeers();
     saveP2pConfig();
     p2pTouchDiscoveredSeen(name, pubKeyHex, ip, port);
     return true;
@@ -13288,45 +13415,148 @@ static void hc12HandleIncomingRadioLine(const String &line)
     const ChatTransport radioTransport = radioSelectedChatTransport();
 
     JsonDocument outerDoc;
-    if (deserializeJson(outerDoc, line.substring(strlen(HC12_RADIO_FRAME_PREFIX))) != DeserializationError::Ok) return;
-
-    const String discoveryKind = String(static_cast<const char *>(outerDoc["kind"] | ""));
-    const String discoveryPubHex = String(static_cast<const char *>(outerDoc["public_key"] | ""));
-    if (!discoveryKind.isEmpty() && !discoveryPubHex.isEmpty()) {
-        if (discoveryPubHex.equalsIgnoreCase(p2pPublicKeyHex())) return;
-        const String senderName = sanitizeDeviceShortName(String(static_cast<const char *>(outerDoc["device"] | "Peer")));
-        hc12TouchDiscoveredPeer(senderName, discoveryPubHex);
-        if (discoveryKind == "probe") hc12BroadcastDiscoveryFrame("hello");
+    const String body = line.substring(strlen(HC12_RADIO_FRAME_PREFIX));
+    const DeserializationError err = deserializeJson(outerDoc, body);
+    if (err != DeserializationError::Ok) {
+        if (uiScreen == UI_CONFIG_HC12_TERMINAL) {
+            hc12AppendTerminal((String("[RADIO] outer JSON parse failed: ") + err.c_str() + "\n").c_str());
+            hc12AppendTerminal((String("[RADIO] raw len=") + body.length() + "\n").c_str());
+            hc12AppendTerminal((String("[RADIO] raw=") + body + "\n").c_str());
+        }
         return;
     }
 
+    const String kind = String(static_cast<const char *>(outerDoc["kind"] | ""));
+
+    // 1) Plain discovery frames
+    const String discoveryPubHex = String(static_cast<const char *>(outerDoc["public_key"] | ""));
+    if (!kind.isEmpty() && !discoveryPubHex.isEmpty()) {
+        if (discoveryPubHex.equalsIgnoreCase(p2pPublicKeyHex())) return;
+        const String senderName = sanitizeDeviceShortName(String(static_cast<const char *>(outerDoc["device"] | "Peer")));
+        hc12TouchDiscoveredPeer(senderName, discoveryPubHex);
+        if (uiScreen == UI_CONFIG_HC12_TERMINAL) {
+            hc12AppendTerminal((String("[RADIO] DISCOVERY ") + kind + " from " + senderName + "\n").c_str());
+            hc12AppendTerminal((String("[RADIO] discovery pub=") + discoveryPubHex + "\n").c_str());
+            hc12AppendTerminal((String("[RADIO] my pub=") + p2pPublicKeyHex() + "\n").c_str());
+        }
+        if (kind == "probe") hc12BroadcastDiscoveryFrame("hello");
+        return;
+    }
+
+    // 2) Plain ping/pong frames
+    if (kind == "rping") {
+        const String from = String(static_cast<const char *>(outerDoc["device"] | "Peer"));
+        if (uiScreen == UI_CONFIG_HC12_TERMINAL) {
+            hc12AppendTerminal((String("[RADIO] PING from ") + from + "\n").c_str());
+        }
+        hc12SendRadioPong();
+        return;
+    }
+
+    if (kind == "rpong") {
+        const String from = String(static_cast<const char *>(outerDoc["device"] | "Peer"));
+        if (uiScreen == UI_CONFIG_HC12_TERMINAL) {
+            hc12AppendTerminal((String("[RADIO] PONG from ") + from + "\n").c_str());
+        }
+        uiStatusLine = String("Radio link OK: ") + from;
+        if (lvglReady) lvglSyncStatusLine();
+        return;
+    }
+
+    // 3) Encrypted frames only below this point
     const String senderPubHex = String(static_cast<const char *>(outerDoc["sender_pub"] | ""));
     const String nonceHex = String(static_cast<const char *>(outerDoc["nonce"] | ""));
     const String cipherHex = String(static_cast<const char *>(outerDoc["cipher"] | ""));
-    if (senderPubHex.isEmpty() || nonceHex.isEmpty() || cipherHex.isEmpty() || senderPubHex.equalsIgnoreCase(p2pPublicKeyHex())) return;
+    if (senderPubHex.isEmpty() || nonceHex.isEmpty() || cipherHex.isEmpty()) {
+        if (uiScreen == UI_CONFIG_HC12_TERMINAL) {
+            hc12AppendTerminal("[RADIO] encrypted frame missing sender_pub/nonce/cipher\n");
+        }
+        return;
+    }
+
+    if (uiScreen == UI_CONFIG_HC12_TERMINAL) {
+        hc12AppendTerminal((String("[RADIO] rx sender_pub=") + senderPubHex + "\n").c_str());
+        hc12AppendTerminal((String("[RADIO] rx myPub=") + p2pPublicKeyHex() + "\n").c_str());
+    }
+
+    if (senderPubHex.equalsIgnoreCase(p2pPublicKeyHex())) {
+        if (uiScreen == UI_CONFIG_HC12_TERMINAL) {
+            hc12AppendTerminal("[RADIO] ignoring self frame\n");
+        }
+        return;
+    }
 
     unsigned char senderPk[P2P_PUBLIC_KEY_BYTES] = {0};
     unsigned char nonce[P2P_NONCE_BYTES] = {0};
     unsigned char cipher[P2P_MAX_PACKET] = {0};
     size_t cipherLen = 0;
-    if (!p2pHexToBytes(senderPubHex, senderPk, sizeof(senderPk))) return;
-    if (!p2pHexToBytes(nonceHex, nonce, sizeof(nonce))) return;
-    if (sodium_hex2bin(cipher, sizeof(cipher), cipherHex.c_str(), cipherHex.length(), nullptr, &cipherLen, nullptr) != 0 ||
-        cipherLen < P2P_MAC_BYTES) return;
+
+    if (!p2pHexToBytes(senderPubHex, senderPk, sizeof(senderPk))) {
+        if (uiScreen == UI_CONFIG_HC12_TERMINAL) {
+            hc12AppendTerminal("[RADIO] sender_pub hex decode failed\n");
+        }
+        return;
+    }
+
+    if (!p2pHexToBytes(nonceHex, nonce, sizeof(nonce))) {
+        if (uiScreen == UI_CONFIG_HC12_TERMINAL) {
+            hc12AppendTerminal("[RADIO] nonce hex decode failed\n");
+        }
+        return;
+    }
+
+    if (sodium_hex2bin(cipher, sizeof(cipher), cipherHex.c_str(), cipherHex.length(), nullptr, &cipherLen, nullptr) != 0) {
+        if (uiScreen == UI_CONFIG_HC12_TERMINAL) {
+            hc12AppendTerminal("[RADIO] cipher hex decode failed\n");
+        }
+        return;
+    }
+
+    if (cipherLen < P2P_MAC_BYTES) {
+        if (uiScreen == UI_CONFIG_HC12_TERMINAL) {
+            hc12AppendTerminal("[RADIO] cipher too short\n");
+        }
+        return;
+    }
 
     unsigned char plain[P2P_MAX_PACKET] = {0};
-    if (crypto_box_curve25519xchacha20poly1305_open_easy(plain, cipher, cipherLen, nonce, senderPk, p2pSecretKey) != 0) return;
+    if (crypto_box_curve25519xchacha20poly1305_open_easy(plain, cipher, cipherLen, nonce, senderPk, p2pSecretKey) != 0) {
+        if (uiScreen == UI_CONFIG_HC12_TERMINAL) {
+            hc12AppendTerminal("[RADIO] decrypt failed\n");
+        }
+        uiStatusLine = "Radio decrypt failed";
+        if (lvglReady) lvglSyncStatusLine();
+        return;
+    }
 
     JsonDocument doc;
-    if (deserializeJson(doc, plain, cipherLen - P2P_MAC_BYTES) != DeserializationError::Ok) return;
+    if (deserializeJson(doc, plain, cipherLen - P2P_MAC_BYTES) != DeserializationError::Ok) {
+        if (uiScreen == UI_CONFIG_HC12_TERMINAL) {
+            hc12AppendTerminal("[RADIO] decrypted JSON parse failed\n");
+        }
+        return;
+    }
 
-    const String author = sanitizeDeviceShortName(String(static_cast<const char *>(doc["author"] | chatDisplayNameForPeerKey(senderPubHex).c_str())));
-    hc12TouchDiscoveredPeer(author, senderPubHex);
-    const String kind = String(static_cast<const char *>(doc["kind"] | ""));
-    if (kind == "chat") {
+    const String author = sanitizeDeviceShortName(
+        String(static_cast<const char *>(doc["author"] | chatDisplayNameForPeerKey(senderPubHex).c_str()))
+    );
+
+    const String innerKind = String(static_cast<const char *>(doc["kind"] | ""));
+    if (uiScreen == UI_CONFIG_HC12_TERMINAL) {
+        hc12AppendTerminal((String("[RADIO] encrypted kind=") + innerKind + " from " + author + "\n").c_str());
+    }
+
+    if (innerKind == "chat") {
+        hc12TouchDiscoveredPeer(author, senderPubHex);
+
         const String messageId = String(static_cast<const char *>(doc["id"] | ""));
         const String text = String(static_cast<const char *>(doc["text"] | ""));
-        if (text.isEmpty()) return;
+        if (text.isEmpty()) {
+            if (uiScreen == UI_CONFIG_HC12_TERMINAL) {
+                hc12AppendTerminal("[RADIO] chat payload empty\n");
+            }
+            return;
+        }
         wakeDisplayForIncomingNotification();
         if (checkersHandleIncomingChatPayload(senderPubHex, author, text, radioTransport, messageId)) {
             if (lvglReady) {
@@ -13346,53 +13576,56 @@ static void hc12HandleIncomingRadioLine(const String &line)
         return;
     }
 
-    if (kind == "ack") {
+    if (innerKind == "ack") {
         const String ackId = String(static_cast<const char *>(doc["ack_id"] | ""));
         if (!ackId.isEmpty()) chatAckOutgoingMessage(senderPubHex, ackId);
         return;
     }
 
-    if (kind == "delete_message") {
+    if (innerKind == "delete_message") {
         const String messageId = String(static_cast<const char *>(doc["id"] | ""));
         if (!messageId.isEmpty()) chatDeleteMessageById(senderPubHex, messageId, "Message deleted by " + author);
         return;
     }
 
-        if (kind == "pair_request") {
+    if (innerKind == "pair_request") {
         hc12TouchDiscoveredPeer(author, senderPubHex);
 
-        // auto-show prompt just like WiFi flow
-        const int radioIdx = hc12FindDiscoveredByPubKeyHex(senderPubHex);
-        if (radioIdx >= 0) {
-            // simplest route: auto-trust immediately
-            const bool ok = p2pAddOrUpdateTrustedPeer(
-                author.isEmpty() ? String("Peer") : author,
-                senderPubHex,
-                IPAddress((uint32_t)0),   // no WiFi IP for radio-only peer
-                0
-            );
+        p2pPairRequestDiscoveredIdx = hc12FindDiscoveredByPubKeyHex(senderPubHex);
+        p2pPairRequestPeerKey = senderPubHex;
+        p2pPairRequestPeerName = author.isEmpty() ? String("Peer") : author;
+        p2pPairRequestPeerIp = IPAddress((uint32_t)0);
+        p2pPairRequestPeerPort = 0;
+        p2pPairRequestPending = true;
 
-            hc12SendPairResponse(senderPubHex, ok);
+        if (uiScreen == UI_CONFIG_HC12_TERMINAL) {
+            hc12AppendTerminal((String("[RADIO] pair_request from ") + p2pPairRequestPeerName + "\n").c_str());
+            hc12AppendTerminal((String("[RADIO] pending pair key=") + p2pPairRequestPeerKey + "\n").c_str());
+        }
 
-            if (ok && currentChatPeerKey.isEmpty()) currentChatPeerKey = senderPubHex;
-            uiStatusLine = ok ? "Radio peer paired" : "Radio pair failed";
-            if (lvglReady) {
-                lvglSyncStatusLine();
-                lvglRefreshChatPeerUi();
-                lvglRefreshChatContactsUi();
-            }
+        uiStatusLine = String("Radio pair request from ") + p2pPairRequestPeerName;
+        if (lvglReady) {
+            lvglSyncStatusLine();
+            lvglRefreshChatPeerUi();
+            lvglRefreshChatContactsUi();
         }
         return;
     }
 
-    if (kind == "pair_accept") {
+    if (innerKind == "pair_accept") {
+        hc12TouchDiscoveredPeer(author, senderPubHex);
+
+        if (uiScreen == UI_CONFIG_HC12_TERMINAL) {
+            hc12AppendTerminal((String("[RADIO] pair_accept from ") + author + "\n").c_str());
+        }
+
         const bool ok = p2pAddOrUpdateTrustedPeer(
             author.isEmpty() ? String("Peer") : author,
             senderPubHex,
             IPAddress((uint32_t)0),
             0
         );
-        if (ok && currentChatPeerKey.isEmpty()) currentChatPeerKey = senderPubHex;
+        if (ok) currentChatPeerKey = senderPubHex;
         uiStatusLine = ok ? "Radio peer paired" : "Radio pair accept failed";
         if (lvglReady) {
             lvglSyncStatusLine();
@@ -13402,13 +13635,23 @@ static void hc12HandleIncomingRadioLine(const String &line)
         return;
     }
 
-    if (kind == "pair_reject") {
+    if (innerKind == "pair_reject") {
+        if (uiScreen == UI_CONFIG_HC12_TERMINAL) {
+            hc12AppendTerminal((String("[RADIO] pair_reject from ") + author + "\n").c_str());
+        }
         uiStatusLine = String("Radio pair rejected by ") + author;
         if (lvglReady) lvglSyncStatusLine();
         return;
     }
 
-    if (kind == "delete_conversation") chatApplyConversationDeletion(senderPubHex, "Conversation deleted by " + author);
+    if (innerKind == "delete_conversation") {
+        chatApplyConversationDeletion(senderPubHex, "Conversation deleted by " + author);
+        return;
+    }
+
+    if (uiScreen == UI_CONFIG_HC12_TERMINAL) {
+        hc12AppendTerminal((String("[RADIO] unknown encrypted kind=") + innerKind + "\n").c_str());
+    }
 }
 
 void lvglHc12ToggleSetEvent(lv_event_t *e)
@@ -13416,16 +13659,21 @@ void lvglHc12ToggleSetEvent(lv_event_t *e)
     (void)e;
     hc12InitIfNeeded();
     const bool setAsserted = !hc12SetIsAsserted();
+
     if (radioModuleType == RADIO_MODULE_HC12) {
         digitalWrite(hc12ActiveSetPin(), setAsserted ? LOW : HIGH);
     } else {
-        digitalWrite(e220ActiveM0Pin(), setAsserted ? HIGH : LOW);
-        digitalWrite(e220ActiveM1Pin(), setAsserted ? HIGH : LOW);
+        if (setAsserted) hc12EnterAtMode();
+        else hc12ExitAtMode();
     }
+
     uiDeferredFlags |= UI_DEFERRED_HC12_SETTLE_PENDING;
     if (setAsserted) uiDeferredFlags |= UI_DEFERRED_HC12_TARGET_ASSERTED;
     else uiDeferredFlags &= static_cast<uint8_t>(~UI_DEFERRED_HC12_TARGET_ASSERTED);
-    hc12SettleUntilTick = static_cast<uint16_t>(millis()) + static_cast<uint16_t>(setAsserted ? 80U : 40U);
+
+    hc12SettleUntilTick = static_cast<uint16_t>(millis()) +
+                          static_cast<uint16_t>(setAsserted ? 120U : 80U);
+
     lvglRefreshHc12Ui();
 }
 
@@ -13442,6 +13690,14 @@ void lvglHc12SendEvent(lv_event_t *e)
     String line = lv_textarea_get_text(cmdTa);
     line.trim();
     if (line.isEmpty()) return;
+
+    if (!hc12SetIsAsserted() && line.equalsIgnoreCase("/rping")) {
+        const bool ok = hc12SendRadioPing();
+        hc12AppendTerminal(ok ? "[RADIO] PING sent\n" : "[RADIO] PING send failed\n");
+        lv_textarea_set_text(cmdTa, "");
+        return;
+    }
+    
     hc12SendLine(line);
     lv_textarea_set_text(cmdTa, "");
 }
@@ -13485,10 +13741,15 @@ static void hc12Service()
             continue;
         }
         String &rxLine = hc12RadioLineBuffer();
-        if (rxLine.length() < (HC12_RADIO_MAX_LINE - 1)) {
+        const size_t maxRxLine = HC12_RADIO_MAX_LINE + strlen(HC12_RADIO_FRAME_PREFIX) + 8;
+
+        if (rxLine.length() < HC12_RADIO_MAX_RX_LINE) {
             rxLine += static_cast<char>(ch);
         } else {
             rxLine = "";
+            if (uiScreen == UI_CONFIG_HC12_TERMINAL) {
+                hc12AppendTerminal("[RADIO] RX line overflow, dropped\n");
+            }
         }
     }
 }
@@ -13850,20 +14111,47 @@ void lvglP2pPairPromptEvent(lv_event_t *e)
     lv_obj_t *msgbox = lv_event_get_current_target(e);
     const char *txt = lv_msgbox_get_active_btn_text(msgbox);
     const bool accepted = txt && strcmp(txt, "Accept") == 0;
-    const int discoveredIdx = p2pPairRequestDiscoveredIdx;
-    const bool requestValid = discoveredIdx >= 0 && discoveredIdx < p2pDiscoveredCount;
+
+    const bool hasStoredPeer = !p2pPairRequestPeerKey.isEmpty();
+    const bool isRadioPeer =
+        hasStoredPeer &&
+        (p2pPairRequestPeerIp == IPAddress((uint32_t)0) || p2pPairRequestPeerPort == 0);
+
+    bool ok = false;
+
+    if (uiScreen == UI_CONFIG_HC12_TERMINAL) {
+        hc12AppendTerminal((String("[RADIO] pair prompt action=") + (accepted ? "Accept" : "Reject") + "\n").c_str());
+        hc12AppendTerminal((String("[RADIO] pair prompt key=") + p2pPairRequestPeerKey + "\n").c_str());
+        hc12AppendTerminal((String("[RADIO] pair prompt name=") + p2pPairRequestPeerName + "\n").c_str());
+    }
+
     if (accepted) {
-        bool ok = false;
-        if (requestValid) {
-            const P2PDiscoveredPeer &peer = p2pDiscoveredPeers[discoveredIdx];
+        if (hasStoredPeer) {
             ok = p2pAddOrUpdateTrustedPeer(
-                peer.name.isEmpty() ? String("Peer") : peer.name,
-                peer.pubKeyHex,
-                peer.ip,
-                peer.port);
-            p2pSendPairResponse(peer.name, peer.pubKeyHex, peer.ip, peer.port, ok);
-            if (ok && currentChatPeerKey.isEmpty()) currentChatPeerKey = peer.pubKeyHex;
+                p2pPairRequestPeerName.isEmpty() ? String("Peer") : p2pPairRequestPeerName,
+                p2pPairRequestPeerKey,
+                p2pPairRequestPeerIp,
+                p2pPairRequestPeerPort
+            );
+
+            if (isRadioPeer) {
+                if (uiScreen == UI_CONFIG_HC12_TERMINAL) {
+                    hc12AppendTerminal((String("[RADIO] sending pair response to key=") + p2pPairRequestPeerKey + "\n").c_str());
+                }
+                hc12SendPairResponse(p2pPairRequestPeerKey, ok);
+            } else {
+                p2pSendPairResponse(
+                    p2pPairRequestPeerName,
+                    p2pPairRequestPeerKey,
+                    p2pPairRequestPeerIp,
+                    p2pPairRequestPeerPort,
+                    ok
+                );
+            }
+
+            if (ok) currentChatPeerKey = p2pPairRequestPeerKey;
         }
+
         uiStatusLine = ok ? "Peer paired" : "Pair accept failed";
         if (lvglReady) {
             lvglSyncStatusLine();
@@ -13871,16 +14159,35 @@ void lvglP2pPairPromptEvent(lv_event_t *e)
             lvglRefreshChatContactsUi();
         }
     } else {
-        if (requestValid) {
-            const P2PDiscoveredPeer &peer = p2pDiscoveredPeers[discoveredIdx];
-            p2pSendPairResponse(peer.name, peer.pubKeyHex, peer.ip, peer.port, false);
+        if (hasStoredPeer) {
+            if (isRadioPeer) {
+                if (uiScreen == UI_CONFIG_HC12_TERMINAL) {
+                    hc12AppendTerminal((String("[RADIO] sending pair reject to key=") + p2pPairRequestPeerKey + "\n").c_str());
+                }
+                hc12SendPairResponse(p2pPairRequestPeerKey, false);
+            } else {
+                p2pSendPairResponse(
+                    p2pPairRequestPeerName,
+                    p2pPairRequestPeerKey,
+                    p2pPairRequestPeerIp,
+                    p2pPairRequestPeerPort,
+                    false
+                );
+            }
         }
+
         uiStatusLine = "Pair request rejected";
         if (lvglReady) lvglSyncStatusLine();
     }
+
     p2pPairRequestPending = false;
     p2pPairPromptVisible = false;
     p2pPairRequestDiscoveredIdx = -1;
+    p2pPairRequestPeerKey = "";
+    p2pPairRequestPeerName = "";
+    p2pPairRequestPeerIp = IPAddress((uint32_t)0);
+    p2pPairRequestPeerPort = 0;
+
     lv_msgbox_close(msgbox);
 }
 
@@ -24272,10 +24579,7 @@ void loop()
         }
     }
     otaUpdateService();
-    if (!uiPriorityActive || realtimeMessaging || Serial1.available() > 0 ||
-        (uiDeferredFlags & UI_DEFERRED_HC12_SETTLE_PENDING) != 0) {
-        hc12Service();
-    }
+    hc12Service();
     screenshotService(isDown);
     const bool allowSdAutoRetry = (uiScreen == UI_MEDIA) || !displayAwake;
     if (!sdMounted && allowSdAutoRetry && !isDown && !fsWriteBusy() &&
