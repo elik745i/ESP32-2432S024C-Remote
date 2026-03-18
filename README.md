@@ -2,7 +2,7 @@
 
 Firmware for Sunton-style ESP32 touch display boards with an LVGL UI, Wi-Fi/AP tools, SD recovery/file access, MQTT controls, encrypted chat, and optional radio modules.
 
-Current firmware version: **`0.2.20`**
+Current firmware version: **`0.21.01`**
 
 ![ESP32 Remote Render](3D_Models/render1.jpeg)
 
@@ -270,6 +270,47 @@ pio run -e esp32-s3-3248s035-n16r8
 pio run -e esp32-s3-3248s035-n16r8 -t upload
 ```
 
+`pio run -t upload` writes the full image layout for the selected environment. Use that when flashing from source.
+
+### Flash a GitHub release binary
+
+Do not flash only `firmware.bin` on `ESP32-2432S024C`. That board needs the full release image set written at the correct offsets or it can boot to a blank screen.
+
+For the latest verified release (`v0.21.01`), download these four files from:
+
+- `https://github.com/elik745i/ESP32-2432S024C-Remote/releases/tag/v0.21.01`
+
+For `ESP32-2432S024C`, use:
+
+- `esp32-2432s024c-v0.21.01_bootloader.bin` at `0x1000`
+- `esp32-2432s024c-v0.21.01_partitions.bin` at `0x8000`
+- `esp32-2432s024c-v0.21.01_boot_app0.bin` at `0xE000`
+- `esp32-2432s024c-v0.21.01.bin` at `0x10000`
+
+Using Espressif `Flash Download Tool` on Windows:
+
+1. Download `flash_download_tool.zip` from `https://dl.espressif.com/public/flash_download_tool.zip`
+2. Run `flash_download_tool_3.9.9_R2.exe`
+3. Select the four `ESP32-2432S024C` release files in the order listed above
+4. Enter the matching offsets: `0x1000`, `0x8000`, `0xE000`, `0x10000`
+5. Pick the board's COM port and press `START`
+
+Example `Flash Download Tool` layout:
+
+![ESP32-2432S024C Flash Download Tool example](https://github.com/user-attachments/assets/4f278f13-84f1-4b47-a0c8-1cf881678fd5)
+
+If you use `esptool.py`, the equivalent command is:
+
+```powershell
+esptool.py --chip esp32 --port COMx --baud 460800 write_flash -z `
+  0x1000 esp32-2432s024c-v0.21.01_bootloader.bin `
+  0x8000 esp32-2432s024c-v0.21.01_partitions.bin `
+  0xE000 esp32-2432s024c-v0.21.01_boot_app0.bin `
+  0x10000 esp32-2432s024c-v0.21.01.bin
+```
+
+The `ESP32-S3-3248S035-N16R8` release currently ships as a single firmware image and can be flashed normally.
+
 ### Serial monitor
 
 ```powershell
@@ -319,3 +360,12 @@ Some boards or USB adapters may require manual bootloader entry:
 ## Releases
 
 GitHub Releases contain published firmware binaries for each supported target.
+
+For `ESP32-2432S024C`, release flashing requires the full set of release assets:
+
+- `bootloader`
+- `partitions`
+- `boot_app0`
+- `firmware`
+
+Flashing only the main firmware binary is not sufficient on that board.
