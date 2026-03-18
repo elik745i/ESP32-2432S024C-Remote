@@ -12,6 +12,7 @@ except NameError:
     PROJECT_DIR = Path(__file__).resolve().parents[1]
 
 MAIN_CPP = PROJECT_DIR / "src" / "main.cpp"
+APP_DIR = PROJECT_DIR / "src" / "app"
 OUT_DIR = PROJECT_DIR / "src" / "generated"
 OUT_FILE = OUT_DIR / "ui_multilang_font_16.c"
 
@@ -19,6 +20,7 @@ NODE_DIR = Path(r"C:\Program Files\nodejs")
 LV_FONT_CONV = Path(os.environ.get("APPDATA", "")) / "npm" / "lv_font_conv.cmd"
 
 FONT_SOURCES = {
+    "default": Path(r"C:\Windows\Fonts\segoeui.ttf"),
     "cyrillic": Path(r"C:\Windows\Fonts\segoeui.ttf"),
     "han": PROJECT_DIR / "fonts" / "NotoSansCJKsc-Regular.otf",
     "kana": PROJECT_DIR / "fonts" / "NotoSansCJKjp-Regular.otf",
@@ -27,8 +29,22 @@ FONT_SOURCES = {
 
 
 def collect_non_ascii_codepoints() -> list[int]:
-    text = MAIN_CPP.read_text(encoding="utf-8")
-    return sorted({ord(ch) for ch in text if ord(ch) > 127})
+    files = [MAIN_CPP]
+    if APP_DIR.exists():
+        files.extend(sorted(APP_DIR.rglob("*.inc")))
+
+    chars: set[int] = set()
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        for ch in text:
+            cp = ord(ch)
+            if cp <= 127:
+                continue
+            # Skip BOM and C1 control garbage that occasionally sneaks into edited text.
+            if cp == 0xFEFF or 0x80 <= cp <= 0x9F:
+                continue
+            chars.add(cp)
+    return sorted(chars)
 
 
 def build_range_arg(codepoints: list[int]) -> str:
@@ -56,7 +72,7 @@ def ensure_tooling() -> None:
 def build_font() -> None:
     codepoints = collect_non_ascii_codepoints()
     if not codepoints:
-        raise RuntimeError("No non-ASCII glyphs found in src/main.cpp")
+        raise RuntimeError("No non-ASCII glyphs found in extracted UI sources")
 
     missing_fonts = [str(path) for path in FONT_SOURCES.values() if not path.exists()]
     if missing_fonts:
@@ -86,6 +102,10 @@ def build_font() -> None:
     ]
 
     groups = {
+        "default": [cp for cp in codepoints if cp not in range(0x3040, 0x3100)
+                    and cp not in range(0x4E00, 0xA000)
+                    and cp not in range(0xAC00, 0xD7B0)
+                    and cp < 0xF000],
         "cyrillic": [cp for cp in codepoints if 0x0400 <= cp <= 0x04FF],
         "kana": [cp for cp in codepoints if 0x3040 <= cp <= 0x30FF],
         "han": [cp for cp in codepoints if 0x4E00 <= cp <= 0x9FFF],
