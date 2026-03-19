@@ -221,14 +221,15 @@ static constexpr float AUDIO_VOLUME_CURVE_EXPONENT = 2.0f;
 static constexpr uint8_t VIBRATION_LEDC_CHANNEL = 6;
 static constexpr uint16_t VIBRATION_PWM_HZ = 220;
 static constexpr uint8_t VIBRATION_PWM_RES_BITS = 8;
-static constexpr unsigned long TOUCH_VIBRATION_PULSE_MS = 8UL;
-static constexpr uint32_t TOUCH_VIBRATION_DUTY = 255U;
+static constexpr unsigned long TOUCH_VIBRATION_PULSE_MS = 5UL;
+static constexpr uint32_t TOUCH_VIBRATION_DUTY = 220U;
 #endif
 static constexpr uint8_t CHAT_NOTIFY_LEDC_CHANNEL = 7;
 static constexpr uint16_t CHAT_NOTIFY_FREQ_PRIMARY = 1760;
 static constexpr uint16_t CHAT_NOTIFY_FREQ_SECONDARY = 1320;
-static constexpr uint16_t TOUCH_TICK_FREQ = 2400;
-static constexpr unsigned long TOUCH_TICK_MS = 7UL;
+static constexpr uint16_t TOUCH_TICK_FREQ = 3200;
+static constexpr uint32_t TOUCH_TICK_DUTY = 64U;
+static constexpr unsigned long TOUCH_TICK_MS = 4UL;
 static constexpr unsigned long CHAT_NOTIFY_BEEP1_MS = 70UL;
 static constexpr unsigned long CHAT_NOTIFY_GAP_MS = 55UL;
 static constexpr unsigned long CHAT_NOTIFY_BEEP2_MS = 95UL;
@@ -341,7 +342,7 @@ static constexpr uint8_t VIBRATION_QUEUE_MAX = 4;
 #endif
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.21.04";
+static constexpr const char *FW_VERSION = "0.21.05";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -776,8 +777,13 @@ void lvglBatteryTrainAutoEvent(lv_event_t *e);
 void lvglHc12ToggleSetEvent(lv_event_t *e);
 void lvglHc12SendEvent(lv_event_t *e);
 void lvglSaveDeviceNameEvent(lv_event_t *e);
+void lvglStartupSoundToggleEvent(lv_event_t *e);
 void lvglSetConfigKeyboardVisible(bool visible);
 void lvglShowChatAirplanePrompt();
+void lvglKeyboardEnsureFocusedVisible(bool animated);
+void lvglKeyboardRefreshLayout();
+void lvglKeyboardApplyTextMode();
+static lv_obj_t *hc12CmdTaObj();
 void cpuLoadService(uint32_t loopStartUs);
 void rgbService();
 void loadP2pConfig();
@@ -789,6 +795,7 @@ bool p2pSendChatMessageWithId(const String &peerKey, const String &text, const S
 bool p2pSendMessageDelete(const String &peerKey, const String &messageId);
 bool p2pSendConversationDelete();
 bool p2pSendChatAck(const String &peerKey, const String &messageId);
+void playStartupFeedbackIfEnabled();
 static bool hc12BroadcastDiscoveryFrame(const char *kind);
 bool hc12SendChatMessageWithId(const String &peerKey, const String &text, const String &messageId);
 bool hc12SendMessageDelete(const String &peerKey, const String &messageId);
@@ -1135,6 +1142,7 @@ static lv_obj_t *lvglConfigVolumeHeader = nullptr;
 static lv_obj_t *lvglConfigRgbHeader = nullptr;
 static lv_obj_t *lvglConfigVibrationHeader = nullptr;
 static lv_obj_t *lvglConfigMessageToneHeader = nullptr;
+static lv_obj_t *lvglConfigStartupSoundLabel = nullptr;
 static lv_obj_t *lvglConfigDeviceNameSaveBtnLabel = nullptr;
 static lv_obj_t *lvglBrightnessSlider = nullptr;
 static lv_obj_t *lvglBrightnessValueLabel = nullptr;
@@ -1143,6 +1151,7 @@ static lv_obj_t *lvglVolumeValueLabel = nullptr;
 static lv_obj_t *lvglRgbLedSlider = nullptr;
 static lv_obj_t *lvglVibrationDropdown = nullptr;
 static lv_obj_t *lvglMessageToneDropdown = nullptr;
+static lv_obj_t *lvglStartupSoundSw = nullptr;
 static lv_obj_t *lvglKb = nullptr;
 static uint8_t lvglWarmupScreenIndex = 0;
 static unsigned long lvglWarmupLastMs = 0;
@@ -1202,6 +1211,13 @@ static lv_obj_t *lvglTopIndicators[LVGL_MAX_TOP_INDICATORS] = {};
 static bool lvglKeyboardShiftOneShot = false;
 static bool lvglKeyboardShiftLocked = false;
 static unsigned long lvglKeyboardShiftLastPressMs = 0;
+static lv_obj_t *lvglKeyboardFocusedTa = nullptr;
+static lv_obj_t *lvglKeyboardPaddedContainer = nullptr;
+static lv_coord_t lvglKeyboardPaddedContainerPrevBottom = 0;
+static bool lvglKeyboardUseLocalized = false;
+static bool lvglKeyboardSpaceSwipeActive = false;
+static bool lvglKeyboardSpaceSwipeTriggered = false;
+static lv_point_t lvglKeyboardSpaceSwipeStart = {0, 0};
 static uint8_t lvglTopIndicatorCount = 0;
 static int lvglMqttEditIndex = 0;
 static String lvglWifiPendingSsid;
@@ -2422,6 +2438,7 @@ uint8_t chatMessageBeepPhase = 0;
 uint8_t chatMessageBeepQueue = 0;
 unsigned long chatMessageBeepDeadlineMs = 0;
 bool touchSoundEnabled = true;
+bool startupSoundEnabled = true;
 bool touchFeedbackBeepActive = false;
 unsigned long touchFeedbackBeepDeadlineMs = 0;
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
@@ -4206,6 +4223,11 @@ static void lvglApplyConfigScreenControlStyles()
         lv_obj_set_style_border_width(lvglMessageToneDropdown, 1, 0);
         lv_obj_set_style_radius(lvglMessageToneDropdown, 8, 0);
     }
+    if (lvglStartupSoundSw) {
+        lv_obj_set_style_bg_color(lvglStartupSoundSw, lv_color_hex(0x48515C), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(lvglStartupSoundSw, lv_color_hex(0x3A8F4B), LV_PART_INDICATOR | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_color(lvglStartupSoundSw, lv_color_hex(0xDCE7F2), LV_PART_KNOB);
+    }
 }
 
 void lvglRegisterTopIndicator(lv_obj_t *obj)
@@ -5541,6 +5563,7 @@ static void saveSoundPrefs()
     uiPrefs.putBool("vib_en", vibrationEnabled);
     uiPrefs.putUChar("vib_int", static_cast<uint8_t>(vibrationIntensity));
     uiPrefs.putBool("touch_snd", touchSoundEnabled);
+    uiPrefs.putBool("boot_snd", startupSoundEnabled);
     uiPrefs.putBool("touch_vib", touchVibrationEnabled);
     uiPrefs.end();
 }
@@ -7404,6 +7427,196 @@ static bool chatOpenFirstUnreadConversation()
         if (hc12DiscoveredPeers[i].unread) return chatOpenPeerConversation(hc12DiscoveredPeers[i].pubKeyHex);
     }
     return false;
+}
+
+static bool lvglKeyboardLocalizedLayoutAvailable(UiLanguage lang)
+{
+    switch (lang) {
+        case UI_LANG_RUSSIAN:
+        case UI_LANG_FRENCH:
+        case UI_LANG_TURKISH:
+        case UI_LANG_ITALIAN:
+        case UI_LANG_GERMAN:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static lv_obj_t *lvglKeyboardFindScrollableAncestor(lv_obj_t *obj)
+{
+    for (lv_obj_t *cur = obj; cur && lv_obj_is_valid(cur); cur = lv_obj_get_parent(cur)) {
+        if (lv_obj_has_flag(cur, LV_OBJ_FLAG_SCROLLABLE)) return cur;
+    }
+    return nullptr;
+}
+
+static void lvglKeyboardReleasePaddedContainer()
+{
+    if (lvglKeyboardPaddedContainer && lv_obj_is_valid(lvglKeyboardPaddedContainer)) {
+        lv_obj_set_style_pad_bottom(lvglKeyboardPaddedContainer, lvglKeyboardPaddedContainerPrevBottom, 0);
+    }
+    lvglKeyboardPaddedContainer = nullptr;
+    lvglKeyboardPaddedContainerPrevBottom = 0;
+}
+
+static const char *const LVGL_KB_MAP_RU_LOWER[] = {
+    "й","ц","у","к","е","н","г","ш","щ","з",LV_SYMBOL_BACKSPACE,"\n",
+    "ф","ы","в","а","п","р","о","л","д","ж","э","\n",
+    LV_SYMBOL_UP,"я","ч","с","м","и","т","ь","б","ю","ъ","\n",
+    "1#"," ",".",LV_SYMBOL_OK,""
+};
+static const char *const LVGL_KB_MAP_RU_UPPER[] = {
+    "Й","Ц","У","К","Е","Н","Г","Ш","Щ","З",LV_SYMBOL_BACKSPACE,"\n",
+    "Ф","Ы","В","А","П","Р","О","Л","Д","Ж","Э","\n",
+    LV_SYMBOL_UP,"Я","Ч","С","М","И","Т","Ь","Б","Ю","Ъ","\n",
+    "1#"," ",".",LV_SYMBOL_OK,""
+};
+static const char *const LVGL_KB_MAP_TR_LOWER[] = {
+    "q","w","e","r","t","y","u","ı","o","p",LV_SYMBOL_BACKSPACE,"\n",
+    "a","s","d","f","g","h","j","k","l","ş","i","\n",
+    LV_SYMBOL_UP,"z","x","c","v","b","n","m","ö","ç","ü","\n",
+    "1#"," ",".",LV_SYMBOL_OK,""
+};
+static const char *const LVGL_KB_MAP_TR_UPPER[] = {
+    "Q","W","E","R","T","Y","U","I","O","P",LV_SYMBOL_BACKSPACE,"\n",
+    "A","S","D","F","G","H","J","K","L","Ş","İ","\n",
+    LV_SYMBOL_UP,"Z","X","C","V","B","N","M","Ö","Ç","Ü","\n",
+    "1#"," ",".",LV_SYMBOL_OK,""
+};
+static const char *const LVGL_KB_MAP_FR_LOWER[] = {
+    "a","z","e","r","t","y","u","i","o","p",LV_SYMBOL_BACKSPACE,"\n",
+    "q","s","d","f","g","h","j","k","l","m","é","\n",
+    LV_SYMBOL_UP,"w","x","c","v","b","n","à","è","ù","ç","\n",
+    "1#"," ",".",LV_SYMBOL_OK,""
+};
+static const char *const LVGL_KB_MAP_FR_UPPER[] = {
+    "A","Z","E","R","T","Y","U","I","O","P",LV_SYMBOL_BACKSPACE,"\n",
+    "Q","S","D","F","G","H","J","K","L","M","É","\n",
+    LV_SYMBOL_UP,"W","X","C","V","B","N","À","È","Ù","Ç","\n",
+    "1#"," ",".",LV_SYMBOL_OK,""
+};
+static const char *const LVGL_KB_MAP_IT_LOWER[] = {
+    "q","w","e","r","t","y","u","i","o","p",LV_SYMBOL_BACKSPACE,"\n",
+    "a","s","d","f","g","h","j","k","l","ò","à","\n",
+    LV_SYMBOL_UP,"z","x","c","v","b","n","m","è","é","ù","\n",
+    "1#"," ",".",LV_SYMBOL_OK,""
+};
+static const char *const LVGL_KB_MAP_IT_UPPER[] = {
+    "Q","W","E","R","T","Y","U","I","O","P",LV_SYMBOL_BACKSPACE,"\n",
+    "A","S","D","F","G","H","J","K","L","Ò","À","\n",
+    LV_SYMBOL_UP,"Z","X","C","V","B","N","M","È","É","Ù","\n",
+    "1#"," ",".",LV_SYMBOL_OK,""
+};
+static const char *const LVGL_KB_MAP_DE_LOWER[] = {
+    "q","w","e","r","t","z","u","i","o","p",LV_SYMBOL_BACKSPACE,"\n",
+    "a","s","d","f","g","h","j","k","l","ö","ä","\n",
+    LV_SYMBOL_UP,"y","x","c","v","b","n","m","ü","ß",".","\n",
+    "1#"," ",".",LV_SYMBOL_OK,""
+};
+static const char *const LVGL_KB_MAP_DE_UPPER[] = {
+    "Q","W","E","R","T","Z","U","I","O","P",LV_SYMBOL_BACKSPACE,"\n",
+    "A","S","D","F","G","H","J","K","L","Ö","Ä","\n",
+    LV_SYMBOL_UP,"Y","X","C","V","B","N","M","Ü","ẞ",".","\n",
+    "1#"," ",".",LV_SYMBOL_OK,""
+};
+static const lv_btnmatrix_ctrl_t LVGL_KB_CTRL_LOCALIZED[] = {
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, LV_BTNMATRIX_CTRL_CHECKED | 6,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    LV_BTNMATRIX_CTRL_CHECKED | 4, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    LV_KEYBOARD_CTRL_BTN_FLAGS | 5, 20, 5, LV_KEYBOARD_CTRL_BTN_FLAGS | 6
+};
+
+static const char *const *lvglKeyboardLocalizedMap(bool upper)
+{
+    switch (uiLanguage) {
+        case UI_LANG_RUSSIAN: return upper ? LVGL_KB_MAP_RU_UPPER : LVGL_KB_MAP_RU_LOWER;
+        case UI_LANG_FRENCH: return upper ? LVGL_KB_MAP_FR_UPPER : LVGL_KB_MAP_FR_LOWER;
+        case UI_LANG_TURKISH: return upper ? LVGL_KB_MAP_TR_UPPER : LVGL_KB_MAP_TR_LOWER;
+        case UI_LANG_ITALIAN: return upper ? LVGL_KB_MAP_IT_UPPER : LVGL_KB_MAP_IT_LOWER;
+        case UI_LANG_GERMAN: return upper ? LVGL_KB_MAP_DE_UPPER : LVGL_KB_MAP_DE_LOWER;
+        default: return nullptr;
+    }
+}
+
+static uint32_t lvglUtf8Codepoint(const char *text)
+{
+    if (!text || !*text) return 0;
+    const uint8_t c0 = static_cast<uint8_t>(text[0]);
+    if ((c0 & 0x80U) == 0) return c0;
+    if ((c0 & 0xE0U) == 0xC0U && text[1]) {
+        return (static_cast<uint32_t>(c0 & 0x1FU) << 6) |
+               static_cast<uint32_t>(static_cast<uint8_t>(text[1]) & 0x3FU);
+    }
+    if ((c0 & 0xF0U) == 0xE0U && text[1] && text[2]) {
+        return (static_cast<uint32_t>(c0 & 0x0FU) << 12) |
+               (static_cast<uint32_t>(static_cast<uint8_t>(text[1]) & 0x3FU) << 6) |
+               static_cast<uint32_t>(static_cast<uint8_t>(text[2]) & 0x3FU);
+    }
+    return 0;
+}
+
+static bool lvglKeyboardIsLetterKey(const char *txt)
+{
+    const uint32_t cp = lvglUtf8Codepoint(txt);
+    if ((cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z')) return true;
+    if ((cp >= 0x00C0U && cp <= 0x017FU) || (cp >= 0x0400U && cp <= 0x04FFU)) return true;
+    return false;
+}
+
+void lvglKeyboardApplyTextMode()
+{
+    if (!lvglKb) return;
+
+    const bool useLocalized = lvglKeyboardUseLocalized && lvglKeyboardLocalizedLayoutAvailable(uiLanguage);
+    if (useLocalized) {
+        lv_keyboard_set_map(lvglKb, LV_KEYBOARD_MODE_USER_1, const_cast<const char **>(lvglKeyboardLocalizedMap(false)), LVGL_KB_CTRL_LOCALIZED);
+        lv_keyboard_set_map(lvglKb, LV_KEYBOARD_MODE_USER_2, const_cast<const char **>(lvglKeyboardLocalizedMap(true)), LVGL_KB_CTRL_LOCALIZED);
+        lv_keyboard_set_mode(lvglKb, (lvglKeyboardShiftOneShot || lvglKeyboardShiftLocked) ? LV_KEYBOARD_MODE_USER_2
+                                                                                           : LV_KEYBOARD_MODE_USER_1);
+    } else {
+        lv_keyboard_set_mode(lvglKb, (lvglKeyboardShiftOneShot || lvglKeyboardShiftLocked) ? LV_KEYBOARD_MODE_TEXT_UPPER
+                                                                                           : LV_KEYBOARD_MODE_TEXT_LOWER);
+    }
+}
+
+void lvglKeyboardEnsureFocusedVisible(bool animated)
+{
+    if (!lvglKeyboardFocusedTa || !lv_obj_is_valid(lvglKeyboardFocusedTa)) return;
+    lv_obj_scroll_to_view_recursive(lvglKeyboardFocusedTa, animated ? LV_ANIM_ON : LV_ANIM_OFF);
+}
+
+void lvglKeyboardRefreshLayout()
+{
+    if (!lvglKeyboardVisible() || !lvglKeyboardFocusedTa || !lv_obj_is_valid(lvglKeyboardFocusedTa)) {
+        lvglKeyboardReleasePaddedContainer();
+        return;
+    }
+
+    if (lvglKeyboardFocusedTa == lvglChatInputTa) {
+        lvglSetChatKeyboardVisible(true);
+        lvglKeyboardEnsureFocusedVisible(false);
+        return;
+    }
+
+    const bool configManagedTarget =
+        (lvglKeyboardFocusedTa == lvglConfigDeviceNameTa) ||
+        (hc12CmdTaObj() && lvglKeyboardFocusedTa == hc12CmdTaObj());
+    lvglSetConfigKeyboardVisible(configManagedTarget);
+
+    lv_obj_t *scrollable = lvglKeyboardFindScrollableAncestor(lvglKeyboardFocusedTa);
+    if (scrollable != lvglKeyboardPaddedContainer) {
+        lvglKeyboardReleasePaddedContainer();
+        if (scrollable && lv_obj_is_valid(scrollable)) {
+            lvglKeyboardPaddedContainer = scrollable;
+            lvglKeyboardPaddedContainerPrevBottom = lv_obj_get_style_pad_bottom(scrollable, LV_PART_MAIN);
+            lv_obj_set_style_pad_bottom(scrollable, max<lv_coord_t>(lvglKeyboardPaddedContainerPrevBottom, 132), 0);
+        }
+    } else if (scrollable && lv_obj_is_valid(scrollable)) {
+        lv_obj_set_style_pad_bottom(scrollable, max<lv_coord_t>(lvglKeyboardPaddedContainerPrevBottom, 132), 0);
+    }
+
+    lvglKeyboardEnsureFocusedVisible(false);
 }
 
 #include "app/chat_contacts.inc"
@@ -9924,12 +10137,8 @@ void lvglSetConfigKeyboardVisible(bool visible)
     }
 
     if (visible) {
-        lv_obj_t *hc12CmdTa = hc12CmdTaObj();
-        if (uiScreen == UI_CONFIG_HC12_TERMINAL &&
-            hc12CmdTa && lv_obj_is_valid(hc12CmdTa)) {
-            lv_obj_scroll_to_view_recursive(hc12CmdTa, LV_ANIM_ON);
-        } else if (lvglConfigDeviceNameTa && lv_obj_is_valid(lvglConfigDeviceNameTa)) {
-            lv_obj_scroll_to_view_recursive(lvglConfigDeviceNameTa, LV_ANIM_ON);
+        if (lvglKeyboardFocusedTa && lv_obj_is_valid(lvglKeyboardFocusedTa)) {
+            lv_obj_scroll_to_view_recursive(lvglKeyboardFocusedTa, LV_ANIM_ON);
         }
     } else if (uiScreen == UI_CONFIG_HC12_TERMINAL &&
                hc12TerminalTa && lv_obj_is_valid(hc12TerminalTa)) {
@@ -10826,6 +11035,7 @@ void setup()
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step displayBacklightFadeIn");
     displayBacklightFadeIn();
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step displayBacklightFadeIn done");
+    playStartupFeedbackIfEnabled();
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] SD/network init deferred to loop");
     bootDeferredStartMs = millis();
     bootSdInitPending = true;

@@ -1452,6 +1452,27 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_add_event_cb(lvglMessageToneDropdown, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
             lv_obj_add_event_cb(lvglMessageToneDropdown, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
 
+            lv_obj_t *startupSoundRow = lv_obj_create(toneWrap);
+            lv_obj_set_size(startupSoundRow, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(startupSoundRow, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(startupSoundRow, 0, 0);
+            lv_obj_set_style_pad_all(startupSoundRow, 0, 0);
+            lv_obj_set_style_pad_column(startupSoundRow, 8, 0);
+            lv_obj_set_flex_flow(startupSoundRow, LV_FLEX_FLOW_ROW);
+            lv_obj_set_flex_align(startupSoundRow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+            lv_obj_clear_flag(startupSoundRow, LV_OBJ_FLAG_SCROLLABLE);
+
+            lvglConfigStartupSoundLabel = lv_label_create(startupSoundRow);
+            lv_label_set_text(lvglConfigStartupSoundLabel, "Play sound on start");
+            lv_obj_set_style_text_color(lvglConfigStartupSoundLabel, lv_color_hex(0xB7C4D1), 0);
+            lv_obj_set_flex_grow(lvglConfigStartupSoundLabel, 1);
+
+            lvglStartupSoundSw = lv_switch_create(startupSoundRow);
+            lv_obj_add_event_cb(lvglStartupSoundSw, lvglStartupSoundToggleEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+            lv_obj_add_event_cb(lvglStartupSoundSw, lvglGestureBlockEvent, LV_EVENT_PRESSED, nullptr);
+            lv_obj_add_event_cb(lvglStartupSoundSw, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
+            lv_obj_add_event_cb(lvglStartupSoundSw, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
+
             lv_obj_t *rgbWrap = lv_obj_create(lvglConfigWrap);
             lv_obj_set_size(rgbWrap, lv_pct(100), LV_SIZE_CONTENT);
             lv_obj_set_style_bg_color(rgbWrap, lv_color_hex(0x18222D), 0);
@@ -3928,6 +3949,10 @@ void lvglRefreshChatLayout()
         lv_obj_align(lvglChatMenuPanel, LV_ALIGN_TOP_RIGHT, -8, UI_CONTENT_TOP_Y + 40);
         if (!lv_obj_has_flag(lvglChatMenuBackdrop, LV_OBJ_FLAG_HIDDEN)) lv_obj_move_foreground(lvglChatMenuBackdrop);
         if (!lv_obj_has_flag(lvglChatMenuPanel, LV_OBJ_FLAG_HIDDEN)) lv_obj_move_foreground(lvglChatMenuPanel);
+        if (lvglKeyboardVisible() && lvglKeyboardFocusedTa == lvglChatInputTa) {
+            lvglSetChatKeyboardVisible(true);
+            lvglKeyboardEnsureFocusedVisible(false);
+        }
     }
 }
 

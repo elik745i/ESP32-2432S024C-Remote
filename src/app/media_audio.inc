@@ -344,6 +344,50 @@ static void chatMessageBeepPreview()
     chatMessageBeepStartStep(0);
 }
 
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+static bool chatMessageVibrationEnsurePinAttached();
+#endif
+
+void playStartupFeedbackIfEnabled()
+{
+    if (!startupSoundEnabled) return;
+
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+    if (vibrationEnabled && chatMessageVibrationEnsurePinAttached()) {
+        ledcWrite(VIBRATION_LEDC_CHANNEL, TOUCH_VIBRATION_DUTY);
+        delay(85);
+        ledcWrite(VIBRATION_LEDC_CHANNEL, 0);
+        ledcDetachPin(VIBRATION_MOTOR_PIN);
+        pinMode(VIBRATION_MOTOR_PIN, OUTPUT);
+        digitalWrite(VIBRATION_MOTOR_PIN, LOW);
+        chatMessageVibrationPinAttached = false;
+        chatMessageVibrationPinOutput = false;
+    }
+#endif
+
+    if (mediaVolumePercent == 0 || !chatMessageBeepEnsurePinAttached()) return;
+
+    static const ChatBeepStep startupAscend[] = {
+        {988, 55}, {0, 22}, {1319, 55}, {0, 22}, {1760, 90}
+    };
+    const uint32_t duty = max<uint32_t>(chatMessageBeepDuty(), 64U);
+
+    for (size_t i = 0; i < (sizeof(startupAscend) / sizeof(startupAscend[0])); ++i) {
+        const ChatBeepStep &step = startupAscend[i];
+        ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, 0);
+        if (step.freq != 0) {
+            delayMicroseconds(150);
+            ledcWriteTone(CHAT_NOTIFY_LEDC_CHANNEL, step.freq);
+            ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, duty);
+        } else {
+            ledcWriteTone(CHAT_NOTIFY_LEDC_CHANNEL, 0);
+        }
+        delay(step.durationMs);
+    }
+
+    chatMessageBeepStop(true);
+}
+
 void chatQueueIncomingMessageBeep()
 {
     if (!chatMessageBeepCanPlay()) return;
@@ -372,7 +416,35 @@ static void touchFeedbackQueue()
 #endif
 }
 
+static void touchFeedbackBeepStopImmediate()
+{
+    if (chatMessageBeepPinAttached) {
+        ledcWriteTone(CHAT_NOTIFY_LEDC_CHANNEL, 0);
+        ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, 0);
+        ledcDetachPin(I2S_SPK_PIN);
+        pinMode(I2S_SPK_PIN, INPUT);
+        gpio_set_pull_mode((gpio_num_t)I2S_SPK_PIN, GPIO_FLOATING);
+        chatMessageBeepPinAttached = false;
+    }
+    chatMessageBeepPhase = 0;
+    chatMessageBeepDeadlineMs = 0;
+}
+
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
+static void touchFeedbackVibrationStopImmediate()
+{
+    ledcWrite(VIBRATION_LEDC_CHANNEL, 0);
+    if (chatMessageVibrationPinAttached) {
+        ledcDetachPin(VIBRATION_MOTOR_PIN);
+        pinMode(VIBRATION_MOTOR_PIN, OUTPUT);
+        digitalWrite(VIBRATION_MOTOR_PIN, LOW);
+        chatMessageVibrationPinAttached = false;
+    }
+    chatMessageVibrationPinOutput = false;
+    chatMessageVibrationPhase = 0;
+    chatMessageVibrationDeadlineMs = 0;
+}
+
 static uint32_t chatMessageVibrationDuty()
 {
     if (!vibrationEnabled) return 0;
@@ -451,11 +523,7 @@ static void touchFeedbackBeepService()
 {
     if (!touchFeedbackBeepActive) return;
     if (!touchSoundEnabled || !chatMessageBeepCanPlay()) {
-        touchFeedbackBeepActive = false;
-        touchFeedbackBeepDeadlineMs = 0;
-        return;
-    }
-    if (chatMessageBeepPhase != 0 || chatMessageBeepQueue > 0) {
+        touchFeedbackBeepStopImmediate();
         touchFeedbackBeepActive = false;
         touchFeedbackBeepDeadlineMs = 0;
         return;
@@ -463,6 +531,7 @@ static void touchFeedbackBeepService()
 
     const unsigned long now = millis();
     if (touchFeedbackBeepDeadlineMs == 0) {
+        touchFeedbackBeepStopImmediate();
         if (!chatMessageBeepEnsurePinAttached()) {
             touchFeedbackBeepActive = false;
             return;
@@ -470,13 +539,13 @@ static void touchFeedbackBeepService()
         ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, 0);
         delayMicroseconds(150);
         ledcWriteTone(CHAT_NOTIFY_LEDC_CHANNEL, TOUCH_TICK_FREQ);
-        ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, 88U);
+        ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, TOUCH_TICK_DUTY);
         touchFeedbackBeepDeadlineMs = now + TOUCH_TICK_MS;
         return;
     }
 
     if (static_cast<long>(now - touchFeedbackBeepDeadlineMs) < 0) return;
-    chatMessageBeepStop(false);
+    touchFeedbackBeepStopImmediate();
     touchFeedbackBeepActive = false;
     touchFeedbackBeepDeadlineMs = 0;
 }
@@ -523,11 +592,7 @@ static void touchFeedbackVibrationService()
 {
     if (!touchFeedbackVibrationActive) return;
     if (!touchVibrationEnabled || !vibrationEnabled) {
-        touchFeedbackVibrationActive = false;
-        touchFeedbackVibrationDeadlineMs = 0;
-        return;
-    }
-    if (chatMessageVibrationPhase != 0 || chatMessageVibrationQueue > 0) {
+        touchFeedbackVibrationStopImmediate();
         touchFeedbackVibrationActive = false;
         touchFeedbackVibrationDeadlineMs = 0;
         return;
@@ -535,6 +600,7 @@ static void touchFeedbackVibrationService()
 
     const unsigned long now = millis();
     if (touchFeedbackVibrationDeadlineMs == 0) {
+        touchFeedbackVibrationStopImmediate();
         if (!chatMessageVibrationEnsurePinAttached()) {
             touchFeedbackVibrationActive = false;
             return;
@@ -545,12 +611,7 @@ static void touchFeedbackVibrationService()
     }
 
     if (static_cast<long>(now - touchFeedbackVibrationDeadlineMs) < 0) return;
-    ledcWrite(VIBRATION_LEDC_CHANNEL, 0);
-    ledcDetachPin(VIBRATION_MOTOR_PIN);
-    pinMode(VIBRATION_MOTOR_PIN, OUTPUT);
-    digitalWrite(VIBRATION_MOTOR_PIN, LOW);
-    chatMessageVibrationPinAttached = false;
-    chatMessageVibrationPinOutput = false;
+    touchFeedbackVibrationStopImmediate();
     touchFeedbackVibrationActive = false;
     touchFeedbackVibrationDeadlineMs = 0;
 }

@@ -41,7 +41,6 @@ static bool otaFetchReleaseCatalog(String &latestTagOut, String &latestUrlOut, S
         return false;
     }
 
-    const String currentTag = String("v") + FW_VERSION;
     uint8_t releaseCount = 0;
     bool latestFound = false;
 
@@ -58,10 +57,8 @@ static bool otaFetchReleaseCatalog(String &latestTagOut, String &latestUrlOut, S
             latestTagOut = tag;
             latestUrlOut = url;
             latestFound = true;
-            continue;
         }
 
-        if (tag.equalsIgnoreCase(currentTag)) continue;
         if (releaseCount >= OTA_RELEASE_LIST_MAX) continue;
         otaReleaseEntries[releaseCount].tag = tag;
         otaReleaseEntries[releaseCount].binUrl = url;

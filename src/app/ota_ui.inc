@@ -631,6 +631,7 @@ void lvglRefreshConfigUi()
     if (lvglConfigVolumeHeader) lvglLabelSetTextIfChanged(lvglConfigVolumeHeader, tr(TXT_VOLUME));
     if (lvglConfigVibrationHeader) lvglLabelSetTextIfChanged(lvglConfigVibrationHeader, "Vibration");
     if (lvglConfigMessageToneHeader) lvglLabelSetTextIfChanged(lvglConfigMessageToneHeader, "Message tone");
+    if (lvglConfigStartupSoundLabel) lvglLabelSetTextIfChanged(lvglConfigStartupSoundLabel, "Play sound on start");
     if (lvglConfigRgbHeader) lvglLabelSetTextIfChanged(lvglConfigRgbHeader, tr(TXT_RGB_LED));
     if (lvglConfigDeviceNameTa) {
         String current = lv_textarea_get_text(lvglConfigDeviceNameTa);
@@ -654,10 +655,17 @@ void lvglRefreshConfigUi()
         const uint16_t selected = static_cast<uint16_t>(messageBeepTone);
         if (lv_dropdown_get_selected(lvglMessageToneDropdown) != selected) lv_dropdown_set_selected(lvglMessageToneDropdown, selected);
     }
+    if (lvglStartupSoundSw) {
+        if (startupSoundEnabled) lv_obj_add_state(lvglStartupSoundSw, LV_STATE_CHECKED);
+        else lv_obj_clear_state(lvglStartupSoundSw, LV_STATE_CHECKED);
+    }
     if (lvglRgbLedSlider && lv_slider_get_value(lvglRgbLedSlider) != rgbLedPercent) {
         lv_slider_set_value(lvglRgbLedSlider, rgbLedPercent, LV_ANIM_OFF);
     }
     lvglRefreshSoundPopupUi();
+    if (lvglKeyboardVisible() && lvglKeyboardFocusedTa && lvglKeyboardFocusedTa != lvglChatInputTa) {
+        lvglKeyboardRefreshLayout();
+    }
 }
 
 void lvglRefreshLanguageUi()
@@ -758,6 +766,12 @@ void lvglRefreshOtaUi()
         else lv_obj_clear_state(cb, LV_STATE_CHECKED);
         if (busy) lv_obj_add_state(cb, LV_STATE_DISABLED);
         else lv_obj_clear_state(cb, LV_STATE_DISABLED);
+        lv_obj_set_style_text_color(cb, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+        lv_obj_set_style_text_font(cb, &lv_font_montserrat_18, LV_PART_MAIN);
+        lv_obj_set_style_text_opa(cb, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_text_color(cb, lv_color_hex(0xFFFFFF), LV_PART_INDICATOR);
+        lv_obj_set_style_border_color(cb, lv_color_hex(0xD9E2EC), LV_PART_INDICATOR);
+        lv_obj_set_style_bg_color(cb, lv_color_hex(0x52B788), LV_PART_INDICATOR | LV_STATE_CHECKED);
         if (available) {
             lv_checkbox_set_text(cb, otaReleaseEntries[i].tag.c_str());
         } else {

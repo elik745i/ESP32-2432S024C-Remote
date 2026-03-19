@@ -893,9 +893,14 @@ void lvglHideKeyboard()
         lv_keyboard_set_textarea(lvglKb, nullptr);
         lv_obj_add_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
     }
+    lvglKeyboardFocusedTa = nullptr;
+    lvglKeyboardUseLocalized = false;
+    lvglKeyboardSpaceSwipeActive = false;
+    lvglKeyboardSpaceSwipeTriggered = false;
     lvglKeyboardShiftOneShot = false;
     lvglKeyboardShiftLocked = false;
     lvglKeyboardShiftLastPressMs = 0;
+    lvglKeyboardReleasePaddedContainer();
     lvglSetChatKeyboardVisible(false);
     lvglSetConfigKeyboardVisible(false);
 }
@@ -913,6 +918,38 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
             lvglKb,
             [](lv_event_t *ke) {
                 lv_event_code_t code = lv_event_get_code(ke);
+                if (code == LV_EVENT_PRESSED && lvglKb) {
+                    lvglKeyboardSpaceSwipeActive = false;
+                    lvglKeyboardSpaceSwipeTriggered = false;
+                    lv_point_t pt = {0, 0};
+                    lv_indev_t *indev = lv_indev_get_act();
+                    if (indev) lv_indev_get_point(indev, &pt);
+                    lvglKeyboardSpaceSwipeStart = pt;
+                    return;
+                }
+                if (code == LV_EVENT_PRESSING && lvglKb) {
+                    const uint16_t btn = lv_btnmatrix_get_selected_btn(lvglKb);
+                    const char *txt = lv_btnmatrix_get_btn_text(lvglKb, btn);
+                    if (!txt || strcmp(txt, " ") != 0 || !lvglKeyboardLocalizedLayoutAvailable(uiLanguage)) return;
+
+                    lv_point_t pt = {0, 0};
+                    lv_indev_t *indev = lv_indev_get_act();
+                    if (indev) lv_indev_get_point(indev, &pt);
+                    const int dx = static_cast<int>(pt.x) - static_cast<int>(lvglKeyboardSpaceSwipeStart.x);
+                    const int dy = static_cast<int>(pt.y) - static_cast<int>(lvglKeyboardSpaceSwipeStart.y);
+
+                    if (!lvglKeyboardSpaceSwipeTriggered && abs(dx) >= 18 && abs(dx) > (abs(dy) * 2)) {
+                        lvglKeyboardSpaceSwipeTriggered = true;
+                        lvglKeyboardSpaceSwipeActive = true;
+                        lvglKeyboardUseLocalized = !lvglKeyboardUseLocalized;
+                        lvglKeyboardApplyTextMode();
+                    }
+                    return;
+                }
+                if ((code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) && lvglKb) {
+                    lvglKeyboardSpaceSwipeActive = false;
+                    return;
+                }
                 if (code == LV_EVENT_VALUE_CHANGED && lvglKb) {
                     const uint16_t btn = lv_btnmatrix_get_selected_btn(lvglKb);
                     const char *txt = lv_btnmatrix_get_btn_text(lvglKb, btn);
@@ -922,37 +959,47 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
                                              (strcmp(txt, "abc") == 0) ||
                                              (strcmp(txt, LV_SYMBOL_UP) == 0));
                     if (isShiftKey) {
-                        const unsigned long now = millis();
-                        const bool doubleTap = (now - lvglKeyboardShiftLastPressMs) <= 450UL;
                         if (lvglKeyboardShiftLocked) {
                             lvglKeyboardShiftLocked = false;
                             lvglKeyboardShiftOneShot = false;
                             lvglKeyboardShiftLastPressMs = 0;
-                            lv_keyboard_set_mode(lvglKb, LV_KEYBOARD_MODE_TEXT_LOWER);
+                            lvglKeyboardApplyTextMode();
                             return;
                         }
-                        if (doubleTap) {
+                        if (lvglKeyboardShiftOneShot) {
                             lvglKeyboardShiftLocked = true;
                             lvglKeyboardShiftOneShot = false;
                             lvglKeyboardShiftLastPressMs = 0;
-                            lv_keyboard_set_mode(lvglKb, LV_KEYBOARD_MODE_TEXT_UPPER);
+                            lvglKeyboardApplyTextMode();
                             return;
                         }
                         lvglKeyboardShiftLocked = false;
                         lvglKeyboardShiftOneShot = true;
-                        lvglKeyboardShiftLastPressMs = now;
-                        lv_keyboard_set_mode(lvglKb, LV_KEYBOARD_MODE_TEXT_UPPER);
+                        lvglKeyboardShiftLastPressMs = millis();
+                        lvglKeyboardApplyTextMode();
                         return;
                     }
-                    if (lvglKeyboardShiftOneShot && txt && strlen(txt) == 1) {
-                        const char c = txt[0];
-                        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
-                            lvglKeyboardShiftOneShot = false;
-                            lvglKeyboardShiftLocked = false;
-                            lvglKeyboardShiftLastPressMs = 0;
-                            lv_keyboard_set_mode(lvglKb, LV_KEYBOARD_MODE_TEXT_LOWER);
-                        }
+                    if (txt && ((strcmp(txt, "abc") == 0) || (strcmp(txt, "ABC") == 0))) {
+                        lvglKeyboardApplyTextMode();
+                        return;
                     }
+                    if (txt && strcmp(txt, " ") == 0 && lvglKeyboardSpaceSwipeTriggered) {
+                        if (lvglKeyboardFocusedTa && lv_obj_is_valid(lvglKeyboardFocusedTa)) {
+                            uint32_t pos = lv_textarea_get_cursor_pos(lvglKeyboardFocusedTa);
+                            if (pos > 0) {
+                                lv_textarea_del_char(lvglKeyboardFocusedTa);
+                            }
+                        }
+                        lvglKeyboardSpaceSwipeTriggered = false;
+                        return;
+                    }
+                    if (lvglKeyboardShiftOneShot && lvglKeyboardIsLetterKey(txt)) {
+                        lvglKeyboardShiftOneShot = false;
+                        lvglKeyboardShiftLocked = false;
+                        lvglKeyboardShiftLastPressMs = 0;
+                        lvglKeyboardApplyTextMode();
+                    }
+                    lvglKeyboardEnsureFocusedVisible(false);
                     return;
                 }
                 if (code != LV_EVENT_READY && code != LV_EVENT_CANCEL) return;
@@ -985,14 +1032,17 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
             nullptr
         );
     }
+    lvglKeyboardFocusedTa = ta;
+    lvglKeyboardUseLocalized = lvglKeyboardLocalizedLayoutAvailable(uiLanguage);
+    lvglKeyboardSpaceSwipeActive = false;
+    lvglKeyboardSpaceSwipeTriggered = false;
     lvglKeyboardShiftOneShot = false;
     lvglKeyboardShiftLocked = false;
     lvglKeyboardShiftLastPressMs = 0;
-    lv_keyboard_set_mode(lvglKb, LV_KEYBOARD_MODE_TEXT_LOWER);
+    lvglKeyboardApplyTextMode();
     lv_keyboard_set_textarea(lvglKb, ta);
     lv_obj_clear_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
-    if (ta == lvglChatInputTa) lvglSetChatKeyboardVisible(true);
-    if (ta == lvglConfigDeviceNameTa || ta == hc12CmdTaObj()) lvglSetConfigKeyboardVisible(true);
+    lvglKeyboardRefreshLayout();
 }
 
 static unsigned long e220RuntimeBaud()

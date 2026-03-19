@@ -7,6 +7,7 @@
     doc["SystemVolume"] = uiPrefs.getUChar("sys_vol", mediaVolumePercent);
     doc["VibrationEnabled"] = uiPrefs.getBool("vib_en", vibrationEnabled) ? 1 : 0;
     doc["TouchSoundEnabled"] = uiPrefs.getBool("touch_snd", touchSoundEnabled) ? 1 : 0;
+    doc["StartupSoundEnabled"] = uiPrefs.getBool("boot_snd", startupSoundEnabled) ? 1 : 0;
     doc["TouchVibrationEnabled"] = uiPrefs.getBool("touch_vib", touchVibrationEnabled) ? 1 : 0;
     doc["DisplayBrightness"] = uiPrefs.getUChar("disp_bri", displayBrightnessPercent);
     doc["DeviceName"] = uiPrefs.getString("dev_name", deviceShortNameValue());
@@ -89,6 +90,7 @@ void loadUiRuntimeConfig()
                                                                    static_cast<uint8_t>(VIBRATION_INTENSITY_HIGH)));
     vibrationEnabled = uiPrefs.getBool("vib_en", true);
     touchSoundEnabled = uiPrefs.getBool("touch_snd", true);
+    startupSoundEnabled = uiPrefs.getBool("boot_snd", true);
     touchVibrationEnabled = uiPrefs.getBool("touch_vib", true);
     p2pDiscoveryEnabled = uiPrefs.getBool("chat_disc", p2pDiscoveryEnabled);
     homeChatVisible = uiPrefs.getBool("home_chat", true);
@@ -407,6 +409,11 @@ bool handleUiSettingMessage(const char *msg)
         touchSoundEnabled = atoi(value) != 0;
         uiPrefs.putBool("touch_snd", touchSoundEnabled);
         if (lvglReady) lvglRefreshStyleUi();
+    }
+    else if (strcmp(key, "StartupSoundEnabled") == 0) {
+        startupSoundEnabled = atoi(value) != 0;
+        uiPrefs.putBool("boot_snd", startupSoundEnabled);
+        if (lvglReady) lvglRefreshConfigUi();
     }
     else if (strcmp(key, "TouchVibrationEnabled") == 0) {
         touchVibrationEnabled = atoi(value) != 0;

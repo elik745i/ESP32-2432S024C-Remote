@@ -213,6 +213,16 @@ void lvglMessageToneDropdownEvent(lv_event_t *e)
     lvglRefreshConfigUi();
 }
 
+void lvglStartupSoundToggleEvent(lv_event_t *e)
+{
+    lv_obj_t *target = e ? lv_event_get_target(e) : nullptr;
+    startupSoundEnabled = target && lv_obj_has_state(target, LV_STATE_CHECKED);
+    saveSoundPrefs();
+    uiStatusLine = startupSoundEnabled ? "Startup sound enabled" : "Startup sound disabled";
+    lvglSyncStatusLine();
+    lvglRefreshConfigUi();
+}
+
 void lvglStyleTopCenterNameEvent(lv_event_t *e)
 {
     (void)e;
