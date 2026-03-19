@@ -102,12 +102,12 @@ def build_font() -> None:
     ]
 
     groups = {
-        "default": [cp for cp in codepoints if cp not in range(0x3040, 0x3100)
+        "default": [cp for cp in codepoints if cp not in range(0x3000, 0x3100)
                     and cp not in range(0x4E00, 0xA000)
                     and cp not in range(0xAC00, 0xD7B0)
                     and cp < 0xF000],
         "cyrillic": [cp for cp in codepoints if 0x0400 <= cp <= 0x04FF],
-        "kana": [cp for cp in codepoints if 0x3040 <= cp <= 0x30FF],
+        "kana": [cp for cp in codepoints if 0x3000 <= cp <= 0x30FF],
         "han": [cp for cp in codepoints if 0x4E00 <= cp <= 0x9FFF],
         "hangul": [cp for cp in codepoints if 0xAC00 <= cp <= 0xD7AF],
     }

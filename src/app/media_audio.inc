@@ -470,7 +470,7 @@ static void touchFeedbackBeepService()
         ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, 0);
         delayMicroseconds(150);
         ledcWriteTone(CHAT_NOTIFY_LEDC_CHANNEL, TOUCH_TICK_FREQ);
-        ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, min<uint32_t>(chatMessageBeepDuty(), 220U));
+        ledcWrite(CHAT_NOTIFY_LEDC_CHANNEL, 88U);
         touchFeedbackBeepDeadlineMs = now + TOUCH_TICK_MS;
         return;
     }

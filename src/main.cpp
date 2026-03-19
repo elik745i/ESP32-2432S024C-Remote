@@ -227,8 +227,8 @@ static constexpr uint32_t TOUCH_VIBRATION_DUTY = 255U;
 static constexpr uint8_t CHAT_NOTIFY_LEDC_CHANNEL = 7;
 static constexpr uint16_t CHAT_NOTIFY_FREQ_PRIMARY = 1760;
 static constexpr uint16_t CHAT_NOTIFY_FREQ_SECONDARY = 1320;
-static constexpr uint16_t TOUCH_TICK_FREQ = 1760;
-static constexpr unsigned long TOUCH_TICK_MS = 10UL;
+static constexpr uint16_t TOUCH_TICK_FREQ = 2400;
+static constexpr unsigned long TOUCH_TICK_MS = 7UL;
 static constexpr unsigned long CHAT_NOTIFY_BEEP1_MS = 70UL;
 static constexpr unsigned long CHAT_NOTIFY_GAP_MS = 55UL;
 static constexpr unsigned long CHAT_NOTIFY_BEEP2_MS = 95UL;
@@ -341,7 +341,7 @@ static constexpr uint8_t VIBRATION_QUEUE_MAX = 4;
 #endif
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.21.03";
+static constexpr const char *FW_VERSION = "0.21.04";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -1923,6 +1923,7 @@ static void lvglDeferredChatOpenFirstUnreadCallback(void *param);
 static bool chatDeleteMessageById(const String &peerKey, const String &messageId, const String &status);
 static bool chatDeleteMessageAt(const String &peerKey, int index);
 static unsigned long e220RuntimeBaud();
+static void hc12SerialReopen(unsigned long baud);
 static bool hc12SetIsAsserted();
 static bool checkersHandleIncomingChatPayload(const String &peerKey,
                                               const String &author,
@@ -2516,7 +2517,7 @@ bool recordTelemetryEnabled = false;
 bool systemSoundsEnabled = true;
 bool wsRebootOnDisconnectEnabled = false;
 bool airplaneModeEnabled = false;
-bool menuCustomIconsEnabled = false;
+bool menuCustomIconsEnabled = true;
 bool homeChatVisible = true;
 bool homeMediaVisible = true;
 bool homeInfoVisible = true;
@@ -3651,13 +3652,15 @@ static bool lvglGetSwipeBackPreviewTarget(UiScreen current, UiScreen &target)
         case UI_WIFI_LIST:
         case UI_CONFIG_BATTERY:
         case UI_CONFIG_STYLE:
-        case UI_CONFIG_STYLE_HOME_ITEMS:
         case UI_CONFIG_LANGUAGE:
         case UI_CONFIG_OTA:
         case UI_CONFIG_HC12:
         case UI_CONFIG_MQTT_CONFIG:
         case UI_CONFIG_MQTT_CONTROLS:
             target = UI_CONFIG;
+            return true;
+        case UI_CONFIG_STYLE_HOME_ITEMS:
+            target = UI_CONFIG_STYLE;
             return true;
         case UI_CONFIG_HC12_TERMINAL:
         case UI_CONFIG_HC12_INFO:
@@ -3890,6 +3893,7 @@ static void lvglAnimateSwipeBackVisual(lv_coord_t targetX, bool navigateBack)
 static bool lvglTouchOwnsHorizontalGesture()
 {
     if (lvglReorderOwnsHorizontalGesture) return true;
+    if (uiScreen == UI_CONFIG_STYLE_HOME_ITEMS) return false;
 
     lv_obj_t *obj = lv_indev_get_obj_act();
     if (!obj || !lv_obj_is_valid(obj)) return false;
@@ -5657,7 +5661,7 @@ static void lvglSetMenuButtonIconMode(lv_obj_t *btn,
         lv_obj_del(child);
     }
 
-    const String labelText = plainText;
+    const String labelText = (!menuCustomIconsEnabled && symbol && *symbol) ? lvglSymbolText(symbol, plainText) : plainText;
     lv_label_set_text(label, labelText.c_str());
     lv_obj_center(label);
 
@@ -5900,17 +5904,20 @@ static void lvglApplyPersistentToggleButtonStyle(lv_obj_t *btn,
     const lv_color_t flashColor = lv_color_mix(lv_color_white(), bodyCol, UI_BUTTON_CLICK_FLASH_MIX);
     if (lvglBlackButtonThemeActive()) {
         const lv_color_t blackBody = lv_color_hex(UI_BUTTON_BLACK_BODY_HEX);
-        const lv_color_t pressedCol = lv_color_hex(UI_BUTTON_BLACK_PRESSED_HEX);
-        const lv_color_t flashCol = lv_color_hex(UI_BUTTON_BLACK_FLASH_HEX);
+        const lv_color_t blackPressed = lv_color_hex(UI_BUTTON_BLACK_PRESSED_HEX);
+        const lv_color_t blackFlash = lv_color_hex(UI_BUTTON_BLACK_FLASH_HEX);
+        const lv_color_t activeBody = enabled ? bodyCol : blackBody;
+        const lv_color_t activePressed = enabled ? lv_color_mix(lv_color_black(), bodyCol, compact ? 72 : 92) : blackPressed;
+        const lv_color_t activeFlash = enabled ? flashColor : blackFlash;
         const lv_color_t borderCol = lv_color_hex(enabled ? UI_BUTTON_BLACK_BORDER_ACTIVE_HEX : UI_BUTTON_BLACK_BORDER_HEX);
-        lv_obj_set_style_bg_color(btn, blackBody, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_grad_color(btn, blackBody, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_color(btn, pressedCol, LV_PART_MAIN | LV_STATE_PRESSED);
-        lv_obj_set_style_bg_grad_color(btn, pressedCol, LV_PART_MAIN | LV_STATE_PRESSED);
-        lv_obj_set_style_bg_color(btn, flashCol, LV_PART_MAIN | LV_STATE_CHECKED);
-        lv_obj_set_style_bg_grad_color(btn, flashCol, LV_PART_MAIN | LV_STATE_CHECKED);
-        lv_obj_set_style_bg_color(btn, flashCol, LV_PART_MAIN | LV_STATE_CHECKED | LV_STATE_PRESSED);
-        lv_obj_set_style_bg_grad_color(btn, flashCol, LV_PART_MAIN | LV_STATE_CHECKED | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_color(btn, activeBody, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_grad_color(btn, activeBody, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(btn, activePressed, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_grad_color(btn, activePressed, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_color(btn, activeFlash, LV_PART_MAIN | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_grad_color(btn, activeFlash, LV_PART_MAIN | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_color(btn, activeFlash, LV_PART_MAIN | LV_STATE_CHECKED | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_grad_color(btn, activeFlash, LV_PART_MAIN | LV_STATE_CHECKED | LV_STATE_PRESSED);
         lv_obj_set_style_border_width(btn, enabled ? 2 : 1, LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_border_color(btn, borderCol, LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_border_opa(btn, enabled ? static_cast<lv_opa_t>(120) : static_cast<lv_opa_t>(84), LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -6088,7 +6095,7 @@ void lvglApplyAirplaneButtonStyle()
 void lvglApplyApModeButtonStyle()
 {
     lvglApplyPersistentToggleButtonStyle(
-        lvglApModeBtn, lvglApModeBtnLabel, wifiSessionApMode, lv_color_hex(0xA66A2A), lv_color_hex(0xA66A2A), false);
+        lvglApModeBtn, lvglApModeBtnLabel, wifiSessionApMode, lv_color_hex(0xA66A2A), lv_color_hex(0x3A7A3A), false);
 }
 
 void lvglApplyChatDiscoveryButtonStyle()
@@ -7401,42 +7408,6 @@ static bool chatOpenFirstUnreadConversation()
 
 #include "app/chat_contacts.inc"
 #include "app/p2p_transport.inc"
-    }
-
-    if (hc12TerminalLog) return;
-
-    if (radioModuleType == RADIO_MODULE_HC12) {
-        pinMode(hc12ActiveSetPin(), OUTPUT);
-        digitalWrite(hc12ActiveSetPin(), HIGH);
-        hc12SerialReopen(HC12_BAUD);
-    } else {
-        pinMode(e220ActiveM0Pin(), OUTPUT);
-        pinMode(e220ActiveM1Pin(), OUTPUT);
-        digitalWrite(e220ActiveM0Pin(), LOW);   // normal mode
-        digitalWrite(e220ActiveM1Pin(), LOW);
-        hc12SerialReopen(e220RuntimeBaud());    // use runtime baud here
-    }
-
-    String banner = String("[RADIO] Serial1 ready on ESP RX") +
-                    (radioModuleType == RADIO_MODULE_HC12 ? hc12ActiveRxPin() : e220ActiveRxPin()) +
-                    " TX" +
-                    (radioModuleType == RADIO_MODULE_HC12 ? hc12ActiveTxPin() : e220ActiveTxPin()) + "\n";
-
-    if (radioModuleType == RADIO_MODULE_HC12) {
-        banner += String("[HC12] HC12 RXD->GPIO") + hc12ActiveTxPin() +
-                  " TXD->GPIO" + hc12ActiveRxPin() +
-                  " SET->GPIO" + hc12ActiveSetPin() + "\n";
-    } else {
-        banner += String("[E220] RX->GPIO") + e220ActiveTxPin() +
-                  " TX->GPIO" + e220ActiveRxPin() +
-                  " M0->GPIO" + e220ActiveM0Pin() +
-                  " M1->GPIO" + e220ActiveM1Pin() +
-                  " runtime baud " + e220RuntimeBaud() +
-                  " / cfg baud " + E220_AT_BAUD + "\n";
-    }
-
-    hc12AppendTerminal(banner.c_str());
-}
 
 static String hc12TerminalExampleCommands()
 {
@@ -10183,6 +10154,7 @@ void lvglService()
 
     if (lvglTouchDown) {
         if (!lvglSwipeTracking) {
+            const bool forceSwipeBackScreen = (uiScreen == UI_CONFIG_STYLE_HOME_ITEMS);
             lvglSwipeTracking = true;
             lvglSwipeStartX = lvglLastTouchX;
             lvglSwipeStartY = lvglLastTouchY;
@@ -10190,20 +10162,24 @@ void lvglService()
             lvglSwipeLastY = lvglLastTouchY;
             lvglSwipeStartMs = now;
             lvglSwipeCandidate = uiScreenSupportsSwipeBack(uiScreen) &&
-                                 !lvglGestureBlocked &&
-                                 !lvglTouchOwnsHorizontalGesture();
+                                 (forceSwipeBackScreen || !lvglGestureBlocked) &&
+                                 (forceSwipeBackScreen || !lvglTouchOwnsHorizontalGesture());
             lvglSwipeHorizontalLocked = false;
             lvglSwipePressCancelled = false;
         } else {
+            const bool forceSwipeBackScreen = (uiScreen == UI_CONFIG_STYLE_HOME_ITEMS);
             lvglSwipeLastX = lvglLastTouchX;
             lvglSwipeLastY = lvglLastTouchY;
 
-            if (lvglGestureBlocked) {
+            if (lvglGestureBlocked && !forceSwipeBackScreen) {
                 lvglSwipeCandidate = false;
                 lvglSwipeHorizontalLocked = false;
             }
 
             if (lvglSwipeCandidate) {
+                const bool forceSwipeBackScreen = (uiScreen == UI_CONFIG_STYLE_HOME_ITEMS);
+                const int swipeLockMinDx = forceSwipeBackScreen ? 18 : SWIPE_LOCK_MIN_DX;
+                const int swipeBackMaxDy = forceSwipeBackScreen ? 72 : SWIPE_BACK_MAX_DY;
                 const int dx = static_cast<int>(lvglSwipeLastX) - static_cast<int>(lvglSwipeStartX);
                 const int dy = static_cast<int>(lvglSwipeLastY) - static_cast<int>(lvglSwipeStartY);
                 const int absDx = abs(dx);
@@ -10212,7 +10188,7 @@ void lvglService()
                 if (!lvglSwipeHorizontalLocked) {
                     if (absDy >= SWIPE_CANCEL_VERTICAL_DY && absDy > absDx) {
                         lvglSwipeCandidate = false;
-                    } else if (dx >= SWIPE_LOCK_MIN_DX && dx > ((absDy * 3) / 2)) {
+                    } else if (dx >= swipeLockMinDx && dx > ((absDy * 3) / 2)) {
                         lvglSwipeHorizontalLocked = true;
                         lvglSuppressClicksAfterGesture();
 
@@ -10221,7 +10197,7 @@ void lvglService()
                             lv_indev_reset(lvglTouchIndev, nullptr);
                         }
                     }
-                } else if (absDy > SWIPE_BACK_MAX_DY) {
+                } else if (absDy > swipeBackMaxDy) {
                     lvglSwipeCandidate = false;
                     lvglSwipeHorizontalLocked = false;
                 }
@@ -10241,6 +10217,10 @@ void lvglService()
 
         const int dx = static_cast<int>(lvglSwipeLastX) - static_cast<int>(lvglSwipeStartX);
         const int dy = static_cast<int>(lvglSwipeLastY) - static_cast<int>(lvglSwipeStartY);
+        const bool forceSwipeBackScreen = (uiScreen == UI_CONFIG_STYLE_HOME_ITEMS);
+        const int swipeLockMinDx = forceSwipeBackScreen ? 18 : SWIPE_LOCK_MIN_DX;
+        const int swipeBackMinDx = forceSwipeBackScreen ? 24 : SWIPE_BACK_MIN_DX;
+        const int swipeBackMaxDy = forceSwipeBackScreen ? 72 : SWIPE_BACK_MAX_DY;
         const unsigned long dt = static_cast<unsigned long>(now - lvglSwipeStartMs);
         const bool hadSwipeVisual = lvglSwipeVisualActive;
         const int completionDx = max<int>(1, (DISPLAY_WIDTH * SWIPE_BACK_COMPLETE_PERCENT) / 100);
@@ -10250,7 +10230,7 @@ void lvglService()
             hadSwipeVisual ||
             lvglSwipePressCancelled ||
             (lvglSwipeCandidate && lvglSwipeHorizontalLocked) ||
-            (dx >= SWIPE_LOCK_MIN_DX && dx > ((abs(dy) * 3) / 2));
+            (dx >= swipeLockMinDx && dx > ((abs(dy) * 3) / 2));
 
         if (suppressClickFromSwipeAttempt) {
             lvglSuppressClicksAfterGesture();
@@ -10266,9 +10246,9 @@ void lvglService()
         const bool swipeComplete =
             lvglSwipeCandidate &&
             lvglSwipeHorizontalLocked &&
-            abs(dy) <= SWIPE_BACK_MAX_DY &&
+            abs(dy) <= swipeBackMaxDy &&
             dx > ((abs(dy) * 3) / 2) &&
-            ((dx >= SWIPE_BACK_MIN_DX && dt <= SWIPE_BACK_MAX_MS) || passedCompletionThreshold);
+            ((dx >= swipeBackMinDx && dt <= SWIPE_BACK_MAX_MS) || passedCompletionThreshold);
 
         if (swipeComplete) {
             lvglSuppressClicksAfterGesture();
@@ -10289,7 +10269,7 @@ void lvglService()
             lvglLastTapReleaseY = lvglLastTouchY;
         } else {
             if (hadSwipeVisual) lvglAnimateSwipeBackVisual(0, false);
-            if (abs(dx) >= SWIPE_LOCK_MIN_DX || abs(dy) >= SWIPE_CANCEL_VERTICAL_DY || lvglSwipePressCancelled) {
+            if (abs(dx) >= swipeLockMinDx || abs(dy) >= SWIPE_CANCEL_VERTICAL_DY || lvglSwipePressCancelled) {
                 lvglSuppressClicksAfterGesture();
             }
             lvglLastTapReleaseMs = 0;

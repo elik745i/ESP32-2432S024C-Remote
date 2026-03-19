@@ -289,6 +289,7 @@ void p2pService()
         }
         return;
     }
+
     p2pEnsureUdp();
     if (!p2pUdpStarted) return;
 
@@ -1022,3 +1023,39 @@ static void hc12InitIfNeeded()
         (e220ActiveRxPin() < 0 || e220ActiveTxPin() < 0 || e220ActiveM0Pin() < 0 || e220ActiveM1Pin() < 0)) {
         hc12ConfigStatusText = "E220 is only wired on the ESP32-S3 build";
         return;
+    }
+
+    if (hc12TerminalLog) return;
+
+    if (radioModuleType == RADIO_MODULE_HC12) {
+        pinMode(hc12ActiveSetPin(), OUTPUT);
+        digitalWrite(hc12ActiveSetPin(), HIGH);
+        hc12SerialReopen(HC12_BAUD);
+    } else {
+        pinMode(e220ActiveM0Pin(), OUTPUT);
+        pinMode(e220ActiveM1Pin(), OUTPUT);
+        digitalWrite(e220ActiveM0Pin(), LOW);
+        digitalWrite(e220ActiveM1Pin(), LOW);
+        hc12SerialReopen(e220RuntimeBaud());
+    }
+
+    String banner = String("[RADIO] Serial1 ready on ESP RX") +
+                    (radioModuleType == RADIO_MODULE_HC12 ? hc12ActiveRxPin() : e220ActiveRxPin()) +
+                    " TX" +
+                    (radioModuleType == RADIO_MODULE_HC12 ? hc12ActiveTxPin() : e220ActiveTxPin()) + "\n";
+
+    if (radioModuleType == RADIO_MODULE_HC12) {
+        banner += String("[HC12] HC12 RXD->GPIO") + hc12ActiveTxPin() +
+                  " TXD->GPIO" + hc12ActiveRxPin() +
+                  " SET->GPIO" + hc12ActiveSetPin() + "\n";
+    } else {
+        banner += String("[E220] RX->GPIO") + e220ActiveTxPin() +
+                  " TX->GPIO" + e220ActiveRxPin() +
+                  " M0->GPIO" + e220ActiveM0Pin() +
+                  " M1->GPIO" + e220ActiveM1Pin() +
+                  " runtime baud " + e220RuntimeBaud() +
+                  " / cfg baud " + E220_AT_BAUD + "\n";
+    }
+
+    hc12AppendTerminal(banner.c_str());
+}

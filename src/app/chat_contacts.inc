@@ -748,6 +748,7 @@ static bool uiScreenSupportsSwipeBack(UiScreen screen)
         case UI_CONFIG:
         case UI_CONFIG_BATTERY:
         case UI_CONFIG_STYLE:
+        case UI_CONFIG_STYLE_HOME_ITEMS:
         case UI_CONFIG_LANGUAGE:
         case UI_CONFIG_OTA:
         case UI_CONFIG_HC12:
@@ -1616,6 +1617,9 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_flex_flow(wrap, LV_FLEX_FLOW_COLUMN);
             lv_obj_set_scrollbar_mode(wrap, LV_SCROLLBAR_MODE_OFF);
 
+            lvglStyleHomeItemsBtn = lvglCreateMenuButton(wrap, tr(TXT_MAIN_SCREEN_ITEMS), lv_color_hex(0x3A6D8F), lvglOpenStyleHomeItemsScreenEvent, nullptr);
+            if (lvglStyleHomeItemsBtn) lvglStyleHomeItemsBtnLabel = lv_obj_get_child(lvglStyleHomeItemsBtn, 0);
+
             lv_obj_t *screensaverRow = lv_obj_create(wrap);
             lv_obj_set_size(screensaverRow, lv_pct(100), LV_SIZE_CONTENT);
             lv_obj_set_style_bg_color(screensaverRow, lv_color_hex(0x18222D), 0);
@@ -1699,9 +1703,6 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_add_event_cb(lvglStyleTouchSoundSw, lvglGestureBlockEvent, LV_EVENT_PRESSED, nullptr);
             lv_obj_add_event_cb(lvglStyleTouchSoundSw, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
             lv_obj_add_event_cb(lvglStyleTouchSoundSw, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
-
-            lvglStyleHomeItemsBtn = lvglCreateMenuButton(wrap, tr(TXT_MAIN_SCREEN_ITEMS), lv_color_hex(0x3A6D8F), lvglOpenStyleHomeItemsScreenEvent, nullptr);
-            if (lvglStyleHomeItemsBtn) lvglStyleHomeItemsBtnLabel = lv_obj_get_child(lvglStyleHomeItemsBtn, 0);
 
             lv_obj_t *buttonStyleWrap = lv_obj_create(wrap);
             lv_obj_set_size(buttonStyleWrap, lv_pct(100), LV_SIZE_CONTENT);
@@ -1945,9 +1946,6 @@ void lvglEnsureScreenBuilt(UiScreen screen)
 
                 lv_obj_t *sw = lv_switch_create(row);
                 lv_obj_add_event_cb(sw, cb, LV_EVENT_VALUE_CHANGED, nullptr);
-                lv_obj_add_event_cb(sw, lvglGestureBlockEvent, LV_EVENT_PRESSED, nullptr);
-                lv_obj_add_event_cb(sw, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
-                lv_obj_add_event_cb(sw, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
 
                 *labelOut = lbl;
                 *switchOut = sw;

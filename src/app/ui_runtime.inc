@@ -80,7 +80,7 @@ void loadUiRuntimeConfig()
     wsRebootOnDisconnectEnabled = uiPrefs.getBool("ws_reboot", false);
     webServerEnabled = uiPrefs.getBool("web_srv", true);
     airplaneModeEnabled = uiPrefs.getBool("airplane", false);
-    menuCustomIconsEnabled = uiPrefs.getBool("menu_3d_i", false);
+    menuCustomIconsEnabled = uiPrefs.getBool("menu_3d_i", true);
     uiLanguage = static_cast<UiLanguage>(constrain(uiPrefs.getUChar("lang", static_cast<uint8_t>(UI_LANG_ENGLISH)),
                                                    static_cast<uint8_t>(UI_LANG_ENGLISH),
                                                    static_cast<uint8_t>(UI_LANG_COUNT - 1)));
