@@ -737,6 +737,7 @@ String mqttButtonCommandTopic(int idx);
 void mqttHandleHaChatCommand(const String &payload);
 String mqttHaChatStateTopic();
 String mqttHaChatReceivedTopic();
+String mqttHaChatReceivedCommandTopic();
 void mqttService();
 bool mqttConnectNow();
 void mqttPublishDiscovery();
@@ -9310,6 +9311,11 @@ String mqttHaChatReceivedTopic()
     return "esp32/remote/" + mqttHwId + "/chat/ha/received";
 }
 
+String mqttHaChatReceivedCommandTopic()
+{
+    return "esp32/remote/" + mqttHwId + "/chat/ha/received/set";
+}
+
 static bool mqttParseBoolPayload(const String &payload, bool currentValue, bool &parsedValue)
 {
     String normalized = payload;
@@ -9549,6 +9555,7 @@ void mqttPublishDiscovery()
         recvDoc["unique_id"] = mqttNodeId + "_ha_chat_received";
         recvDoc["availability_topic"] = availTopic;
         recvDoc["state_topic"] = mqttHaChatReceivedTopic();
+        recvDoc["command_topic"] = mqttHaChatReceivedCommandTopic();
         recvDoc["mode"] = "text";
         recvDoc["max"] = P2P_MAX_CHAT_TEXT;
         recvDoc["icon"] = "mdi:message-reply-text-outline";
@@ -9611,6 +9618,7 @@ void mqttPublishDiscovery()
     mqttDiscoveryPublished = true;
     mqttStatusLine = "HA discovery published";
     for (int i = 0; i < mqttButtonCount; ++i) mqttPublishButtonState(i);
+    mqttClient.publish(mqttHaChatReceivedTopic().c_str(), "", true);
     mqttPublishStateIfNeeded(true);
 }
 
