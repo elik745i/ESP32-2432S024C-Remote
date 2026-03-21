@@ -258,6 +258,10 @@ void lvglOpenSnake3dEvent(lv_event_t *e);
 #endif
 void lvglOpenMqttCfgEvent(lv_event_t *e);
 void lvglOpenMqttCtrlEvent(lv_event_t *e);
+void lvglOpenMqttButtonConfigScreenEvent(lv_event_t *e);
+void lvglMqttButtonAddEvent(lv_event_t *e);
+void lvglMqttButtonSelectModeEvent(lv_event_t *e);
+void lvglMqttButtonDeletePromptEvent(lv_event_t *e);
 void lvglOpenRemoteControlScreenEvent(lv_event_t *e);
 void lvglOpenChatPeersEvent(lv_event_t *e);
 void lvglChatDiscoveryToggleEvent(lv_event_t *e);
@@ -273,6 +277,7 @@ void lvglStyleHomeRadioToggleEvent(lv_event_t *e);
 void lvglStyleHomeMediaToggleEvent(lv_event_t *e);
 void lvglStyleHomeInfoToggleEvent(lv_event_t *e);
 void lvglStyleHomeGamesToggleEvent(lv_event_t *e);
+void lvglStyleHomeMqttToggleEvent(lv_event_t *e);
 void lvglStyleHomeConfigToggleEvent(lv_event_t *e);
 void lvglStyleHomePowerToggleEvent(lv_event_t *e);
 void lvglStyleHomeAirplaneToggleEvent(lv_event_t *e);
@@ -300,6 +305,7 @@ void lvglRefreshStyleUi();
 void lvglRefreshStyleHomeItemsUi();
 void lvglRefreshLanguageUi();
 void lvglRefreshRemoteControlUi();
+void lvglRefreshMqttButtonConfigUi();
 void lvglRefreshLocalizedUi();
 void lvglGestureBlockEvent(lv_event_t *e);
 void screensaverSetActive(bool active);
@@ -358,6 +364,7 @@ void lvglMqttConnectEvent(lv_event_t *e);
 void lvglMqttPublishDiscoveryEvent(lv_event_t *e);
 void lvglRefreshMqttConfigUi();
 void lvglRefreshMqttControlsUi();
+void lvglRefreshMqttButtonConfigUi();
 static bool lvglCanBuildScreen(UiScreen screen);
 static void lvglWarmupScreensService(bool uiPriorityActive);
 void lvglOtaPopupEvent(lv_event_t *e);
@@ -785,6 +792,7 @@ static bool uiScreenSupportsSwipeBack(UiScreen screen)
         case UI_CONFIG_HC12_INFO:
         case UI_CONFIG_MQTT_CONFIG:
         case UI_CONFIG_MQTT_CONTROLS:
+        case UI_CONFIG_MQTT_BUTTONS:
         case UI_GAME_SNAKE:
         case UI_GAME_TETRIS:
         case UI_GAME_CHECKERS:
@@ -822,6 +830,7 @@ lv_obj_t *lvglScreenForUi(UiScreen screen)
         case UI_SCREENSAVER: return lvglScrScreensaver;
         case UI_CONFIG_MQTT_CONFIG: return lvglScrMqttCfg;
         case UI_CONFIG_MQTT_CONTROLS: return lvglScrMqttCtrl;
+        case UI_CONFIG_MQTT_BUTTONS: return lvglScrMqttButtonConfig;
         case UI_GAME_SNAKE: return lvglScrSnake;
         case UI_GAME_TETRIS: return lvglScrTetris;
         case UI_GAME_CHECKERS: return lvglScrCheckers;
@@ -859,6 +868,7 @@ UiScreen lvglUiForScreenObj(lv_obj_t *screenObj)
     if (screenObj == lvglScrScreensaver) return UI_SCREENSAVER;
     if (screenObj == lvglScrMqttCfg) return UI_CONFIG_MQTT_CONFIG;
     if (screenObj == lvglScrMqttCtrl) return UI_CONFIG_MQTT_CONTROLS;
+    if (screenObj == lvglScrMqttButtonConfig) return UI_CONFIG_MQTT_BUTTONS;
     if (screenObj == lvglScrSnake) return UI_GAME_SNAKE;
     if (screenObj == lvglScrTetris) return UI_GAME_TETRIS;
     if (screenObj == lvglScrCheckers) return UI_GAME_CHECKERS;
@@ -913,6 +923,13 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglHomeMediaBtn = lvglCreateMenuButton(homeWrap, tr(TXT_MEDIA), lv_color_hex(0x376B93), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_MEDIA)));
             lvglHomeInfoBtn = lvglCreateMenuButton(homeWrap, tr(TXT_INFO), lv_color_hex(0x7750A0), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_INFO)));
             lvglHomeGamesBtn = lvglCreateMenuButton(homeWrap, tr(TXT_GAMES), lv_color_hex(0x2B7D7D), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_GAMES)));
+            lvglHomeMqttControlsBtn = lvglCreateMenuButton(
+                homeWrap,
+                tr(TXT_MQTT_CONTROLS),
+                lv_color_hex(0x2D6D8E),
+                lvglHomeNavEvent,
+                reinterpret_cast<void *>(static_cast<intptr_t>(UI_CONFIG_MQTT_CONTROLS))
+            );
             lvglHomeConfigBtn = lvglCreateMenuButton(homeWrap, tr(TXT_CONFIG), lv_color_hex(0x925A73), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CONFIG)));
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
             lvglHomePowerBtn = lvglCreateMenuButton(homeWrap, tr(TXT_POWER), lv_color_hex(0xA33F3F), lvglPowerButtonEvent, nullptr);
@@ -933,6 +950,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglRegisterReorderableItem(lvglHomeMediaBtn, "ord_home", "media");
             lvglRegisterReorderableItem(lvglHomeInfoBtn, "ord_home", "info");
             lvglRegisterReorderableItem(lvglHomeGamesBtn, "ord_home", "games");
+            lvglRegisterReorderableItem(lvglHomeMqttControlsBtn, "ord_home", "mqtt");
             lvglRegisterReorderableItem(lvglHomeConfigBtn, "ord_home", "config");
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
             lvglRegisterReorderableItem(lvglHomePowerBtn, "ord_home", "power");
@@ -964,10 +982,9 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglScreenLockPinTa = lv_textarea_create(wrap);
             lv_obj_set_width(lvglScreenLockPinTa, min<lv_coord_t>(DISPLAY_WIDTH - 44, 150));
             lv_obj_set_height(lvglScreenLockPinTa, 42);
-            lv_textarea_set_one_line(lvglScreenLockPinTa, true);
+            lvglConfigureSingleLinePasswordTa(lvglScreenLockPinTa);
             lv_textarea_set_max_length(lvglScreenLockPinTa, 4);
             lv_textarea_set_placeholder_text(lvglScreenLockPinTa, "0000");
-            lv_textarea_set_password_mode(lvglScreenLockPinTa, true);
             lv_obj_add_event_cb(lvglScreenLockPinTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
             lv_obj_add_event_cb(lvglScreenLockPinTa, lvglScreenLockPinChangedEvent, LV_EVENT_VALUE_CHANGED, nullptr);
 
@@ -1518,7 +1535,6 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglConfigStyleBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_SCREEN), lv_color_hex(0x2D6D8E), lvglOpenStyleScreenEvent, nullptr);
             lvglConfigBatteryBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_BATTERY), lv_color_hex(0x6C7E2C), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CONFIG_BATTERY)));
             lvglConfigMqttBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_MQTT_CONFIG), lv_color_hex(0x6D4B9A), lvglOpenMqttCfgEvent, nullptr);
-            lvglConfigMqttControlsBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_MQTT_CONTROLS), lv_color_hex(0x2D6D8E), lvglOpenMqttCtrlEvent, nullptr);
             lvglConfigScreenshotBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_SCREENSHOT), lv_color_hex(0x6B5B2A), lvglScreenshotEvent, nullptr);
             lvglConfigLanguageBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_LANGUAGE), lv_color_hex(0x5A6FA8), lvglOpenLanguageScreenEvent, nullptr);
             lvglConfigOtaBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_OTA_UPDATES), lv_color_hex(0x2E6F95), lvglOpenOtaScreenEvent, nullptr);
@@ -1753,7 +1769,6 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglRegisterReorderableItem(lvglConfigRemoteBtn, "ord_cfg", "rctl");
             lvglRegisterReorderableItem(lvglConfigStyleBtn, "ord_cfg", "style");
             lvglRegisterReorderableItem(lvglConfigMqttBtn, "ord_cfg", "mqtt");
-            lvglRegisterReorderableItem(lvglConfigMqttControlsBtn, "ord_cfg", "mctl");
             lvglRegisterReorderableItem(lvglConfigScreenshotBtn, "ord_cfg", "shot");
             lvglRegisterReorderableItem(lvglConfigLanguageBtn, "ord_cfg", "lang");
             lvglRegisterReorderableItem(lvglConfigOtaBtn, "ord_cfg", "ota");
@@ -2287,6 +2302,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglStyleHomeMediaSw = nullptr;
             lvglStyleHomeInfoSw = nullptr;
             lvglStyleHomeGamesSw = nullptr;
+            lvglStyleHomeMqttSw = nullptr;
             lvglStyleHomeConfigSw = nullptr;
             lvglStyleHomePowerSw = nullptr;
             lvglStyleHomeAirplaneSw = nullptr;
@@ -2296,6 +2312,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglStyleHomeMediaLabel = nullptr;
             lvglStyleHomeInfoLabel = nullptr;
             lvglStyleHomeGamesLabel = nullptr;
+            lvglStyleHomeMqttLabel = nullptr;
             lvglStyleHomeConfigLabel = nullptr;
             lvglStyleHomePowerLabel = nullptr;
             lvglStyleHomeAirplaneLabel = nullptr;
@@ -2339,6 +2356,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             makeHomeRow(&lvglStyleHomeMediaLabel, &lvglStyleHomeMediaSw, tr(TXT_MEDIA), lvglStyleHomeMediaToggleEvent);
             makeHomeRow(&lvglStyleHomeInfoLabel, &lvglStyleHomeInfoSw, tr(TXT_INFO), lvglStyleHomeInfoToggleEvent);
             makeHomeRow(&lvglStyleHomeGamesLabel, &lvglStyleHomeGamesSw, tr(TXT_GAMES), lvglStyleHomeGamesToggleEvent);
+            makeHomeRow(&lvglStyleHomeMqttLabel, &lvglStyleHomeMqttSw, tr(TXT_MQTT_CONTROLS), lvglStyleHomeMqttToggleEvent);
             makeHomeRow(&lvglStyleHomeConfigLabel, &lvglStyleHomeConfigSw, tr(TXT_CONFIG), lvglStyleHomeConfigToggleEvent);
             makeHomeRow(&lvglStyleHomePowerLabel, &lvglStyleHomePowerSw, tr(TXT_POWER), lvglStyleHomePowerToggleEvent);
             makeHomeRow(&lvglStyleHomeAirplaneLabel, &lvglStyleHomeAirplaneSw, tr(TXT_AIRPLANE_MODE), lvglStyleHomeAirplaneToggleEvent);
@@ -2847,7 +2865,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
                 lv_obj_set_width(ta, lv_pct(100));
                 lv_textarea_set_one_line(ta, true);
                 lv_textarea_set_placeholder_text(ta, ph);
-                lv_textarea_set_password_mode(ta, pass);
+                if (pass) lvglConfigureSingleLinePasswordTa(ta);
                 if (numeric) lv_textarea_set_accepted_chars(ta, "0123456789");
                 lv_obj_add_event_cb(ta, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
                 return ta;
@@ -2868,9 +2886,8 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglMqttPassTa = lv_textarea_create(mqttPwdRow);
             lv_obj_set_width(lvglMqttPassTa, lv_pct(100));
             lv_obj_set_flex_grow(lvglMqttPassTa, 1);
-            lv_textarea_set_one_line(lvglMqttPassTa, true);
+            lvglConfigureSingleLinePasswordTa(lvglMqttPassTa);
             lv_textarea_set_placeholder_text(lvglMqttPassTa, "Password");
-            lv_textarea_set_password_mode(lvglMqttPassTa, true);
             lv_obj_add_event_cb(lvglMqttPassTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
 
             lvglMqttPassShowBtn = lv_btn_create(mqttPwdRow);
@@ -2931,20 +2948,94 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglRefreshMqttConfigUi();
             break;
         }
-        case UI_CONFIG_MQTT_CONTROLS:
-            lvglScrMqttCtrl = lvglCreateScreenBase("MQTT Controls", false);
-            lvglMqttCtrlList = lv_obj_create(lvglScrMqttCtrl);
-            lv_obj_set_size(lvglMqttCtrlList, lv_pct(100), UI_CONTENT_H);
-            lv_obj_align(lvglMqttCtrlList, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
-            lv_obj_set_style_bg_color(lvglMqttCtrlList, lv_color_hex(0x111922), 0);
+        case UI_CONFIG_MQTT_CONTROLS: {
+            lvglScrMqttCtrl = lvglCreateScreenBase("MQTT Controls", true);
+            lv_obj_t *wrap = lv_obj_create(lvglScrMqttCtrl);
+            lv_obj_set_size(wrap, lv_pct(100), UI_CONTENT_H);
+            lv_obj_align(wrap, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
+            lv_obj_set_style_bg_opa(wrap, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(wrap, 0, 0);
+            lv_obj_set_style_pad_all(wrap, 10, 0);
+            lv_obj_set_style_pad_row(wrap, 10, 0);
+            lv_obj_set_flex_flow(wrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_scroll_dir(wrap, LV_DIR_VER);
+            lv_obj_set_scrollbar_mode(wrap, LV_SCROLLBAR_MODE_OFF);
+
+            lvglCreateMenuButton(wrap, tr(TXT_BUTTON_CONFIG), lv_color_hex(0x7A5C2E), lvglOpenMqttButtonConfigScreenEvent, nullptr);
+
+            lvglMqttCtrlList = lv_obj_create(wrap);
+            lv_obj_set_size(lvglMqttCtrlList, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(lvglMqttCtrlList, LV_OPA_TRANSP, 0);
             lv_obj_set_style_border_width(lvglMqttCtrlList, 0, 0);
-            lv_obj_set_style_pad_all(lvglMqttCtrlList, 8, 0);
-            lv_obj_set_style_pad_row(lvglMqttCtrlList, 6, 0);
+            lv_obj_set_style_pad_all(lvglMqttCtrlList, 0, 0);
+            lv_obj_set_style_pad_row(lvglMqttCtrlList, 10, 0);
             lv_obj_set_flex_flow(lvglMqttCtrlList, LV_FLEX_FLOW_COLUMN);
-            lv_obj_set_scroll_dir(lvglMqttCtrlList, LV_DIR_VER);
-            lv_obj_set_scrollbar_mode(lvglMqttCtrlList, LV_SCROLLBAR_MODE_OFF);
+            lv_obj_clear_flag(lvglMqttCtrlList, LV_OBJ_FLAG_SCROLLABLE);
+
             lvglRefreshMqttControlsUi();
             break;
+        }
+        case UI_CONFIG_MQTT_BUTTONS: {
+            lvglScrMqttButtonConfig = lvglCreateScreenBase(tr(TXT_BUTTON_CONFIG), false);
+            lv_obj_t *wrap = lv_obj_create(lvglScrMqttButtonConfig);
+            lv_obj_set_size(wrap, lv_pct(100), UI_CONTENT_H);
+            lv_obj_align(wrap, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
+            lv_obj_set_style_bg_opa(wrap, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(wrap, 0, 0);
+            lv_obj_set_style_pad_all(wrap, 10, 0);
+            lv_obj_set_style_pad_row(wrap, 10, 0);
+            lv_obj_set_flex_flow(wrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_scrollbar_mode(wrap, LV_SCROLLBAR_MODE_OFF);
+            lv_obj_clear_flag(wrap, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *topRow = lv_obj_create(wrap);
+            lv_obj_set_size(topRow, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(topRow, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(topRow, 0, 0);
+            lv_obj_set_style_pad_all(topRow, 0, 0);
+            lv_obj_set_style_pad_column(topRow, 6, 0);
+            lv_obj_set_flex_flow(topRow, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(topRow, LV_OBJ_FLAG_SCROLLABLE);
+
+            makeSmallBtn(topRow, "+", 44, 30, lv_color_hex(0x2F7A45), lvglMqttButtonAddEvent, nullptr);
+            makeSmallBtn(topRow, "Sel", 54, 30, lv_color_hex(0x2F6D86), lvglMqttButtonSelectModeEvent, nullptr);
+            makeSmallBtn(topRow, "Del", 54, 30, lv_color_hex(0x8A3A3A), lvglMqttButtonDeletePromptEvent, nullptr);
+
+            lv_obj_t *headerRow = lv_obj_create(wrap);
+            lv_obj_set_size(headerRow, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(headerRow, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(headerRow, 0, 0);
+            lv_obj_set_style_pad_all(headerRow, 0, 0);
+            lv_obj_set_style_pad_column(headerRow, 6, 0);
+            lv_obj_set_flex_flow(headerRow, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(headerRow, LV_OBJ_FLAG_SCROLLABLE);
+
+            auto makeHeaderLabel = [&](const char *txt, lv_coord_t w) {
+                lv_obj_t *lbl = lv_label_create(headerRow);
+                lv_obj_set_width(lbl, w);
+                lv_label_set_text(lbl, txt);
+                lv_obj_set_style_text_color(lbl, lv_color_hex(0xAFC3D7), 0);
+                lv_obj_set_style_text_font(lbl, LV_FONT_DEFAULT, 0);
+            };
+
+            makeHeaderLabel("", 24);
+            makeHeaderLabel("Name", DISPLAY_WIDTH - 172);
+            makeHeaderLabel("Conf", 44);
+            makeHeaderLabel("Tgl", 44);
+
+            lvglMqttButtonConfigList = lv_obj_create(wrap);
+            lv_obj_set_size(lvglMqttButtonConfigList, lv_pct(100), UI_CONTENT_H - 90);
+            lv_obj_set_style_bg_opa(lvglMqttButtonConfigList, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(lvglMqttButtonConfigList, 0, 0);
+            lv_obj_set_style_pad_all(lvglMqttButtonConfigList, 0, 0);
+            lv_obj_set_style_pad_row(lvglMqttButtonConfigList, 8, 0);
+            lv_obj_set_flex_flow(lvglMqttButtonConfigList, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_scroll_dir(lvglMqttButtonConfigList, LV_DIR_VER);
+            lv_obj_set_scrollbar_mode(lvglMqttButtonConfigList, LV_SCROLLBAR_MODE_OFF);
+
+            lvglRefreshMqttButtonConfigUi();
+            break;
+        }
         case UI_GAME_SNAKE: {
             lvglScrSnake = lvglCreateScreenBase("Snake", false);
             const lv_coord_t snakeControlsHeight = 108;
@@ -3530,8 +3621,13 @@ static void lvglNavigateBackFromScreen(UiScreen sourceScreen, lv_scr_load_anim_t
             lvglOpenScreen(UI_GAMES, anim);
             break;
         case UI_CONFIG_MQTT_CONFIG:
-        case UI_CONFIG_MQTT_CONTROLS:
             lvglOpenScreen(UI_CONFIG, anim);
+            break;
+        case UI_CONFIG_MQTT_CONTROLS:
+            lvglOpenScreen(UI_HOME, anim);
+            break;
+        case UI_CONFIG_MQTT_BUTTONS:
+            lvglOpenScreen(UI_CONFIG_MQTT_CONTROLS, anim);
             break;
         default:
             break;
@@ -3554,11 +3650,15 @@ void lvglNavigateBackBySwipe(lv_scr_load_anim_t anim)
 
 void lvglHomeNavEvent(lv_event_t *e)
 {
+    if (lvglClickSuppressed() || lvglReorderDrag.active) return;
     const UiScreen target = static_cast<UiScreen>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
     if (target == UI_CHAT) {
         lvglHideChatMenu();
         currentChatPeerKey = "";
         chatClearCache();
+    } else if (target == UI_CONFIG_MQTT_CONTROLS) {
+        lvglEnsureScreenBuilt(UI_CONFIG_MQTT_CONTROLS);
+        lvglRefreshMqttControlsUi();
     }
     lvglOpenScreen(target, LV_SCR_LOAD_ANIM_MOVE_LEFT);
 }
@@ -3685,6 +3785,7 @@ void lvglPowerDialogEvent(lv_event_t *e)
 void lvglPowerButtonEvent(lv_event_t *e)
 {
     (void)e;
+    if (lvglClickSuppressed() || lvglReorderDrag.active) return;
     if (POWER_OFF_SIGNAL_PIN < 0) {
         lvglStatusPush("Power signal unavailable");
         return;
@@ -4379,6 +4480,7 @@ void lvglRefreshChatContactsUi()
     lv_obj_clean(lvglChatContacts);
 
     bool hasContacts = false;
+    if (chatPeerHasHistory("ha_inbox")) hasContacts = true;
     for (int i = 0; i < p2pPeerCount; ++i) {
         if (!p2pPeers[i].enabled) continue;
         hasContacts = true;
@@ -4409,6 +4511,39 @@ void lvglRefreshChatContactsUi()
         lvglRegisterStyledButton(b, col, conversationOpen);
         return b;
     };
+
+    if (chatPeerHasHistory("ha_inbox")) {
+        lv_color_t col = currentChatPeerKey == "ha_inbox" ? lv_color_hex(0x3A7A3A) : lv_color_hex(0x5B4B8A);
+        lv_obj_t *btn = makeContactBtn(
+            lvglChatContacts,
+            "Home Assistant",
+            col,
+            [](lv_event_t *e) {
+                (void)e;
+                chatScheduleOpenPeerConversation("ha_inbox");
+            },
+            nullptr);
+        if (btn) {
+            lvglRegisterReorderableItem(btn, "ord_ctc", "ha_inbox");
+            lv_obj_t *nameLabel = lv_label_create(btn);
+            if (nameLabel) {
+                lv_label_set_text(nameLabel, "Home Assistant");
+                lv_obj_align(nameLabel, LV_ALIGN_LEFT_MID, 10, 0);
+                lvglRegisterStyledButton(btn, col, !currentChatPeerKey.isEmpty());
+            }
+            if (haChatUnread) {
+                lv_obj_t *dot = lv_obj_create(btn);
+                if (dot) {
+                    lv_obj_set_size(dot, 10, 10);
+                    lv_obj_align(dot, LV_ALIGN_RIGHT_MID, -10, 0);
+                    lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+                    lv_obj_set_style_bg_color(dot, lv_color_hex(0x66DD77), 0);
+                    lv_obj_set_style_border_width(dot, 0, 0);
+                    lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+                }
+            }
+        }
+    }
 
     for (int i = 0; i < p2pPeerCount; ++i) {
         if (!p2pPeers[i].enabled) continue;

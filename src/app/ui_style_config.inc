@@ -79,6 +79,7 @@ static void saveHomeScreenPrefs()
     uiPrefs.putBool("home_media", homeMediaVisible);
     uiPrefs.putBool("home_info", homeInfoVisible);
     uiPrefs.putBool("home_games", homeGamesVisible);
+    uiPrefs.putBool("home_mqtt", homeMqttVisible);
     uiPrefs.putBool("home_cfg", homeConfigVisible);
     uiPrefs.putBool("home_power", homePowerVisible);
     uiPrefs.putBool("home_air", homeAirplaneVisible);
@@ -101,6 +102,7 @@ void lvglStyleHomeRadioToggleEvent(lv_event_t *e) { lvglHandleHomeVisibilityTogg
 void lvglStyleHomeMediaToggleEvent(lv_event_t *e) { lvglHandleHomeVisibilityToggle(e, homeMediaVisible); }
 void lvglStyleHomeInfoToggleEvent(lv_event_t *e) { lvglHandleHomeVisibilityToggle(e, homeInfoVisible); }
 void lvglStyleHomeGamesToggleEvent(lv_event_t *e) { lvglHandleHomeVisibilityToggle(e, homeGamesVisible); }
+void lvglStyleHomeMqttToggleEvent(lv_event_t *e) { lvglHandleHomeVisibilityToggle(e, homeMqttVisible); }
 void lvglStyleHomeConfigToggleEvent(lv_event_t *e) { lvglHandleHomeVisibilityToggle(e, homeConfigVisible); }
 void lvglStyleHomePowerToggleEvent(lv_event_t *e) { lvglHandleHomeVisibilityToggle(e, homePowerVisible); }
 void lvglStyleHomeAirplaneToggleEvent(lv_event_t *e) { lvglHandleHomeVisibilityToggle(e, homeAirplaneVisible); }

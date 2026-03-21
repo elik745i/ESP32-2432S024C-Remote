@@ -46,6 +46,7 @@ void appendUiSettings(JsonDocument &doc)
     doc["HomeMediaVisible"] = homeMediaVisible ? 1 : 0;
     doc["HomeInfoVisible"] = homeInfoVisible ? 1 : 0;
     doc["HomeGamesVisible"] = homeGamesVisible ? 1 : 0;
+    doc["HomeMqttVisible"] = homeMqttVisible ? 1 : 0;
     doc["HomeConfigVisible"] = homeConfigVisible ? 1 : 0;
     doc["HomePowerVisible"] = homePowerVisible ? 1 : 0;
     doc["HomeAirplaneVisible"] = homeAirplaneVisible ? 1 : 0;
@@ -100,6 +101,7 @@ void loadUiRuntimeConfig()
     homeMediaVisible = uiPrefs.getBool("home_media", true);
     homeInfoVisible = uiPrefs.getBool("home_info", true);
     homeGamesVisible = uiPrefs.getBool("home_games", true);
+    homeMqttVisible = uiPrefs.getBool("home_mqtt", true);
     homeConfigVisible = uiPrefs.getBool("home_cfg", true);
     homePowerVisible = uiPrefs.getBool("home_power", true);
     homeAirplaneVisible = uiPrefs.getBool("home_air", true);
@@ -516,6 +518,14 @@ bool handleUiSettingMessage(const char *msg)
     else if (strcmp(key, "HomeGamesVisible") == 0) {
         homeGamesVisible = atoi(value) != 0;
         uiPrefs.putBool("home_games", homeGamesVisible);
+        if (lvglReady) {
+            lvglRefreshHomeButtonVisibility();
+            lvglRefreshStyleHomeItemsUi();
+        }
+    }
+    else if (strcmp(key, "HomeMqttVisible") == 0) {
+        homeMqttVisible = atoi(value) != 0;
+        uiPrefs.putBool("home_mqtt", homeMqttVisible);
         if (lvglReady) {
             lvglRefreshHomeButtonVisibility();
             lvglRefreshStyleHomeItemsUi();
@@ -1049,13 +1059,16 @@ void loadMqttConfig()
     mqttCfg.username = mqttPrefs.getString("user", "");
     mqttCfg.password = mqttPrefs.getString("pass", "");
     mqttCfg.discoveryPrefix = mqttPrefs.getString("disc", "homeassistant");
-    mqttButtonCount = mqttPrefs.getInt("btn_count", 4);
-    if (mqttButtonCount < 1) mqttButtonCount = 1;
+    mqttButtonCount = mqttPrefs.getInt("btn_count", 0);
+    if (mqttButtonCount < 0) mqttButtonCount = 0;
     if (mqttButtonCount > MQTT_MAX_BUTTONS) mqttButtonCount = MQTT_MAX_BUTTONS;
     for (int i = 0; i < MQTT_MAX_BUTTONS; i++) {
         mqttButtonNames[i] = mqttPrefs.getString(("btn_" + String(i)).c_str(), "");
         if (mqttButtonNames[i].isEmpty()) mqttButtonNames[i] = mqttDefaultButtonName(i);
         mqttButtonCritical[i] = mqttPrefs.getBool(("crit_" + String(i)).c_str(), false);
+        mqttButtonToggle[i] = mqttPrefs.getBool(("tgl_" + String(i)).c_str(), false);
+        mqttButtonState[i] = mqttPrefs.getBool(("state_" + String(i)).c_str(), false);
+        mqttButtonSelected[i] = false;
     }
     mqttPrefs.end();
     if (mqttCfg.broker.isEmpty()) mqttCfg.broker = "homeassistant.local";
@@ -1077,8 +1090,16 @@ void saveMqttConfig()
     for (int i = 0; i < MQTT_MAX_BUTTONS; i++) {
         mqttPrefs.putString(("btn_" + String(i)).c_str(), mqttButtonNames[i]);
         mqttPrefs.putBool(("crit_" + String(i)).c_str(), mqttButtonCritical[i]);
+        mqttPrefs.putBool(("tgl_" + String(i)).c_str(), mqttButtonToggle[i]);
+        mqttPrefs.putBool(("state_" + String(i)).c_str(), mqttButtonState[i]);
     }
     mqttPrefs.end();
+}
+
+static void mqttRefreshStatusLabelIfVisible()
+{
+    if (!lvglReady || !lvglMqttStatusLabel || !lv_obj_is_valid(lvglMqttStatusLabel)) return;
+    lv_label_set_text_fmt(lvglMqttStatusLabel, "MQTT: %s", mqttStatusLine.c_str());
 }
 
 bool mqttConnectNow()
@@ -1086,20 +1107,24 @@ bool mqttConnectNow()
     if (!mqttCfg.enabled) {
         mqttStatusLine = "Disabled";
         mqttConnectRequested = false;
+        mqttRefreshStatusLabelIfVisible();
         if (lvglReady) lvglRefreshTopIndicators();
         return false;
     }
     if (networkSuspendedForAudio || !wifiConnectedSafe()) {
         mqttStatusLine = "No WiFi";
+        mqttRefreshStatusLabelIfVisible();
         if (lvglReady) lvglRefreshTopIndicators();
         return false;
     }
     if (!mqttHasHeapHeadroom(MQTT_MIN_FREE_HEAP_CONNECT, MQTT_MIN_LARGEST_8BIT_CONNECT, "MQTT waiting for memory")) {
+        mqttRefreshStatusLabelIfVisible();
         if (lvglReady) lvglRefreshTopIndicators();
         return false;
     }
     if (!mqttClient.setBufferSize(MQTT_CLIENT_BUFFER_SIZE)) {
         mqttStatusLine = "MQTT buffer alloc failed";
+        mqttRefreshStatusLabelIfVisible();
         if (lvglReady) lvglRefreshTopIndicators();
         return false;
     }
@@ -1108,6 +1133,7 @@ bool mqttConnectNow()
     mqttNetClient.setTimeout(250);
     if (!mqttNetClient.connect(mqttCfg.broker.c_str(), mqttCfg.port, 250)) {
         mqttStatusLine = "Broker unreachable";
+        mqttRefreshStatusLabelIfVisible();
         if (lvglReady) lvglRefreshTopIndicators();
         return false;
     }
@@ -1118,6 +1144,24 @@ bool mqttConnectNow()
         if (length > MQTT_CLIENT_BUFFER_SIZE) return;
         if (ESP.getFreeHeap() < MQTT_MIN_FREE_HEAP_PUBLISH ||
             heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < MQTT_MIN_LARGEST_8BIT_PUBLISH) return;
+
+        const String topicStr = String(topic);
+        if (topicStr == mqttHaChatCommandTopic()) {
+            String text;
+            text.reserve(length);
+            for (unsigned int j = 0; j < length; ++j) text += static_cast<char>(payload[j]);
+            mqttHandleHaChatCommand(text);
+            return;
+        }
+        for (int i = 0; i < mqttButtonCount; ++i) {
+            if (topicStr == mqttButtonCommandTopic(i)) {
+                String cmd;
+                cmd.reserve(length);
+                for (unsigned int j = 0; j < length; ++j) cmd += static_cast<char>(payload[j]);
+                mqttHandleButtonCommand(i, cmd);
+                return;
+            }
+        }
 
         JsonDocument doc;
         if (deserializeJson(doc, payload, length) != DeserializationError::Ok) return;
@@ -1224,6 +1268,7 @@ bool mqttConnectNow()
     if (!ok) {
         mqttStatusLine = "Connect failed rc=" + String(mqttClient.state());
         mqttNetClient.stop();
+        mqttRefreshStatusLabelIfVisible();
         if (lvglReady) lvglRefreshTopIndicators();
         return false;
     }
@@ -1231,11 +1276,16 @@ bool mqttConnectNow()
     mqttClient.publish(availabilityTopic.c_str(), "online", true);
     mqttClient.subscribe(mqttChatInboxTopic.c_str());
     if (!mqttChatPresenceTopic.isEmpty()) mqttClient.subscribe(mqttChatPresenceTopic.c_str());
+    mqttClient.subscribe(mqttHaChatCommandTopic().c_str());
+    for (int i = 0; i < MQTT_MAX_BUTTONS; ++i) mqttClient.subscribe(mqttButtonCommandTopic(i).c_str());
     mqttPublishPeerPresence();
     mqttDiscoveryPublished = false;
+    mqttLastStatePayload = "";
+    mqttLastStatePublishMs = 0;
     mqttStatusLine = "Connected";
     mqttConnectRequested = false;
 
+    mqttRefreshStatusLabelIfVisible();
     if (lvglReady) lvglRefreshTopIndicators();
     return true;
 }
@@ -1381,6 +1431,7 @@ void mqttService()
         mqttTrimBufferForIdle();
         mqttConnectRequested = false;
         mqttStatusLine = "No WiFi";
+        mqttRefreshStatusLabelIfVisible();
         if (wasConnected && lvglReady) lvglRefreshTopIndicators();
         return;
     }
@@ -1389,6 +1440,8 @@ void mqttService()
         if (wasConnected) mqttClient.disconnect();
         mqttTrimBufferForIdle();
         mqttConnectRequested = false;
+        mqttStatusLine = "Disabled";
+        mqttRefreshStatusLabelIfVisible();
         if (wasConnected && lvglReady) lvglRefreshTopIndicators();
         return;
     }
@@ -1398,6 +1451,7 @@ void mqttService()
         mqttTrimBufferForIdle();
         mqttConnectRequested = false;
         mqttStatusLine = "No WiFi";
+        mqttRefreshStatusLabelIfVisible();
         if (wasConnected && lvglReady) lvglRefreshTopIndicators();
         return;
     }
@@ -1410,6 +1464,7 @@ void mqttService()
     }
     mqttClient.loop();
     if (!mqttDiscoveryPublished) mqttPublishDiscovery();
+    mqttPublishStateIfNeeded();
 }
 
 void tryBootStaReconnect()

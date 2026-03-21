@@ -145,10 +145,9 @@ static void screenLockShowSetupModal()
         lvglScreenLockSetupPinTa = lv_textarea_create(lvglScreenLockModal);
         lv_obj_set_width(lvglScreenLockSetupPinTa, lv_pct(100));
         lv_obj_set_height(lvglScreenLockSetupPinTa, 36);
-        lv_textarea_set_one_line(lvglScreenLockSetupPinTa, true);
+        lvglConfigureSingleLinePasswordTa(lvglScreenLockSetupPinTa);
         lv_textarea_set_max_length(lvglScreenLockSetupPinTa, 4);
         lv_textarea_set_placeholder_text(lvglScreenLockSetupPinTa, "0000");
-        lv_textarea_set_password_mode(lvglScreenLockSetupPinTa, true);
         lv_obj_add_event_cb(lvglScreenLockSetupPinTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
         lv_obj_add_event_cb(lvglScreenLockSetupPinTa, lvglScreenLockSetupPinChangedEvent, LV_EVENT_VALUE_CHANGED, nullptr);
 
@@ -449,6 +448,7 @@ void lvglRefreshStyleHomeItemsUi()
     if (lvglStyleHomeMediaLabel) lvglLabelSetTextIfChanged(lvglStyleHomeMediaLabel, tr(TXT_MEDIA));
     if (lvglStyleHomeInfoLabel) lvglLabelSetTextIfChanged(lvglStyleHomeInfoLabel, tr(TXT_INFO));
     if (lvglStyleHomeGamesLabel) lvglLabelSetTextIfChanged(lvglStyleHomeGamesLabel, tr(TXT_GAMES));
+    if (lvglStyleHomeMqttLabel) lvglLabelSetTextIfChanged(lvglStyleHomeMqttLabel, tr(TXT_MQTT_CONTROLS));
     if (lvglStyleHomeConfigLabel) lvglLabelSetTextIfChanged(lvglStyleHomeConfigLabel, tr(TXT_CONFIG));
     if (lvglStyleHomePowerLabel) lvglLabelSetTextIfChanged(lvglStyleHomePowerLabel, tr(TXT_POWER));
     if (lvglStyleHomeAirplaneLabel) lvglLabelSetTextIfChanged(lvglStyleHomeAirplaneLabel, tr(TXT_AIRPLANE_MODE));
@@ -468,6 +468,7 @@ void lvglRefreshStyleHomeItemsUi()
     syncSwitch(lvglStyleHomeMediaSw, homeMediaVisible);
     syncSwitch(lvglStyleHomeInfoSw, homeInfoVisible);
     syncSwitch(lvglStyleHomeGamesSw, homeGamesVisible);
+    syncSwitch(lvglStyleHomeMqttSw, homeMqttVisible);
     syncSwitch(lvglStyleHomeConfigSw, homeConfigVisible);
     syncSwitch(lvglStyleHomePowerSw, homePowerVisible);
     syncSwitch(lvglStyleHomeAirplaneSw, homeAirplaneVisible);

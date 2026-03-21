@@ -342,7 +342,7 @@ static constexpr uint8_t VIBRATION_QUEUE_MAX = 4;
 #endif
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.21.06";
+static constexpr const char *FW_VERSION = "0.21.07";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -731,9 +731,16 @@ bool tetrisCellFor(int type, int rot, int i, int &ox, int &oy);
 uint8_t wifiQualityPercentFromRssi(int32_t rssi);
 void mqttPublishAction(const char *action);
 void mqttPublishButtonAction(int index);
+void mqttPublishButtonState(int index);
+void mqttHandleButtonCommand(int index, const String &payload);
+String mqttButtonCommandTopic(int idx);
+void mqttHandleHaChatCommand(const String &payload);
+String mqttHaChatStateTopic();
+String mqttHaChatReceivedTopic();
 void mqttService();
 bool mqttConnectNow();
 void mqttPublishDiscovery();
+void mqttPublishStateIfNeeded(bool force = false);
 void mqttTrimBufferForIdle();
 bool mqttPublishChatMessage(const String &text);
 bool mqttPublishChatMessageWithId(const String &peerKey, const String &text, const String &messageId);
@@ -752,6 +759,13 @@ void lvglRefreshAllButtonStyles();
 void lvglSetButtonStyleMode(UiButtonStyleMode mode, bool persist);
 void lvglRefreshStyleUi();
 void lvglRefreshLockScreenUi();
+void lvglRefreshMqttControlsUi();
+void lvglRefreshMqttButtonConfigUi();
+void lvglMqttButtonAddEvent(lv_event_t *e);
+void lvglMqttButtonSelectModeEvent(lv_event_t *e);
+void lvglMqttButtonDeletePromptEvent(lv_event_t *e);
+void lvglMqttButtonDeleteConfirmEvent(lv_event_t *e);
+void lvglMqttButtonFieldChangedEvent(lv_event_t *e);
 void lvglSoundPopupBackdropEvent(lv_event_t *e);
 void lvglSoundPopupVolumeEvent(lv_event_t *e);
 void lvglSoundPopupVibrationEvent(lv_event_t *e);
@@ -768,6 +782,7 @@ void lvglScreenLockUnlockEvent(lv_event_t *e);
 void lvglScreenLockFactoryResetEvent(lv_event_t *e);
 void lvglScreenLockSetupPinChangedEvent(lv_event_t *e);
 void lvglScreenLockPinChangedEvent(lv_event_t *e);
+void lvglOpenMqttButtonConfigScreenEvent(lv_event_t *e);
 static void factoryResetWipeStoredData();
 static void factoryResetClearNamespace(Preferences &prefs, const char *ns);
 static void factoryResetWipeSdData();
@@ -992,6 +1007,7 @@ static lv_obj_t *lvglScrHc12Terminal = nullptr;
 static lv_obj_t *lvglScrHc12Info = nullptr;
 static lv_obj_t *lvglScrMqttCfg = nullptr;
 static lv_obj_t *lvglScrMqttCtrl = nullptr;
+static lv_obj_t *lvglScrMqttButtonConfig = nullptr;
 static lv_obj_t *lvglScrSnake = nullptr;
 static lv_obj_t *lvglScrTetris = nullptr;
 static lv_obj_t *lvglScrCheckers = nullptr;
@@ -1097,6 +1113,7 @@ static lv_obj_t *lvglMqttBtnNameTa = nullptr;
 static lv_obj_t *lvglMqttEnableSw = nullptr;
 static lv_obj_t *lvglMqttCriticalSw = nullptr;
 static lv_obj_t *lvglMqttCtrlList = nullptr;
+static lv_obj_t *lvglMqttButtonConfigList = nullptr;
 static lv_obj_t *lvglChatList = nullptr;
 static lv_obj_t *lvglChatInputTa = nullptr;
 static lv_obj_t *lvglChatEmptyLabel = nullptr;
@@ -1122,6 +1139,7 @@ static lv_obj_t *lvglHomeChatBtn = nullptr;
 static lv_obj_t *lvglHomeMediaBtn = nullptr;
 static lv_obj_t *lvglHomeInfoBtn = nullptr;
 static lv_obj_t *lvglHomeGamesBtn = nullptr;
+static lv_obj_t *lvglHomeMqttControlsBtn = nullptr;
 static lv_obj_t *lvglHomeConfigBtn = nullptr;
 static lv_obj_t *lvglConfigWifiBtn = nullptr;
 static lv_obj_t *lvglConfigHc12Btn = nullptr;
@@ -1129,7 +1147,6 @@ static lv_obj_t *lvglConfigRemoteBtn = nullptr;
 static lv_obj_t *lvglConfigStyleBtn = nullptr;
 static lv_obj_t *lvglConfigBatteryBtn = nullptr;
 static lv_obj_t *lvglConfigMqttBtn = nullptr;
-static lv_obj_t *lvglConfigMqttControlsBtn = nullptr;
 static lv_obj_t *lvglConfigScreenshotBtn = nullptr;
 static lv_obj_t *lvglConfigLanguageBtn = nullptr;
 static lv_obj_t *lvglConfigOtaBtn = nullptr;
@@ -1173,6 +1190,7 @@ static lv_obj_t *lvglStyleHomeRadioSw = nullptr;
 static lv_obj_t *lvglStyleHomeMediaSw = nullptr;
 static lv_obj_t *lvglStyleHomeInfoSw = nullptr;
 static lv_obj_t *lvglStyleHomeGamesSw = nullptr;
+static lv_obj_t *lvglStyleHomeMqttSw = nullptr;
 static lv_obj_t *lvglStyleHomeConfigSw = nullptr;
 static lv_obj_t *lvglStyleHomePowerSw = nullptr;
 static lv_obj_t *lvglStyleHomeAirplaneSw = nullptr;
@@ -1182,6 +1200,7 @@ static lv_obj_t *lvglStyleHomeRadioLabel = nullptr;
 static lv_obj_t *lvglStyleHomeMediaLabel = nullptr;
 static lv_obj_t *lvglStyleHomeInfoLabel = nullptr;
 static lv_obj_t *lvglStyleHomeGamesLabel = nullptr;
+static lv_obj_t *lvglStyleHomeMqttLabel = nullptr;
 static lv_obj_t *lvglStyleHomeConfigLabel = nullptr;
 static lv_obj_t *lvglStyleHomePowerLabel = nullptr;
 static lv_obj_t *lvglStyleHomeAirplaneLabel = nullptr;
@@ -1334,6 +1353,7 @@ static unsigned long lvglLastStatusRefreshMs = 0;
 static unsigned long lvglLastMediaPlayerRefreshMs = 0;
 static bool lvglMediaPlayerVisible = false;
 static bool p2pDiscoveryEnabled = true;
+static bool haChatUnread = false;
 static bool p2pPairPromptVisible = false;
 static bool p2pPairRequestPending = false;
 static int p2pPairRequestDiscoveredIdx = -1;
@@ -1638,6 +1658,7 @@ enum UiScreen : uint8_t {
     UI_CONFIG_HC12_INFO,
     UI_CONFIG_MQTT_CONFIG,
     UI_CONFIG_MQTT_CONTROLS,
+    UI_CONFIG_MQTT_BUTTONS,
     UI_GAME_SNAKE,
     UI_GAME_TETRIS,
     UI_GAME_CHECKERS,
@@ -2313,6 +2334,7 @@ static void hc12TouchDiscoveredPeer(const String &name, const String &pubKeyHex)
 static bool chatPeerIsSelectable(const String &peerKey)
 {
     if (peerKey.isEmpty()) return false;
+    if (peerKey == "ha_inbox") return chatPeerHasHistory(peerKey);
     const int idx = p2pFindPeerByPubKeyHex(peerKey);
     if (idx >= 0 && p2pPeers[idx].enabled) return true;
     return hc12FindDiscoveredByPubKeyHex(peerKey) >= 0 || chatPeerHasHistory(peerKey);
@@ -2320,6 +2342,7 @@ static bool chatPeerIsSelectable(const String &peerKey)
 
 static bool chatHasUnreadMessages()
 {
+    if (haChatUnread) return true;
     for (int i = 0; i < p2pPeerCount; ++i) {
         if (p2pPeers[i].unread) return true;
     }
@@ -2331,6 +2354,17 @@ static bool chatHasUnreadMessages()
 
 static void chatSetPeerUnread(const String &peerKey, bool unread)
 {
+    if (peerKey == "ha_inbox") {
+        if (haChatUnread != unread) {
+            haChatUnread = unread;
+            if (lvglReady) {
+                lvglRefreshTopIndicators();
+                if (uiScreen == UI_CHAT || uiScreen == UI_CHAT_PEERS) lvglRefreshChatContactsUi();
+                if (uiScreen == UI_CHAT_PEERS) lvglRefreshChatPeerUi();
+            }
+        }
+        return;
+    }
     const int idx = p2pFindPeerByPubKeyHex(peerKey);
     const int radioIdx = hc12FindDiscoveredByPubKeyHex(peerKey);
     bool changed = false;
@@ -2653,6 +2687,7 @@ bool homeRadioVisible = true;
 bool homeMediaVisible = true;
 bool homeInfoVisible = true;
 bool homeGamesVisible = true;
+bool homeMqttVisible = true;
 bool homeConfigVisible = true;
 bool homePowerVisible = true;
 bool homeAirplaneVisible = true;
@@ -2759,9 +2794,12 @@ String mqttChatInboxTopic;
 String mqttChatPresenceTopic;
 String mqttStatusLine = "Disabled";
 bool mqttDiscoveryPublished = false;
+String mqttLastStatePayload;
 unsigned long mqttLastReconnectMs = 0;
+unsigned long mqttLastStatePublishMs = 0;
 static constexpr unsigned long MQTT_RECONNECT_MS = 5000;
 static constexpr unsigned long MQTT_DISCOVERY_STALE_MS = 60000UL;
+static constexpr unsigned long MQTT_STATE_PUBLISH_MS = 5000UL;
 bool mqttConnectRequested = false;
 static constexpr int MQTT_MAX_BUTTONS = 12;
 static constexpr const char *MQTT_CHAT_NAMESPACE = "global";
@@ -2781,9 +2819,13 @@ static constexpr unsigned long MQTT_SERVICE_INTERVAL_MS = 15UL;
 static constexpr unsigned long CHAT_PENDING_SERVICE_INTERVAL_MS = 80UL;
 static constexpr unsigned long RGB_SERVICE_INTERVAL_MS = 16UL;
 static constexpr unsigned long CAR_TELEMETRY_SERVICE_INTERVAL_MS = 50UL;
-int mqttButtonCount = 4;
+int mqttButtonCount = 0;
 String mqttButtonNames[MQTT_MAX_BUTTONS];
 bool mqttButtonCritical[MQTT_MAX_BUTTONS];
+bool mqttButtonToggle[MQTT_MAX_BUTTONS];
+bool mqttButtonState[MQTT_MAX_BUTTONS];
+bool mqttButtonSelected[MQTT_MAX_BUTTONS];
+bool mqttButtonSelectionMode = false;
 File screenshotJpegFile;
 String screenshotJpegPath;
 
@@ -3795,8 +3837,11 @@ static bool lvglGetSwipeBackPreviewTarget(UiScreen current, UiScreen &target)
         case UI_CONFIG_OTA:
         case UI_CONFIG_HC12:
         case UI_CONFIG_MQTT_CONFIG:
-        case UI_CONFIG_MQTT_CONTROLS:
+        case UI_CONFIG_MQTT_BUTTONS:
             target = UI_CONFIG;
+            return true;
+        case UI_CONFIG_MQTT_CONTROLS:
+            target = UI_HOME;
             return true;
         case UI_CONFIG_RADIO_BUTTONS:
             target = UI_RADIO_CONTROL;
@@ -5011,6 +5056,7 @@ static const char *uiScreenName(UiScreen screen)
         case UI_CONFIG_HC12_INFO: return tr(TXT_HC12_INFO);
         case UI_CONFIG_MQTT_CONFIG: return tr(TXT_MQTT_CONFIG);
         case UI_CONFIG_MQTT_CONTROLS: return tr(TXT_MQTT_CONTROLS);
+        case UI_CONFIG_MQTT_BUTTONS: return tr(TXT_BUTTON_CONFIG);
         case UI_GAME_CHECKERS: return tr(TXT_CHECKERS);
         case UI_GAME_SNAKE3D: return tr(TXT_SNAKE_3D);
         default: return tr(TXT_SCREEN);
@@ -5027,6 +5073,7 @@ static bool lvglCanBuildScreen(UiScreen screen)
         case UI_CHAT_PEERS:
         case UI_CONFIG_MQTT_CONFIG:
         case UI_CONFIG_MQTT_CONTROLS:
+        case UI_CONFIG_MQTT_BUTTONS:
             freeMin = 22000U;
             largestMin = 9000U;
             break;
@@ -5093,7 +5140,8 @@ static void lvglWarmupScreensService(bool uiPriorityActive)
         UI_CONFIG_HC12_TERMINAL,
         UI_CONFIG_HC12_INFO,
         UI_CONFIG_MQTT_CONFIG,
-        UI_CONFIG_MQTT_CONTROLS
+        UI_CONFIG_MQTT_CONTROLS,
+        UI_CONFIG_MQTT_BUTTONS
     };
     const unsigned long now = millis();
     if (static_cast<unsigned long>(now - lastUserActivityMs) < UI_WARMUP_IDLE_AFTER_INPUT_MS) return;
@@ -5166,6 +5214,7 @@ struct UiReorderDragState {
     bool active;
     bool cancelled;
     bool parentOverflowTemporarilyEnabled;
+    bool parentScrollTemporarilyDisabled;
 };
 
 static LvglReorderItemEntry *lvglReorderItems = nullptr;
@@ -5354,6 +5403,9 @@ static void lvglEndReorderDrag(bool persistOrder)
     if (lvglReorderDrag.parentOverflowTemporarilyEnabled && parent && lv_obj_is_valid(parent)) {
         lv_obj_clear_flag(parent, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
     }
+    if (lvglReorderDrag.parentScrollTemporarilyDisabled && parent && lv_obj_is_valid(parent)) {
+        lv_obj_add_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+    }
 
     if (persistOrder && parent && lv_obj_is_valid(parent) && entry) {
         lvglPersistReorderForParent(parent, entry->prefKey);
@@ -5402,6 +5454,7 @@ static void lvglReorderItemEvent(lv_event_t *e)
         lvglReorderDrag.active = false;
         lvglReorderDrag.cancelled = false;
         lvglReorderDrag.parentOverflowTemporarilyEnabled = false;
+        lvglReorderDrag.parentScrollTemporarilyDisabled = false;
         return;
     }
 
@@ -5435,6 +5488,10 @@ static void lvglReorderItemEvent(lv_event_t *e)
             if (!lv_obj_has_flag(entry->parent, LV_OBJ_FLAG_OVERFLOW_VISIBLE)) {
                 lv_obj_add_flag(entry->parent, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
                 lvglReorderDrag.parentOverflowTemporarilyEnabled = true;
+            }
+            if (lv_obj_has_flag(entry->parent, LV_OBJ_FLAG_SCROLLABLE)) {
+                lv_obj_clear_flag(entry->parent, LV_OBJ_FLAG_SCROLLABLE);
+                lvglReorderDrag.parentScrollTemporarilyDisabled = true;
             }
             const lv_coord_t dragWidth = static_cast<lv_coord_t>(lvglReorderDrag.originalWidth + max<lv_coord_t>(8, lvglReorderDrag.originalWidth / 8));
             const lv_coord_t dragHeight = static_cast<lv_coord_t>(lvglReorderDrag.originalHeight + max<lv_coord_t>(4, lvglReorderDrag.originalHeight / 8));
@@ -5852,6 +5909,7 @@ static void lvglRefreshPrimaryMenuButtonIcons()
     lvglSetMenuButtonIconMode(lvglHomeMediaBtn, tr(TXT_MEDIA), LV_SYMBOL_AUDIO, &img_music_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(lvglHomeInfoBtn, tr(TXT_INFO), LV_SYMBOL_WARNING, &img_info_small_icon);
     lvglSetMenuButtonIconMode(lvglHomeGamesBtn, tr(TXT_GAMES), LV_SYMBOL_PLAY, &img_games_small_icon);
+    lvglSetMenuButtonIconMode(lvglHomeMqttControlsBtn, tr(TXT_MQTT_CONTROLS), LV_SYMBOL_LIST, &img_mqtt_controls_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(lvglHomeConfigBtn, tr(TXT_CONFIG), LV_SYMBOL_SETTINGS, &img_config_small_icon);
     lvglSetMenuButtonIconMode(lvglHomePowerBtn, tr(TXT_POWER), LV_SYMBOL_POWER, &img_power_small_icon);
     if (menuCustomIconsEnabled) lvglSetButtonImageZoom(lvglHomePowerBtn, 205, 10, 12);
@@ -5872,7 +5930,6 @@ static void lvglRefreshPrimaryMenuButtonIcons()
     lvglSetMenuButtonIconMode(lvglConfigRemoteBtn, tr(TXT_REMOTE_CONTROL), LV_SYMBOL_HOME, &img_radio_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(lvglConfigStyleBtn, tr(TXT_SCREEN), LV_SYMBOL_SETTINGS, &img_styles_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(lvglConfigMqttBtn, tr(TXT_MQTT_CONFIG), LV_SYMBOL_SETTINGS, &img_mqtt_conf_small_icon, 8, 12);
-    lvglSetMenuButtonIconMode(lvglConfigMqttControlsBtn, tr(TXT_MQTT_CONTROLS), LV_SYMBOL_LIST, &img_mqtt_controls_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(lvglConfigScreenshotBtn, tr(TXT_SCREENSHOT), LV_SYMBOL_IMAGE, &img_screenshot_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(lvglConfigLanguageBtn, tr(TXT_LANGUAGE), LV_SYMBOL_EDIT, &img_styles_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(lvglConfigOtaBtn, tr(TXT_OTA_UPDATES), LV_SYMBOL_UPLOAD, &img_ota_small_icon, 8, 12);
@@ -5901,6 +5958,7 @@ static void lvglRefreshHomeButtonVisibility()
     lvglSetHomeButtonVisibleState(lvglHomeMediaBtn, homeMediaVisible);
     lvglSetHomeButtonVisibleState(lvglHomeInfoBtn, homeInfoVisible);
     lvglSetHomeButtonVisibleState(lvglHomeGamesBtn, homeGamesVisible);
+    lvglSetHomeButtonVisibleState(lvglHomeMqttControlsBtn, homeMqttVisible);
     lvglSetHomeButtonVisibleState(lvglHomeConfigBtn, homeConfigVisible);
     lvglSetHomeButtonVisibleState(lvglHomePowerBtn, homePowerVisible);
     lvglSetHomeButtonVisibleState(lvglAirplaneBtn, homeAirplaneVisible);
@@ -6571,6 +6629,7 @@ static bool chatPeerHasHistory(const String &peerKey)
 
 static String chatDisplayNameForPeerKey(const String &peerKey)
 {
+    if (peerKey == "ha_inbox") return "Home Assistant";
     const int idx = p2pFindPeerByPubKeyHex(peerKey);
     if (idx >= 0 && !p2pPeers[idx].name.isEmpty()) return p2pPeers[idx].name;
     const int radioIdx = hc12FindDiscoveredByPubKeyHex(peerKey);
@@ -6887,6 +6946,7 @@ static bool chatPeerUsesRadioPath(const String &peerKey)
 
 static bool chatPeerBlockedByAirplaneMode(const String &peerKey)
 {
+    if (peerKey == "ha_inbox") return false;
     if (!airplaneModeEnabled) return false;
     return !chatPeerUsesRadioPath(peerKey);
 }
@@ -7223,6 +7283,18 @@ static bool chatSendRawReliableMessage(const String &peerKey, const String &text
 {
     if (peerKey.isEmpty() || text.isEmpty()) return false;
     if (chatPeerBlockedByAirplaneMode(peerKey)) return false;
+    if (peerKey == "ha_inbox") {
+        const String messageId = "dev_" + chatGenerateMessageId();
+        const bool published = mqttClient.connected() ? mqttClient.publish(mqttHaChatReceivedTopic().c_str(), text.c_str(), true) : false;
+        if (storeVisible) {
+            chatStoreMessage(peerKey, "Me", text, true, CHAT_TRANSPORT_MQTT, messageId);
+            if (lvglReady) {
+                if (uiScreen == UI_CHAT) lvglRefreshChatUi();
+                lvglRefreshChatContactsUi();
+            }
+        }
+        return published || storeVisible;
+    }
     const String messageId = chatGenerateMessageId();
     chatQueueOutgoingMessage(peerKey, deviceShortNameValue(), text, messageId);
     const bool sentLan = p2pSendChatMessageWithId(peerKey, text, messageId);
@@ -7507,6 +7579,10 @@ static void radioChatService()
 static void chatSelectFirstEnabledPeer()
 {
     currentChatPeerKey = "";
+    if (chatPeerHasHistory("ha_inbox")) {
+        currentChatPeerKey = "ha_inbox";
+        return;
+    }
     for (int i = 0; i < p2pPeerCount; ++i) {
         if (p2pPeers[i].enabled && chatPeerHasHistory(p2pPeers[i].pubKeyHex)) {
             currentChatPeerKey = p2pPeers[i].pubKeyHex;
@@ -7576,6 +7652,7 @@ static void lvglDeferredChatOpenFirstUnreadCallback(void *param)
 
 static bool chatOpenFirstUnreadConversation()
 {
+    if (haChatUnread) return chatOpenPeerConversation("ha_inbox");
     for (int i = 0; i < p2pPeerCount; ++i) {
         if (p2pPeers[i].enabled && p2pPeers[i].unread) {
             return chatOpenPeerConversation(p2pPeers[i].pubKeyHex);
@@ -7742,6 +7819,30 @@ void lvglKeyboardEnsureFocusedVisible(bool animated)
 {
     if (!lvglKeyboardFocusedTa || !lv_obj_is_valid(lvglKeyboardFocusedTa)) return;
     lv_obj_scroll_to_view_recursive(lvglKeyboardFocusedTa, animated ? LV_ANIM_ON : LV_ANIM_OFF);
+}
+
+static void lvglSingleLinePasswordValueChangedEvent(lv_event_t *e)
+{
+    lv_obj_t *ta = e ? lv_event_get_target(e) : nullptr;
+    if (!ta || !lv_obj_is_valid(ta)) return;
+    lv_obj_scroll_to_y(ta, 0, LV_ANIM_OFF);
+}
+
+static void lvglApplySingleLinePasswordTaState(lv_obj_t *ta)
+{
+    if (!ta || !lv_obj_is_valid(ta)) return;
+    lv_textarea_set_one_line(ta, true);
+    lv_textarea_set_password_mode(ta, true);
+    lv_obj_set_scroll_dir(ta, LV_DIR_HOR);
+    lv_obj_set_scrollbar_mode(ta, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_scroll_to_y(ta, 0, LV_ANIM_OFF);
+}
+
+static void lvglConfigureSingleLinePasswordTa(lv_obj_t *ta)
+{
+    if (!ta || !lv_obj_is_valid(ta)) return;
+    lvglApplySingleLinePasswordTaState(ta);
+    lv_obj_add_event_cb(ta, lvglSingleLinePasswordValueChangedEvent, LV_EVENT_VALUE_CHANGED, nullptr);
 }
 
 void lvglKeyboardRefreshLayout()
@@ -9105,9 +9206,8 @@ void lvglOpenWifiPasswordDialog(const String &ssid)
         lvglWifiPwdTa = lv_textarea_create(lvglWifiPwdInputRow);
         lv_obj_set_width(lvglWifiPwdTa, 160);
         lv_obj_set_height(lvglWifiPwdTa, 34);
-        lv_textarea_set_one_line(lvglWifiPwdTa, true);
         lv_textarea_set_max_length(lvglWifiPwdTa, 16);
-        lv_textarea_set_password_mode(lvglWifiPwdTa, true);
+        lvglConfigureSingleLinePasswordTa(lvglWifiPwdTa);
         lv_textarea_set_placeholder_text(lvglWifiPwdTa, "Password");
         lv_obj_add_event_cb(lvglWifiPwdTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
 
@@ -9163,7 +9263,7 @@ void lvglOpenWifiPasswordDialog(const String &ssid)
     if (lvglWifiPwdSsidLabel) lv_label_set_text_fmt(lvglWifiPwdSsidLabel, "SSID: %s", ssid.c_str());
     if (lvglWifiPwdTa) {
         lv_textarea_set_text(lvglWifiPwdTa, "");
-        lv_textarea_set_password_mode(lvglWifiPwdTa, true);
+        lvglApplySingleLinePasswordTaState(lvglWifiPwdTa);
     }
     if (lvglWifiPwdShowBtnLabel) lv_label_set_text(lvglWifiPwdShowBtnLabel, LV_SYMBOL_EYE_OPEN);
     if (lvglWifiPwdStatusLabel) lv_label_set_text(lvglWifiPwdStatusLabel, "");
@@ -9175,39 +9275,343 @@ void lvglOpenWifiPasswordDialog(const String &ssid)
     }
 }
 
+static String mqttAvailabilityTopic()
+{
+    return "esp32/remote/" + mqttHwId + "/availability";
+}
+
+static String mqttStateTopic()
+{
+    return "esp32/remote/" + mqttHwId + "/state";
+}
+
+String mqttButtonCommandTopic(int idx)
+{
+    return "esp32/remote/" + mqttHwId + "/control/" + String(idx) + "/set";
+}
+
+static String mqttButtonStateTopic(int idx)
+{
+    return "esp32/remote/" + mqttHwId + "/control/" + String(idx) + "/state";
+}
+
+static String mqttHaChatCommandTopic()
+{
+    return "esp32/remote/" + mqttHwId + "/chat/ha/set";
+}
+
+String mqttHaChatStateTopic()
+{
+    return "esp32/remote/" + mqttHwId + "/chat/ha/state";
+}
+
+String mqttHaChatReceivedTopic()
+{
+    return "esp32/remote/" + mqttHwId + "/chat/ha/received";
+}
+
+static bool mqttParseBoolPayload(const String &payload, bool currentValue, bool &parsedValue)
+{
+    String normalized = payload;
+    normalized.trim();
+    normalized.toUpperCase();
+    if (normalized == "ON" || normalized == "1" || normalized == "TRUE") {
+        parsedValue = true;
+        return true;
+    }
+    if (normalized == "OFF" || normalized == "0" || normalized == "FALSE") {
+        parsedValue = false;
+        return true;
+    }
+    if (normalized == "TOGGLE") {
+        parsedValue = !currentValue;
+        return true;
+    }
+    return false;
+}
+
+static String mqttDiscoveryDeviceName()
+{
+    const String name = deviceShortNameValue();
+    return name.isEmpty() ? mqttDeviceName : name;
+}
+
+static void mqttFillDiscoveryDevice(JsonObject dev)
+{
+    JsonArray ids = dev["identifiers"].to<JsonArray>();
+    ids.add(mqttNodeId);
+    dev["name"] = mqttDiscoveryDeviceName();
+    dev["model"] = DEVICE_MODEL;
+    dev["manufacturer"] = "Elik";
+    dev["sw_version"] = FW_VERSION;
+    if (wifiConnectedSafe()) dev["configuration_url"] = "http://" + wifiIpSafe();
+}
+
+static bool mqttPublishDiscoveryConfig(const String &topic, JsonDocument &doc)
+{
+    String payload;
+    serializeJson(doc, payload);
+    return mqttClient.publish(topic.c_str(), payload.c_str(), true);
+}
+
+void mqttPublishStateIfNeeded(bool force)
+{
+    if (!mqttClient.connected()) return;
+
+    const unsigned long now = millis();
+    if (!force && static_cast<unsigned long>(now - mqttLastStatePublishMs) < MQTT_STATE_PUBLISH_MS) return;
+
+    const bool wifiConnected = wifiConnectedSafe();
+    const int32_t wifiRssi = wifiConnected ? WiFi.RSSI() : -127;
+    const uint8_t wifiQuality = wifiConnected ? wifiQualityPercentFromRssi(wifiRssi) : 0;
+    const bool unreadMessages = chatHasUnreadMessages();
+    const uint32_t freeHeapKb = static_cast<uint32_t>(ESP.getFreeHeap() / 1024U);
+    const uint32_t largest8Kb = static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) / 1024U);
+
+    JsonDocument doc;
+    doc["device_name"] = mqttDiscoveryDeviceName();
+    doc["firmware"] = FW_VERSION;
+    doc["model"] = DEVICE_MODEL;
+    doc["battery_percent"] = batteryPercent;
+    doc["battery_voltage"] = roundf(batteryVoltage * 100.0f) / 100.0f;
+    doc["battery_charging"] = batteryCharging;
+    doc["wifi_connected"] = wifiConnected;
+    doc["wifi_rssi"] = wifiRssi;
+    doc["wifi_quality"] = wifiQuality;
+    doc["wifi_ssid"] = wifiConnected ? wifiSsidSafe() : String("");
+    doc["ip_address"] = wifiConnected ? wifiIpSafe() : String("");
+    doc["illumination"] = lightPercent;
+    doc["display_brightness"] = displayBrightnessPercent;
+    doc["rgb_led_brightness"] = rgbLedPercent;
+    doc["airplane_mode"] = airplaneModeEnabled;
+    doc["ap_mode"] = apModeActive;
+    doc["web_server"] = webServerEnabled;
+    doc["messages_waiting"] = unreadMessages;
+    doc["queued_messages"] = chatPendingCount;
+    doc["paired_peers"] = p2pPeerCount;
+    doc["radio_peers"] = hc12DiscoveredCount;
+    doc["mqtt_peers"] = mqttDiscoveredCount;
+    doc["status"] = uiStatusLine;
+    doc["uptime_s"] = now / 1000UL;
+    doc["free_heap_kb"] = freeHeapKb;
+    doc["largest_block_kb"] = largest8Kb;
+
+    String payload;
+    serializeJson(doc, payload);
+    if (!force && payload == mqttLastStatePayload) return;
+
+    mqttLastStatePayload = payload;
+    mqttLastStatePublishMs = now;
+    mqttClient.publish(mqttStateTopic().c_str(), payload.c_str(), true);
+}
+
+void mqttPublishButtonState(int index)
+{
+    if (!mqttClient.connected() || index < 0 || index >= mqttButtonCount || !mqttButtonToggle[index]) return;
+    mqttClient.publish(mqttButtonStateTopic(index).c_str(), mqttButtonState[index] ? "ON" : "OFF", true);
+}
+
+void mqttHandleButtonCommand(int index, const String &payload)
+{
+    if (index < 0 || index >= mqttButtonCount) return;
+
+    if (mqttButtonToggle[index]) {
+        bool nextState = mqttButtonState[index];
+        if (!mqttParseBoolPayload(payload, mqttButtonState[index], nextState)) return;
+        mqttButtonState[index] = nextState;
+        saveMqttConfig();
+        mqttPublishButtonState(index);
+
+        const String baseAction = mqttButtonPayloadForIndex(index);
+        const String action = baseAction + (nextState ? "_on" : "_off");
+        mqttPublishAction(action.c_str());
+        lvglStatusPush("Action: " + action);
+    } else {
+        const String action = mqttButtonPayloadForIndex(index);
+        mqttPublishAction(action.c_str());
+        lvglStatusPush("Action: " + action);
+    }
+
+    if (lvglReady) lvglRefreshMqttControlsUi();
+    mqttPublishStateIfNeeded(true);
+}
+
+void mqttHandleHaChatCommand(const String &payload)
+{
+    String text = payload;
+    text.trim();
+    if (text.isEmpty()) return;
+    if (text.length() > P2P_MAX_CHAT_TEXT) text.remove(P2P_MAX_CHAT_TEXT);
+
+    const String peerKey = "ha_inbox";
+    const String messageId = "ha_" + chatGenerateMessageId();
+    chatStoreMessage(peerKey, "Home Assistant", text, false, CHAT_TRANSPORT_MQTT, messageId);
+    uiStatusLine = "HA chat from Home Assistant";
+    if (lvglReady) {
+        lvglSyncStatusLine();
+        lvglRefreshChatContactsUi();
+        if (uiScreen == UI_CHAT && currentChatPeerKey == peerKey) lvglRefreshChatUi();
+    }
+    mqttPublishStateIfNeeded(true);
+}
+
 void mqttPublishDiscovery()
 {
     if (!mqttClient.connected()) return;
     if (!mqttHasHeapHeadroom(MQTT_MIN_FREE_HEAP_PUBLISH, MQTT_MIN_LARGEST_8BIT_PUBLISH, "MQTT discovery deferred")) return;
-    const String availTopic = "esp32/remote/" + mqttHwId + "/availability";
-    for (int i = mqttButtonCount; i < MQTT_MAX_BUTTONS; i++) {
-        const String oldTopic = mqttCfg.discoveryPrefix + "/device_automation/" + mqttNodeId + "/" + String(i) + "/config";
-        mqttClient.publish(oldTopic.c_str(), "", true);
-    }
-    for (int i = 0; i < mqttButtonCount; i++) {
-        const String action = mqttButtonPayloadForIndex(i);
-        const String topic = mqttCfg.discoveryPrefix + "/device_automation/" + mqttNodeId + "/" + String(i) + "/config";
-        JsonDocument doc;
-        doc["automation_type"] = "trigger";
-        doc["topic"] = mqttActionTopic;
-        doc["payload"] = action;
-        doc["type"] = "button_short_press";
-        doc["subtype"] = "button_" + String(i + 1);
-        doc["unique_id"] = mqttNodeId + "_" + String(i + 1) + "_" + action;
-        doc["availability_topic"] = availTopic;
-        JsonObject dev = doc["device"].to<JsonObject>();
-        JsonArray ids = dev["identifiers"].to<JsonArray>();
-        ids.add(mqttNodeId);
-        dev["name"] = mqttDeviceName;
-        dev["model"] = DEVICE_MODEL;
-        dev["manufacturer"] = "Elik";
-        dev["sw_version"] = FW_VERSION;
-        String payload;
-        serializeJson(doc, payload);
-        mqttClient.publish(topic.c_str(), payload.c_str(), true);
+    const String availTopic = mqttAvailabilityTopic();
+    const String stateTopic = mqttStateTopic();
+    const String deviceName = mqttDiscoveryDeviceName();
+    String discoveryPrefixes[2];
+    int prefixCount = 0;
+    discoveryPrefixes[prefixCount++] = mqttCfg.discoveryPrefix.length() ? mqttCfg.discoveryPrefix : String("homeassistant");
+    if (discoveryPrefixes[0] != "homeassistant") discoveryPrefixes[prefixCount++] = "homeassistant";
+
+    for (int prefixIdx = 0; prefixIdx < prefixCount; ++prefixIdx) {
+        const String discoveryBase = discoveryPrefixes[prefixIdx] + "/";
+        auto publishSensor = [&](const char *component,
+                                 const String &objId,
+                                 const String &name,
+                                 const char *valueTemplate,
+                                 const char *unit,
+                                 const char *deviceClass,
+                                 const char *stateClass,
+                                 const char *entityCategory) {
+            JsonDocument doc;
+            doc["name"] = name;
+            doc["unique_id"] = mqttNodeId + "_" + objId;
+            doc["state_topic"] = stateTopic;
+            doc["availability_topic"] = availTopic;
+            doc["value_template"] = valueTemplate;
+            if (unit && unit[0] != '\0') doc["unit_of_measurement"] = unit;
+            if (deviceClass && deviceClass[0] != '\0') doc["device_class"] = deviceClass;
+            if (stateClass && stateClass[0] != '\0') doc["state_class"] = stateClass;
+            if (entityCategory && entityCategory[0] != '\0') doc["entity_category"] = entityCategory;
+            mqttFillDiscoveryDevice(doc["device"].to<JsonObject>());
+            mqttPublishDiscoveryConfig(discoveryBase + component + "/" + mqttNodeId + "/" + objId + "/config", doc);
+        };
+        auto publishBinarySensor = [&](const String &objId,
+                                       const String &name,
+                                       const char *valueTemplate,
+                                       const char *deviceClass,
+                                       const char *entityCategory) {
+            JsonDocument doc;
+            doc["name"] = name;
+            doc["unique_id"] = mqttNodeId + "_" + objId;
+            doc["state_topic"] = stateTopic;
+            doc["availability_topic"] = availTopic;
+            doc["value_template"] = valueTemplate;
+            doc["payload_on"] = "ON";
+            doc["payload_off"] = "OFF";
+            if (deviceClass && deviceClass[0] != '\0') doc["device_class"] = deviceClass;
+            if (entityCategory && entityCategory[0] != '\0') doc["entity_category"] = entityCategory;
+            mqttFillDiscoveryDevice(doc["device"].to<JsonObject>());
+            mqttPublishDiscoveryConfig(discoveryBase + "binary_sensor/" + mqttNodeId + "/" + objId + "/config", doc);
+        };
+
+        publishSensor("sensor", "battery_percent", deviceName + " Battery", "{{ value_json.battery_percent }}", "%", "battery", "measurement", nullptr);
+        publishSensor("sensor", "battery_voltage", deviceName + " Battery Voltage", "{{ value_json.battery_voltage }}", "V", "voltage", "measurement", "diagnostic");
+        publishBinarySensor("battery_charging", deviceName + " Charging", "{{ 'ON' if value_json.battery_charging else 'OFF' }}", "battery_charging", "diagnostic");
+        publishBinarySensor("wifi_connected", deviceName + " WiFi", "{{ 'ON' if value_json.wifi_connected else 'OFF' }}", "connectivity", "diagnostic");
+        publishSensor("sensor", "wifi_quality", deviceName + " WiFi Quality", "{{ value_json.wifi_quality }}", "%", nullptr, "measurement", "diagnostic");
+        publishSensor("sensor", "wifi_rssi", deviceName + " WiFi RSSI", "{{ value_json.wifi_rssi }}", "dBm", "signal_strength", "measurement", "diagnostic");
+        publishSensor("sensor", "illumination", deviceName + " Illumination", "{{ value_json.illumination }}", "%", nullptr, "measurement", nullptr);
+        publishSensor("sensor", "display_brightness", deviceName + " Display Brightness", "{{ value_json.display_brightness }}", "%", nullptr, "measurement", nullptr);
+        publishSensor("sensor", "rgb_led_brightness", deviceName + " RGB LED Brightness", "{{ value_json.rgb_led_brightness }}", "%", nullptr, "measurement", nullptr);
+        publishBinarySensor("messages_waiting", deviceName + " Messages Waiting", "{{ 'ON' if value_json.messages_waiting else 'OFF' }}", "problem", nullptr);
+        publishSensor("sensor", "queued_messages", deviceName + " Queued Messages", "{{ value_json.queued_messages }}", nullptr, nullptr, "measurement", "diagnostic");
+        publishSensor("sensor", "paired_peers", deviceName + " Paired Peers", "{{ value_json.paired_peers }}", nullptr, nullptr, "measurement", "diagnostic");
+        publishSensor("sensor", "radio_peers", deviceName + " Radio Peers", "{{ value_json.radio_peers }}", nullptr, nullptr, "measurement", "diagnostic");
+        publishSensor("sensor", "mqtt_peers", deviceName + " MQTT Peers", "{{ value_json.mqtt_peers }}", nullptr, nullptr, "measurement", "diagnostic");
+        publishBinarySensor("airplane_mode", deviceName + " Airplane Mode", "{{ 'ON' if value_json.airplane_mode else 'OFF' }}", nullptr, nullptr);
+        publishBinarySensor("ap_mode", deviceName + " AP Mode", "{{ 'ON' if value_json.ap_mode else 'OFF' }}", nullptr, nullptr);
+        publishBinarySensor("web_server", deviceName + " Web Server", "{{ 'ON' if value_json.web_server else 'OFF' }}", nullptr, "diagnostic");
+        publishSensor("sensor", "status", deviceName + " Status", "{{ value_json.status }}", nullptr, nullptr, nullptr, nullptr);
+        publishSensor("sensor", "wifi_ssid", deviceName + " WiFi SSID", "{{ value_json.wifi_ssid }}", nullptr, nullptr, nullptr, "diagnostic");
+        publishSensor("sensor", "ip_address", deviceName + " IP Address", "{{ value_json.ip_address }}", nullptr, nullptr, nullptr, "diagnostic");
+        publishSensor("sensor", "uptime_s", deviceName + " Uptime", "{{ value_json.uptime_s }}", "s", nullptr, "total_increasing", "diagnostic");
+        publishSensor("sensor", "free_heap_kb", deviceName + " Free Heap", "{{ value_json.free_heap_kb }}", "kB", nullptr, "measurement", "diagnostic");
+        publishSensor("sensor", "largest_block_kb", deviceName + " Largest Free Block", "{{ value_json.largest_block_kb }}", "kB", nullptr, "measurement", "diagnostic");
+
+        JsonDocument textDoc;
+        textDoc["name"] = "Send Chat Message";
+        textDoc["unique_id"] = mqttNodeId + "_ha_chat_send";
+        textDoc["availability_topic"] = availTopic;
+        textDoc["command_topic"] = mqttHaChatCommandTopic();
+        textDoc["mode"] = "text";
+        textDoc["max"] = P2P_MAX_CHAT_TEXT;
+        textDoc["icon"] = "mdi:message-text-outline";
+        mqttFillDiscoveryDevice(textDoc["device"].to<JsonObject>());
+        mqttPublishDiscoveryConfig(discoveryBase + "text/" + mqttNodeId + "/ha_chat_send/config", textDoc);
+
+        JsonDocument recvDoc;
+        recvDoc["name"] = "Received Chat Messages";
+        recvDoc["unique_id"] = mqttNodeId + "_ha_chat_received";
+        recvDoc["availability_topic"] = availTopic;
+        recvDoc["state_topic"] = mqttHaChatReceivedTopic();
+        recvDoc["mode"] = "text";
+        recvDoc["max"] = P2P_MAX_CHAT_TEXT;
+        recvDoc["icon"] = "mdi:message-reply-text-outline";
+        mqttFillDiscoveryDevice(recvDoc["device"].to<JsonObject>());
+        mqttPublishDiscoveryConfig(discoveryBase + "text/" + mqttNodeId + "/ha_chat_received/config", recvDoc);
+
+        for (int i = mqttButtonCount; i < MQTT_MAX_BUTTONS; i++) {
+            const String oldTopic = discoveryPrefixes[prefixIdx] + "/device_automation/" + mqttNodeId + "/" + String(i) + "/config";
+            mqttClient.publish(oldTopic.c_str(), "", true);
+            const String oldButtonTopic = discoveryPrefixes[prefixIdx] + "/button/" + mqttNodeId + "/mqtt_control_" + String(i) + "/config";
+            mqttClient.publish(oldButtonTopic.c_str(), "", true);
+            const String oldSwitchTopic = discoveryPrefixes[prefixIdx] + "/switch/" + mqttNodeId + "/mqtt_control_" + String(i) + "/config";
+            mqttClient.publish(oldSwitchTopic.c_str(), "", true);
+        }
+        for (int i = 0; i < mqttButtonCount; i++) {
+            const String action = mqttButtonPayloadForIndex(i);
+            const String topic = discoveryPrefixes[prefixIdx] + "/device_automation/" + mqttNodeId + "/" + String(i) + "/config";
+            JsonDocument doc;
+            doc["automation_type"] = "trigger";
+            doc["topic"] = mqttActionTopic;
+            doc["payload"] = action;
+            doc["type"] = "button_short_press";
+            doc["subtype"] = "button_" + String(i + 1);
+            doc["unique_id"] = mqttNodeId + "_" + String(i + 1) + "_" + action;
+            doc["availability_topic"] = availTopic;
+            mqttFillDiscoveryDevice(doc["device"].to<JsonObject>());
+            mqttPublishDiscoveryConfig(topic, doc);
+            const String buttonCfgTopic = discoveryPrefixes[prefixIdx] + "/button/" + mqttNodeId + "/mqtt_control_" + String(i) + "/config";
+            const String switchCfgTopic = discoveryPrefixes[prefixIdx] + "/switch/" + mqttNodeId + "/mqtt_control_" + String(i) + "/config";
+            mqttClient.publish(buttonCfgTopic.c_str(), "", true);
+            mqttClient.publish(switchCfgTopic.c_str(), "", true);
+
+            if (mqttButtonToggle[i]) {
+                JsonDocument swDoc;
+                swDoc["name"] = mqttButtonNames[i];
+                swDoc["unique_id"] = mqttNodeId + "_mqtt_control_" + String(i);
+                swDoc["availability_topic"] = availTopic;
+                swDoc["command_topic"] = mqttButtonCommandTopic(i);
+                swDoc["state_topic"] = mqttButtonStateTopic(i);
+                swDoc["payload_on"] = "ON";
+                swDoc["payload_off"] = "OFF";
+                swDoc["state_on"] = "ON";
+                swDoc["state_off"] = "OFF";
+                swDoc["icon"] = mqttButtonState[i] ? "mdi:toggle-switch" : "mdi:toggle-switch-off-outline";
+                mqttFillDiscoveryDevice(swDoc["device"].to<JsonObject>());
+                mqttPublishDiscoveryConfig(switchCfgTopic, swDoc);
+            } else {
+                JsonDocument btnDoc;
+                btnDoc["name"] = mqttButtonNames[i];
+                btnDoc["unique_id"] = mqttNodeId + "_mqtt_control_" + String(i);
+                btnDoc["availability_topic"] = availTopic;
+                btnDoc["command_topic"] = mqttButtonCommandTopic(i);
+                btnDoc["payload_press"] = "PRESS";
+                btnDoc["icon"] = mqttButtonCritical[i] ? "mdi:alert-circle-outline" : "mdi:gesture-tap-button";
+                mqttFillDiscoveryDevice(btnDoc["device"].to<JsonObject>());
+                mqttPublishDiscoveryConfig(buttonCfgTopic, btnDoc);
+            }
+        }
     }
     mqttDiscoveryPublished = true;
     mqttStatusLine = "HA discovery published";
+    for (int i = 0; i < mqttButtonCount; ++i) mqttPublishButtonState(i);
+    mqttPublishStateIfNeeded(true);
 }
 
 void lvglMqttPublishDiscoveryEvent(lv_event_t *e)
@@ -9280,62 +9684,120 @@ void lvglMqttSaveEvent(lv_event_t *e)
     lvglStatusPush("MQTT settings saved");
 }
 
-void lvglMqttButtonCountDelta(int d)
+static void syncMqttButtonConfigFromUi()
 {
-    int next = mqttButtonCount + d;
-    if (next < 1) next = 1;
-    if (next > MQTT_MAX_BUTTONS) next = MQTT_MAX_BUTTONS;
-    if (next == mqttButtonCount) return;
-    if (next > mqttButtonCount) {
-        for (int i = mqttButtonCount; i < next; i++) {
+    if (!lvglMqttButtonConfigList || !lv_obj_is_valid(lvglMqttButtonConfigList)) return;
+    const uint32_t childCount = lv_obj_get_child_cnt(lvglMqttButtonConfigList);
+    for (uint32_t i = 0; i < childCount && i < static_cast<uint32_t>(mqttButtonCount); ++i) {
+        lv_obj_t *row = lv_obj_get_child(lvglMqttButtonConfigList, i);
+        if (!row) continue;
+        lv_obj_t *selCb = lv_obj_get_child(row, 0);
+        lv_obj_t *nameTa = lv_obj_get_child(row, 1);
+        lv_obj_t *critCb = lv_obj_get_child(row, 2);
+        lv_obj_t *toggleCb = lv_obj_get_child(row, 3);
+        if (selCb) mqttButtonSelected[i] = lv_obj_has_state(selCb, LV_STATE_CHECKED);
+        if (nameTa) {
+            mqttButtonNames[i] = lv_textarea_get_text(nameTa);
+            mqttButtonNames[i].trim();
+            if (mqttButtonNames[i].isEmpty()) mqttButtonNames[i] = mqttDefaultButtonName(static_cast<int>(i));
+        }
+        if (critCb) mqttButtonCritical[i] = lv_obj_has_state(critCb, LV_STATE_CHECKED);
+        if (toggleCb) mqttButtonToggle[i] = lv_obj_has_state(toggleCb, LV_STATE_CHECKED);
+    }
+}
+
+void lvglMqttButtonFieldChangedEvent(lv_event_t *e)
+{
+    (void)e;
+    syncMqttButtonConfigFromUi();
+    mqttDiscoveryPublished = false;
+    saveMqttConfig();
+    lvglRefreshMqttControlsUi();
+}
+
+void lvglMqttButtonAddEvent(lv_event_t *e)
+{
+    (void)e;
+    syncMqttButtonConfigFromUi();
+    if (mqttButtonCount >= MQTT_MAX_BUTTONS) {
+        lvglStatusPush("MQTT button limit reached");
+        return;
+    }
+    const int idx = mqttButtonCount++;
+    mqttButtonNames[idx] = String("Button ") + String(idx + 1);
+    mqttButtonCritical[idx] = false;
+    mqttButtonToggle[idx] = false;
+    mqttButtonState[idx] = false;
+    mqttButtonSelected[idx] = false;
+    mqttDiscoveryPublished = false;
+    saveMqttConfig();
+    lvglRefreshMqttButtonConfigUi();
+    lvglRefreshMqttControlsUi();
+}
+
+void lvglMqttButtonSelectModeEvent(lv_event_t *e)
+{
+    (void)e;
+    mqttButtonSelectionMode = !mqttButtonSelectionMode;
+    if (!mqttButtonSelectionMode) {
+        for (int i = 0; i < mqttButtonCount; ++i) mqttButtonSelected[i] = false;
+    }
+    lvglRefreshMqttButtonConfigUi();
+}
+
+void lvglMqttButtonDeletePromptEvent(lv_event_t *e)
+{
+    (void)e;
+    syncMqttButtonConfigFromUi();
+    int selectedCount = 0;
+    for (int i = 0; i < mqttButtonCount; ++i) {
+        if (mqttButtonSelected[i]) ++selectedCount;
+    }
+    if (selectedCount <= 0) {
+        lvglStatusPush("Select MQTT buttons to delete");
+        return;
+    }
+    static const char *btns[] = {"No", "Yes", ""};
+    lv_obj_t *m = lv_msgbox_create(nullptr, "Delete Buttons", "Delete selected MQTT buttons?", btns, false);
+    if (!m) return;
+    lvglApplyMsgboxModalStyle(m);
+    lv_obj_center(m);
+    lv_obj_add_event_cb(m, lvglMqttButtonDeleteConfirmEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+}
+
+void lvglMqttButtonDeleteConfirmEvent(lv_event_t *e)
+{
+    lv_obj_t *msgbox = lv_event_get_current_target(e);
+    const char *txt = lv_msgbox_get_active_btn_text(msgbox);
+    if (txt && strcmp(txt, "Yes") == 0) {
+        syncMqttButtonConfigFromUi();
+        int writeIdx = 0;
+        for (int i = 0; i < mqttButtonCount; ++i) {
+            if (mqttButtonSelected[i]) continue;
+            if (writeIdx != i) {
+                mqttButtonNames[writeIdx] = mqttButtonNames[i];
+                mqttButtonCritical[writeIdx] = mqttButtonCritical[i];
+                mqttButtonToggle[writeIdx] = mqttButtonToggle[i];
+                mqttButtonState[writeIdx] = mqttButtonState[i];
+            }
+            mqttButtonSelected[writeIdx] = false;
+            ++writeIdx;
+        }
+        for (int i = writeIdx; i < MQTT_MAX_BUTTONS; ++i) {
             mqttButtonNames[i] = mqttDefaultButtonName(i);
             mqttButtonCritical[i] = false;
+            mqttButtonToggle[i] = false;
+            mqttButtonState[i] = false;
+            mqttButtonSelected[i] = false;
         }
+        mqttButtonCount = writeIdx;
+        mqttButtonSelectionMode = false;
+        mqttDiscoveryPublished = false;
+        saveMqttConfig();
+        lvglRefreshMqttButtonConfigUi();
+        lvglRefreshMqttControlsUi();
     }
-    mqttButtonCount = next;
-    if (lvglMqttEditIndex >= mqttButtonCount) lvglMqttEditIndex = mqttButtonCount - 1;
-    mqttDiscoveryPublished = false;
-    saveMqttConfig();
-    lvglRefreshMqttConfigUi();
-    lvglRefreshMqttControlsUi();
-}
-
-void lvglMqttCountMinusEvent(lv_event_t *e)
-{
-    (void)e;
-    lvglMqttButtonCountDelta(-1);
-}
-
-void lvglMqttCountPlusEvent(lv_event_t *e)
-{
-    (void)e;
-    lvglMqttButtonCountDelta(+1);
-}
-
-void lvglMqttEditPrevEvent(lv_event_t *e)
-{
-    (void)e;
-    if (lvglMqttEditIndex > 0) lvglMqttEditIndex--;
-    lvglRefreshMqttControlsUi();
-}
-
-void lvglMqttEditNextEvent(lv_event_t *e)
-{
-    (void)e;
-    if (lvglMqttEditIndex + 1 < mqttButtonCount) lvglMqttEditIndex++;
-    lvglRefreshMqttControlsUi();
-}
-
-void lvglMqttApplyBtnEvent(lv_event_t *e)
-{
-    (void)e;
-    if (lvglMqttEditIndex < 0 || lvglMqttEditIndex >= mqttButtonCount) return;
-    mqttButtonNames[lvglMqttEditIndex] = lv_textarea_get_text(lvglMqttBtnNameTa);
-    if (mqttButtonNames[lvglMqttEditIndex].isEmpty()) mqttButtonNames[lvglMqttEditIndex] = mqttDefaultButtonName(lvglMqttEditIndex);
-    mqttButtonCritical[lvglMqttEditIndex] = lv_obj_has_state(lvglMqttCriticalSw, LV_STATE_CHECKED);
-    mqttDiscoveryPublished = false;
-    saveMqttConfig();
-    lvglRefreshMqttControlsUi();
+    lv_msgbox_close(msgbox);
 }
 
 void lvglMqttControlConfirmEvent(lv_event_t *e)
@@ -9344,8 +9806,7 @@ void lvglMqttControlConfirmEvent(lv_event_t *e)
     const char *txt = lv_msgbox_get_active_btn_text(msgbox);
     int idx = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
     if (txt && strcmp(txt, "Yes") == 0 && idx >= 0 && idx < mqttButtonCount) {
-        mqttPublishButtonAction(idx);
-        lvglStatusPush("Action: " + mqttButtonPayloadForIndex(idx));
+        mqttHandleButtonCommand(idx, mqttButtonToggle[idx] ? String("TOGGLE") : String("PRESS"));
     }
     lv_msgbox_close(msgbox);
 }
@@ -9471,14 +9932,16 @@ void lvglMqttControlPressEvent(lv_event_t *e)
         lv_obj_center(m);
         lv_obj_add_event_cb(m, lvglMqttControlConfirmEvent, LV_EVENT_VALUE_CHANGED, reinterpret_cast<void *>(static_cast<intptr_t>(idx)));
     } else {
-        mqttPublishButtonAction(idx);
-        lvglStatusPush("Action: " + mqttButtonPayloadForIndex(idx));
+        mqttHandleButtonCommand(idx, mqttButtonToggle[idx] ? String("TOGGLE") : String("PRESS"));
     }
 }
 
 void lvglRefreshMqttConfigUi()
 {
     if (!lvglMqttEnableSw) return;
+    const String displayStatus = !mqttCfg.enabled ? "Disabled"
+                                : (mqttClient.connected() ? String("Connected")
+                                                          : (mqttConnectRequested ? String("Connecting...") : mqttStatusLine));
     lv_obj_add_state(lvglMqttEnableSw, mqttCfg.enabled ? LV_STATE_CHECKED : 0);
     lv_obj_clear_state(lvglMqttEnableSw, mqttCfg.enabled ? 0 : LV_STATE_CHECKED);
     lv_textarea_set_text(lvglMqttBrokerTa, mqttCfg.broker.c_str());
@@ -9486,104 +9949,106 @@ void lvglRefreshMqttConfigUi()
     lv_textarea_set_text(lvglMqttUserTa, mqttCfg.username.c_str());
     lv_textarea_set_text(lvglMqttPassTa, mqttCfg.password.c_str());
     lv_textarea_set_text(lvglMqttDiscTa, mqttCfg.discoveryPrefix.c_str());
-    lv_label_set_text_fmt(lvglMqttStatusLabel, "MQTT: %s", mqttStatusLine.c_str());
+    lv_label_set_text_fmt(lvglMqttStatusLabel, "MQTT: %s", displayStatus.c_str());
+}
+
+void lvglRefreshMqttButtonConfigUi()
+{
+    if (!lvglMqttButtonConfigList || !lv_obj_is_valid(lvglMqttButtonConfigList)) return;
+    lv_obj_t *topRow = lv_obj_get_child(lv_obj_get_parent(lvglMqttButtonConfigList), 0);
+    if (topRow) {
+        lv_obj_t *addBtn = lv_obj_get_child(topRow, 0);
+        lv_obj_t *selBtn = lv_obj_get_child(topRow, 1);
+        lv_obj_t *delBtn = lv_obj_get_child(topRow, 2);
+        if (addBtn) lvglRegisterStyledButton(addBtn, lv_color_hex(0x2F7A45), true);
+        if (selBtn) lvglRegisterStyledButton(selBtn, mqttButtonSelectionMode ? lv_color_hex(0x8A5A25) : lv_color_hex(0x2F6D86), true);
+        if (delBtn) lvglRegisterStyledButton(delBtn, lv_color_hex(0x8A3A3A), true);
+    }
+
+    lv_obj_clean(lvglMqttButtonConfigList);
+    for (int i = 0; i < mqttButtonCount; ++i) {
+        lv_obj_t *row = lv_obj_create(lvglMqttButtonConfigList);
+        lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_color(row, lv_color_hex(0x18222D), 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_radius(row, 10, 0);
+        lv_obj_set_style_pad_all(row, 6, 0);
+        lv_obj_set_style_pad_column(row, 6, 0);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *selCb = lv_checkbox_create(row);
+        lv_obj_set_width(selCb, 24);
+        if (mqttButtonSelected[i]) lv_obj_add_state(selCb, LV_STATE_CHECKED);
+        if (mqttButtonSelectionMode) lv_obj_clear_flag(selCb, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(selCb, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_event_cb(selCb, lvglMqttButtonFieldChangedEvent, LV_EVENT_VALUE_CHANGED, reinterpret_cast<void *>(static_cast<intptr_t>(i)));
+
+        lv_obj_t *nameTa = lv_textarea_create(row);
+        lv_obj_set_height(nameTa, 34);
+        lv_obj_set_width(nameTa, DISPLAY_WIDTH - 172);
+        lv_obj_set_flex_grow(nameTa, 1);
+        lv_textarea_set_one_line(nameTa, true);
+        lv_textarea_set_placeholder_text(nameTa, "Button name");
+        lv_textarea_set_text(nameTa, mqttButtonNames[i].c_str());
+        lv_obj_add_event_cb(nameTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
+        lv_obj_add_event_cb(nameTa, lvglMqttButtonFieldChangedEvent, LV_EVENT_DEFOCUSED, reinterpret_cast<void *>(static_cast<intptr_t>(i)));
+        lv_obj_add_event_cb(nameTa, lvglMqttButtonFieldChangedEvent, LV_EVENT_READY, reinterpret_cast<void *>(static_cast<intptr_t>(i)));
+
+        lv_obj_t *critCb = lv_checkbox_create(row);
+        lv_obj_set_width(critCb, 44);
+        if (mqttButtonCritical[i]) lv_obj_add_state(critCb, LV_STATE_CHECKED);
+        lv_obj_add_event_cb(critCb, lvglMqttButtonFieldChangedEvent, LV_EVENT_VALUE_CHANGED, reinterpret_cast<void *>(static_cast<intptr_t>(i)));
+
+        lv_obj_t *toggleCb = lv_checkbox_create(row);
+        lv_obj_set_width(toggleCb, 44);
+        if (mqttButtonToggle[i]) lv_obj_add_state(toggleCb, LV_STATE_CHECKED);
+        lv_obj_add_event_cb(toggleCb, lvglMqttButtonFieldChangedEvent, LV_EVENT_VALUE_CHANGED, reinterpret_cast<void *>(static_cast<intptr_t>(i)));
+    }
+
+    if (mqttButtonCount <= 0) {
+        lv_obj_t *lbl = lv_label_create(lvglMqttButtonConfigList);
+        lv_obj_set_width(lbl, lv_pct(100));
+        lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(lbl, "Add the first MQTT button to show it in MQTT Controls");
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0xB7C4D1), 0);
+        lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
+    }
 }
 
 void lvglRefreshMqttControlsUi()
 {
     if (!lvglMqttCtrlList) return;
     lv_obj_clean(lvglMqttCtrlList);
-    if (lvglMqttEditIndex < 0) lvglMqttEditIndex = 0;
-    if (lvglMqttEditIndex >= mqttButtonCount) lvglMqttEditIndex = mqttButtonCount - 1;
+    if (mqttButtonCount <= 0) {
+        lv_obj_t *emptyCard = lv_obj_create(lvglMqttCtrlList);
+        lv_obj_set_width(emptyCard, lv_pct(100));
+        lv_obj_set_style_bg_color(emptyCard, lv_color_hex(0x16212C), 0);
+        lv_obj_set_style_border_width(emptyCard, 0, 0);
+        lv_obj_set_style_radius(emptyCard, 12, 0);
+        lv_obj_set_style_pad_all(emptyCard, 12, 0);
+        lv_obj_clear_flag(emptyCard, LV_OBJ_FLAG_SCROLLABLE);
 
-    auto makeSmallBtnLocal = [](lv_obj_t *parent, const char *txt, int w, int h, lv_color_t col, lv_event_cb_t cb, void *ud = nullptr) -> lv_obj_t * {
-        lv_obj_t *b = lv_btn_create(parent);
-        if (!b) return nullptr;
-        lv_obj_set_size(b, w, h);
-        lv_obj_set_style_radius(b, 8, 0);
-        lv_obj_set_style_border_width(b, 0, 0);
-        lv_obj_add_event_cb(b, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
-        lv_obj_add_event_cb(b, lvglFilteredClickFlashEvent, LV_EVENT_CLICKED, nullptr);
-        lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, ud);
-        lv_obj_t *l = lv_label_create(b);
-        if (l) {
-            lv_label_set_text(l, txt);
-            lv_obj_center(l);
-        }
-        lvglRegisterStyledButton(b, col, true);
-        return b;
-    };
-
-    lv_obj_t *editCard = lv_obj_create(lvglMqttCtrlList);
-    lv_obj_set_width(editCard, lv_pct(100));
-    lv_obj_set_height(editCard, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_color(editCard, lv_color_hex(0x16212C), 0);
-    lv_obj_set_style_border_width(editCard, 0, 0);
-    lv_obj_set_style_radius(editCard, 12, 0);
-    lv_obj_set_style_pad_all(editCard, 8, 0);
-    lv_obj_set_style_pad_row(editCard, 6, 0);
-    lv_obj_set_flex_flow(editCard, LV_FLEX_FLOW_COLUMN);
-    lv_obj_clear_flag(editCard, LV_OBJ_FLAG_SCROLLABLE);
-    lvglRegisterReorderableItem(editCard, "ord_mctl", "edit");
-
-    lv_obj_t *countRow = lv_obj_create(editCard);
-    lv_obj_set_size(countRow, lv_pct(100), 34);
-    lv_obj_set_style_bg_opa(countRow, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(countRow, 0, 0);
-    makeSmallBtnLocal(countRow, "-", 34, 26, lv_color_hex(0x6B4A2A), lvglMqttCountMinusEvent);
-    lv_obj_align(lv_obj_get_child(countRow, 0), LV_ALIGN_LEFT_MID, 0, 0);
-    makeSmallBtnLocal(countRow, "+", 34, 26, lv_color_hex(0x3A7A3A), lvglMqttCountPlusEvent);
-    lv_obj_align(lv_obj_get_child(countRow, 1), LV_ALIGN_RIGHT_MID, 0, 0);
-    lvglMqttCountLabel = lv_label_create(countRow);
-    lv_obj_center(lvglMqttCountLabel);
-    lv_label_set_text_fmt(lvglMqttCountLabel, "Buttons: %d", mqttButtonCount);
-
-    lv_obj_t *editRow = lv_obj_create(editCard);
-    lv_obj_set_size(editRow, lv_pct(100), 34);
-    lv_obj_set_style_bg_opa(editRow, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(editRow, 0, 0);
-    makeSmallBtnLocal(editRow, "<", 34, 26, lv_color_hex(0x2F6D86), lvglMqttEditPrevEvent);
-    lv_obj_align(lv_obj_get_child(editRow, 0), LV_ALIGN_LEFT_MID, 0, 0);
-    makeSmallBtnLocal(editRow, ">", 34, 26, lv_color_hex(0x2F6D86), lvglMqttEditNextEvent);
-    lv_obj_align(lv_obj_get_child(editRow, 1), LV_ALIGN_RIGHT_MID, 0, 0);
-    lvglMqttEditLabel = lv_label_create(editRow);
-    lv_obj_center(lvglMqttEditLabel);
-    lv_label_set_text_fmt(lvglMqttEditLabel, "Edit #%d", lvglMqttEditIndex + 1);
-
-    lvglMqttBtnNameTa = lv_textarea_create(editCard);
-    lv_obj_set_width(lvglMqttBtnNameTa, lv_pct(100));
-    lv_textarea_set_one_line(lvglMqttBtnNameTa, true);
-    lv_textarea_set_placeholder_text(lvglMqttBtnNameTa, "Button name");
-    lv_obj_add_event_cb(lvglMqttBtnNameTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
-    lv_textarea_set_text(lvglMqttBtnNameTa, mqttButtonNames[lvglMqttEditIndex].c_str());
-
-    lv_obj_t *critRow = lv_obj_create(editCard);
-    lv_obj_set_size(critRow, lv_pct(100), 34);
-    lv_obj_set_style_bg_opa(critRow, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(critRow, 0, 0);
-    lv_obj_t *critLbl = lv_label_create(critRow);
-    lv_label_set_text(critLbl, "Critical");
-    lv_obj_align(critLbl, LV_ALIGN_LEFT_MID, 0, 0);
-    lvglMqttCriticalSw = lv_switch_create(critRow);
-    lv_obj_align(lvglMqttCriticalSw, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_add_state(lvglMqttCriticalSw, mqttButtonCritical[lvglMqttEditIndex] ? LV_STATE_CHECKED : 0);
-    lv_obj_clear_state(lvglMqttCriticalSw, mqttButtonCritical[lvglMqttEditIndex] ? 0 : LV_STATE_CHECKED);
-
-    lv_obj_t *editActRow = lv_obj_create(editCard);
-    lv_obj_set_size(editActRow, lv_pct(100), 36);
-    lv_obj_set_style_bg_opa(editActRow, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(editActRow, 0, 0);
-    lv_obj_set_style_pad_column(editActRow, 6, 0);
-    lv_obj_set_flex_flow(editActRow, LV_FLEX_FLOW_ROW_WRAP);
-    makeSmallBtnLocal(editActRow, lvglSymbolText(LV_SYMBOL_OK, "Apply Btn").c_str(), 94, 30, lv_color_hex(0x6D4B9A), lvglMqttApplyBtnEvent);
+        lv_obj_t *emptyLbl = lv_label_create(emptyCard);
+        lv_obj_set_width(emptyLbl, lv_pct(100));
+        lv_label_set_long_mode(emptyLbl, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(emptyLbl, "No MQTT buttons yet.\nOpen Button Config to add them.");
+        lv_obj_set_style_text_color(emptyLbl, lv_color_hex(0xC8D3DD), 0);
+        lv_obj_set_style_text_align(emptyLbl, LV_TEXT_ALIGN_CENTER, 0);
+        return;
+    }
 
     for (int i = 0; i < mqttButtonCount; i++) {
-        String lbl = lvglSymbolText(LV_SYMBOL_LIST, mqttButtonNames[i]);
+        String name = mqttButtonNames[i];
+        if (mqttButtonToggle[i]) name += mqttButtonState[i] ? " [ON]" : " [OFF]";
+        String lbl = lvglSymbolText(mqttButtonToggle[i] ? LV_SYMBOL_POWER : LV_SYMBOL_LIST, name);
         if (mqttButtonCritical[i]) lbl += " (!)";
         lv_obj_t *btn = lvglCreateMenuButton(
             lvglMqttCtrlList,
             lbl.c_str(),
-            mqttButtonCritical[i] ? lv_color_hex(0x9A5A2E) : lv_color_hex(0x2D6D8E),
+            mqttButtonToggle[i]
+                ? (mqttButtonState[i] ? lv_color_hex(0x2F7A45) : lv_color_hex(0x4C6174))
+                : (mqttButtonCritical[i] ? lv_color_hex(0x9A5A2E) : lv_color_hex(0x2D6D8E)),
             lvglMqttControlPressEvent,
             reinterpret_cast<void *>(static_cast<intptr_t>(i))
         );
@@ -10311,9 +10776,18 @@ void lvglOpenMqttCfgEvent(lv_event_t *e)
 void lvglOpenMqttCtrlEvent(lv_event_t *e)
 {
     (void)e;
+    if (lvglClickSuppressed() || lvglReorderDrag.active) return;
     lvglEnsureScreenBuilt(UI_CONFIG_MQTT_CONTROLS);
     lvglRefreshMqttControlsUi();
     lvglOpenScreen(UI_CONFIG_MQTT_CONTROLS, LV_SCR_LOAD_ANIM_MOVE_LEFT);
+}
+
+void lvglOpenMqttButtonConfigScreenEvent(lv_event_t *e)
+{
+    (void)e;
+    lvglEnsureScreenBuilt(UI_CONFIG_MQTT_BUTTONS);
+    lvglRefreshMqttButtonConfigUi();
+    lvglOpenScreen(UI_CONFIG_MQTT_BUTTONS, LV_SCR_LOAD_ANIM_MOVE_LEFT);
 }
 
 void lvglOpenOtaScreenEvent(lv_event_t *e)

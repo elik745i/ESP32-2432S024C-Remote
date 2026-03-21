@@ -774,7 +774,7 @@ void lvglRefreshWifiList()
             lv_obj_set_width(ta, lv_pct(100));
             lv_textarea_set_one_line(ta, true);
             lv_textarea_set_placeholder_text(ta, ph);
-            lv_textarea_set_password_mode(ta, pass);
+            if (pass) lvglConfigureSingleLinePasswordTa(ta);
             lv_textarea_set_text(ta, value ? value : "");
             lv_obj_add_event_cb(ta, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
             return ta;
@@ -1004,7 +1004,11 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
                         lvglKeyboardShiftLastPressMs = 0;
                         lvglKeyboardApplyTextMode();
                     }
-                    lvglKeyboardEnsureFocusedVisible(false);
+                    if (!(lvglKeyboardFocusedTa &&
+                          lv_obj_is_valid(lvglKeyboardFocusedTa) &&
+                          lv_textarea_get_password_mode(lvglKeyboardFocusedTa))) {
+                        lvglKeyboardEnsureFocusedVisible(false);
+                    }
                     return;
                 }
                 if (code != LV_EVENT_READY && code != LV_EVENT_CANCEL) return;
