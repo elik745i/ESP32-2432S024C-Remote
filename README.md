@@ -2,7 +2,7 @@
 
 Firmware for Sunton-style ESP32 touch display boards with an LVGL UI, Wi-Fi/AP tools, SD recovery/file access, MQTT controls, encrypted chat, and optional radio modules.
 
-Current firmware version: **`0.21.05`**
+Current firmware version: **`0.21.06`**
 
 ![ESP32 Remote Render](3D_Models/render1.jpeg)
 
@@ -33,7 +33,10 @@ Board references used while adding `ESP32-3248S035` support:
 - Radio pin-swap selectors for `HC-12` and `E220`, persisted in memory
 - `OTA Updates` includes both update-check and same-version `Reflash` on supported boards
 - `Battery` screen with manual `FULL` / `DISCHARGE` training and opt-in auto calibration
-- `Style` settings for theme, timezone, 3D icons, screen timeout, and auto power-off
+- `Screen` settings for theme, timezone, 3D icons, touch feedback, screen timeout, auto power-off, and boot-time PIN lock
+- `Radio Control` screen with saved rolling-code buttons, remote profile settings, and receiver test tools
+- `Remote Control` profile screen for encrypted key, remote ID, rolling counter, and active radio module settings
+- Persisted `Play sound on start` toggle with boot-time feedback
 - Top-bar sound indicator/editor with volume and vibration quick controls
 - Built-in `Snake`, `Tetris`, `Checkers`, and S3-only `Snake 3D`
 - OTA firmware updates on the S3 target
@@ -223,7 +226,9 @@ Radio notes:
 - Double-tap while awake turns the screen off
 - Wake taps are consumed before normal UI input resumes
 - Swipe-back and scroll gestures suppress accidental button clicks
-- `Style` includes button themes, timezone, 3D icons, screen timeout, and power-off timeout
+- `Screen` includes button themes, timezone, 3D icons, touch feedback, screen timeout, power-off timeout, and optional 4-digit boot PIN lock
+- `Radio Control` can store reusable rolling-code buttons and includes a dedicated `Receiver Test` screen
+- `Remote Control` lets you save the active remote module profile, encryption key, remote ID, and rolling counter
 - Top bar can show Wi-Fi, MQTT, unread chat, sound mode, and battery
 - `Chat` supports pairing, unread markers, local/MQTT/radio transport, and SD-backed history under `/Conversations`
 - `Checkers` supports local play and chat-started multiplayer invites
@@ -276,16 +281,16 @@ pio run -e esp32-s3-3248s035-n16r8 -t upload
 
 Do not flash only `firmware.bin` on `ESP32-2432S024C`. That board needs the full release image set written at the correct offsets or it can boot to a blank screen.
 
-For the latest verified release (`v0.21.05`), download these four files from:
+For the latest verified release (`v0.21.06`), download these four files from:
 
-- `https://github.com/elik745i/ESP32-2432S024C-Remote/releases/tag/v0.21.05`
+- `https://github.com/elik745i/ESP32-2432S024C-Remote/releases/tag/v0.21.06`
 
 For `ESP32-2432S024C`, use:
 
-- `esp32-2432s024c-v0.21.05_bootloader.bin` at `0x1000`
-- `esp32-2432s024c-v0.21.05_partitions.bin` at `0x8000`
-- `esp32-2432s024c-v0.21.05_boot_app0.bin` at `0xE000`
-- `esp32-2432s024c-v0.21.05.bin` at `0x10000`
+- `esp32-2432s024c-v0.21.06_bootloader.bin` at `0x1000`
+- `esp32-2432s024c-v0.21.06_partitions.bin` at `0x8000`
+- `esp32-2432s024c-v0.21.06_boot_app0.bin` at `0xE000`
+- `esp32-2432s024c-v0.21.06.bin` at `0x10000`
 
 Using Espressif `Flash Download Tool` on Windows:
 
@@ -303,10 +308,10 @@ If you use `esptool.py`, the equivalent command is:
 
 ```powershell
 esptool.py --chip esp32 --port COMx --baud 460800 write_flash -z `
-  0x1000 esp32-2432s024c-v0.21.05_bootloader.bin `
-  0x8000 esp32-2432s024c-v0.21.05_partitions.bin `
-  0xE000 esp32-2432s024c-v0.21.05_boot_app0.bin `
-  0x10000 esp32-2432s024c-v0.21.05.bin
+  0x1000 esp32-2432s024c-v0.21.06_bootloader.bin `
+  0x8000 esp32-2432s024c-v0.21.06_partitions.bin `
+  0xE000 esp32-2432s024c-v0.21.06_boot_app0.bin `
+  0x10000 esp32-2432s024c-v0.21.06.bin
 ```
 
 `ESP32-3248S035` uses the same `ESP32` flash layout as `ESP32-2432S024C`:

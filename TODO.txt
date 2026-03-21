@@ -1,0 +1,6 @@
+in Config menu rename Style to Screen
+
+in it add Screen Lock tickbox, if ticked, popup shall apear with short input field, accepts only 4 digits below it save and cancel buttons. 
+When PIN entered and user hits save, it iss going to be saved in memory and on boot lockscreen shall apear to enter PIN, once entered correct pin, only then Main menu shall appear.
+Protect lockscreen with timer so if 3 wrong pin attempts happened there shall be message that 3 attempts failed wait 1 minute to repeat attempt, if in 1 minute wrong pin entered again, next attempt shall be in 2 minutes and so on. 
+After 3 attempts display factory reset button at the bottom of the lock screen sso user can factory reset the device.

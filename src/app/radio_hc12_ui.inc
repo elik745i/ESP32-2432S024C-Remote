@@ -12,9 +12,11 @@ void lvglRefreshHc12Ui()
     lv_obj_t *pinLbl = lvglHc12TerminalPinLabel ? lvglHc12TerminalPinLabel : (topRow ? lv_obj_get_child(topRow, 1) : nullptr);
     if (pinLbl) {
         if (radioModuleType == RADIO_MODULE_HC12) {
-            lv_label_set_text_fmt(pinLbl, "ESP RX %d  TX %d  |  SET %d  |  9600 baud", hc12ActiveRxPin(), hc12ActiveTxPin(), hc12ActiveSetPin());
+            lv_label_set_text_fmt(pinLbl, "ESP RX %d  TX %d  |  SET %d  |  %lu baud",
+                                  hc12ActiveRxPin(), hc12ActiveTxPin(), hc12ActiveSetPin(), hc12RuntimeBaud());
         } else {
-            lv_label_set_text_fmt(pinLbl, "ESP RX %d  TX %d  |  M0 %d  M1 %d  |  9600 baud", e220ActiveRxPin(), e220ActiveTxPin(), e220ActiveM0Pin(), e220ActiveM1Pin());
+            lv_label_set_text_fmt(pinLbl, "ESP RX %d  TX %d  |  M0 %d  M1 %d  |  %lu baud",
+                                  e220ActiveRxPin(), e220ActiveTxPin(), e220ActiveM0Pin(), e220ActiveM1Pin(), e220RuntimeBaud());
         }
     }
     if (lvglHc12TerminalExamplesLabel) lv_label_set_text(lvglHc12TerminalExamplesLabel, hc12TerminalExampleCommands().c_str());
@@ -65,8 +67,8 @@ void lvglRefreshHc12ConfigUi()
         if (lvglRadioPinSwapSubLabel) lv_label_set_text_fmt(lvglRadioPinSwapSubLabel, "ESP RX %d  |  TX %d", hc12ActiveRxPin(), hc12ActiveTxPin());
         if (lvglRadioModePinSwapCard) lv_obj_add_flag(lvglRadioModePinSwapCard, LV_OBJ_FLAG_HIDDEN);
         if (lvglRadioHintLabel) lv_label_set_text_fmt(lvglRadioHintLabel,
-                                                      "HC-12 RXD %d  |  TXD %d  |  SET %d  |  9600 baud\nSerial Terminal and Info use HC-12 AT mode. Radio chat/discovery is only active while HC-12 is selected.",
-                                                      hc12ActiveTxPin(), hc12ActiveRxPin(), hc12ActiveSetPin());
+                                                      "HC-12 RXD %d  |  TXD %d  |  SET %d  |  %lu baud\nLegacy gate controllers use CH100 + 2400 baud. Serial Terminal and Info use HC-12 AT mode.",
+                                                      hc12ActiveTxPin(), hc12ActiveRxPin(), hc12ActiveSetPin(), hc12RuntimeBaud());
     } else {
         if (lvglRadioExtraCard) lv_obj_clear_flag(lvglRadioExtraCard, LV_OBJ_FLAG_HIDDEN);
         if (lvglHc12ChannelValueLabel) lv_label_set_text_fmt(lvglHc12ChannelValueLabel, "CH%02d", e220CurrentChannel);

@@ -3,8 +3,8 @@
     "tasks": [
         {
             "label": "PlatformIO: Build",
-            "type": "shell",
-            "command": "platformio",
+            "type": "process",
+            "command": "${env:USERPROFILE}\\.platformio\\penv\\Scripts\\platformio.exe",
             "args": ["run"],
             "problemMatcher": ["$platformio"],
             "group": {
@@ -14,8 +14,8 @@
         },
         {
             "label": "PlatformIO: Upload",
-            "type": "shell",
-            "command": "platformio",
+            "type": "process",
+            "command": "${env:USERPROFILE}\\.platformio\\penv\\Scripts\\platformio.exe",
             "args": ["run", "--target", "upload"],
             "problemMatcher": ["$platformio"],
             "group": "none"

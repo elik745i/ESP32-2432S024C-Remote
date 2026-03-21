@@ -342,7 +342,7 @@ static constexpr uint8_t VIBRATION_QUEUE_MAX = 4;
 #endif
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.21.05";
+static constexpr const char *FW_VERSION = "0.21.06";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -411,6 +411,7 @@ static constexpr int8_t E220_POWER_DBM[] = {22, 17, 13, 10};
 static constexpr char HC12_RADIO_FRAME_PREFIX[] = "@RMT|";
 static constexpr size_t HC12_RADIO_MAX_LINE = 1216;   // payload only
 static constexpr size_t HC12_RADIO_MAX_RX_LINE = HC12_RADIO_MAX_LINE + 16; // prefix + slack
+
 static constexpr int MAX_HC12_DISCOVERED = 8;
 static constexpr int MAX_MQTT_DISCOVERED = 8;
 static constexpr unsigned long HC12_DISCOVERY_INTERVAL_MS = 8000UL;
@@ -678,8 +679,29 @@ static bool otaFetchReleaseInfoForTag(const String &tagName, String &binUrlOut, 
 static bool otaStartUpdateTask(const String &binUrl, const String &targetVersion, const String &statusText);
 void lvglOpenOtaScreenEvent(lv_event_t *e);
 void lvglOpenHc12ScreenEvent(lv_event_t *e);
+void lvglOpenRemoteControlScreenEvent(lv_event_t *e);
+void lvglOpenRadioButtonConfigScreenEvent(lv_event_t *e);
+void lvglOpenRadioReceiverTestScreenEvent(lv_event_t *e);
 void lvglOpenHc12TerminalEvent(lv_event_t *e);
 void lvglOpenHc12InfoEvent(lv_event_t *e);
+void lvglTextAreaFocusEvent(lv_event_t *e);
+void lvglGateControlActionEvent(lv_event_t *e);
+void lvglRefreshRadioControlUi();
+void lvglRefreshRemoteControlUi();
+void lvglRemoteControlSaveEvent(lv_event_t *e);
+void lvglRemoteControlModuleChangedEvent(lv_event_t *e);
+void lvglRefreshRadioButtonConfigUi();
+void lvglRefreshRadioReceiverTestUi();
+void lvglRadioButtonAddEvent(lv_event_t *e);
+void lvglRadioButtonSelectModeEvent(lv_event_t *e);
+void lvglRadioButtonDeletePromptEvent(lv_event_t *e);
+void lvglRadioButtonDeleteConfirmEvent(lv_event_t *e);
+void lvglRadioButtonFieldChangedEvent(lv_event_t *e);
+void lvglRadioControlButtonEvent(lv_event_t *e);
+void lvglRadioControlConfirmEvent(lv_event_t *e);
+bool radioReceiverTestHandleByte(uint8_t ch);
+void radioReceiverTestEnterScreen();
+void radioReceiverTestLeaveScreen();
 void lvglHc12PrevChannelEvent(lv_event_t *e);
 void lvglHc12NextChannelEvent(lv_event_t *e);
 void lvglHc12PrevBaudEvent(lv_event_t *e);
@@ -729,6 +751,7 @@ void lvglRefreshConfigUi();
 void lvglRefreshAllButtonStyles();
 void lvglSetButtonStyleMode(UiButtonStyleMode mode, bool persist);
 void lvglRefreshStyleUi();
+void lvglRefreshLockScreenUi();
 void lvglSoundPopupBackdropEvent(lv_event_t *e);
 void lvglSoundPopupVolumeEvent(lv_event_t *e);
 void lvglSoundPopupVibrationEvent(lv_event_t *e);
@@ -736,15 +759,39 @@ void lvglSoundPopupDisableVibrationEvent(lv_event_t *e);
 void lvglApplyAirplaneButtonStyle();
 void lvglApplyApModeButtonStyle();
 void lvglApplyChatDiscoveryButtonStyle();
+lv_obj_t *lvglCreateMenuButton(lv_obj_t *parent, const char *txt, lv_color_t color, lv_event_cb_t cb, void *user = nullptr);
 void lvglApplyWifiWebServerButtonStyle();
 void lvglFactoryResetEvent(lv_event_t *e);
 void lvglFactoryResetConfirmEvent(lv_event_t *e);
+void lvglStyleScreenLockToggleEvent(lv_event_t *e);
+void lvglScreenLockUnlockEvent(lv_event_t *e);
+void lvglScreenLockFactoryResetEvent(lv_event_t *e);
+void lvglScreenLockSetupPinChangedEvent(lv_event_t *e);
+void lvglScreenLockPinChangedEvent(lv_event_t *e);
 static void factoryResetWipeStoredData();
 static void factoryResetClearNamespace(Preferences &prefs, const char *ns);
 static void factoryResetWipeSdData();
+static bool screenLockIsConfigured();
+static bool screenLockShouldGateUi();
+static bool screenLockIsBlocked();
+static bool screenLockNumericTarget(lv_obj_t *ta);
+static void screenLockSanitizeTextArea(lv_obj_t *ta);
+static void screenLockResetState();
+static void screenLockPersistConfig();
+static void screenLockShowSetupModal();
+static void screenLockHideSetupModal(bool restoreToggle);
+static String screenLockBlockMessage();
 static void lvglAttachMenuButtonImage(lv_obj_t *btn, const lv_img_dsc_t *imgSrc, lv_coord_t xOffset, lv_coord_t labelShiftX);
 static void lvglSetButtonImageZoom(lv_obj_t *btn, uint16_t zoom, lv_coord_t xOffset = 8, lv_coord_t labelShiftX = 10);
 static void lvglRefreshPrimaryMenuButtonIcons();
+static void lvglLabelSetTextIfChanged(lv_obj_t *label, const char *text);
+static void lvglLabelSetTextIfChanged(lv_obj_t *label, const String &text);
+static void lvglApplyPersistentToggleButtonStyle(lv_obj_t *btn,
+                                                 lv_obj_t *label,
+                                                 bool enabled,
+                                                 lv_color_t offBodyCol,
+                                                 lv_color_t onBodyCol,
+                                                 bool compact);
 static void lvglRegisterStyledButton(lv_obj_t *btn, lv_color_t baseColor, bool compact);
 static String topBarCenterText();
 static bool internetTimeValid();
@@ -783,6 +830,7 @@ void lvglShowChatAirplanePrompt();
 void lvglKeyboardEnsureFocusedVisible(bool animated);
 void lvglKeyboardRefreshLayout();
 void lvglKeyboardApplyTextMode();
+static void lvglRefreshWifiPasswordDialogLayout();
 static lv_obj_t *hc12CmdTaObj();
 void cpuLoadService(uint32_t loopStartUs);
 void rgbService();
@@ -921,13 +969,18 @@ static lv_indev_drv_t lvglIndevDrv;
 static lv_indev_t *lvglTouchIndev = nullptr;
 static bool lvglReady = false;
 static lv_obj_t *lvglScrHome = nullptr;
+static lv_obj_t *lvglScrLock = nullptr;
 static lv_obj_t *lvglScrChat = nullptr;
 static lv_obj_t *lvglScrChatPeers = nullptr;
 static lv_obj_t *lvglScrWifi = nullptr;
 static lv_obj_t *lvglScrMedia = nullptr;
 static lv_obj_t *lvglScrInfo = nullptr;
 static lv_obj_t *lvglScrGames = nullptr;
+static lv_obj_t *lvglScrRadioControl = nullptr;
 static lv_obj_t *lvglScrConfig = nullptr;
+static lv_obj_t *lvglScrRemoteControl = nullptr;
+static lv_obj_t *lvglScrRadioButtonConfig = nullptr;
+static lv_obj_t *lvglScrRadioReceiverTest = nullptr;
 static lv_obj_t *lvglScrStyle = nullptr;
 static lv_obj_t *lvglScrStyleHomeItems = nullptr;
 static lv_obj_t *lvglScrBatteryTrain = nullptr;
@@ -1009,11 +1062,15 @@ static lv_obj_t *lvglWifiApPassShowBtnLabel = nullptr;
 static lv_obj_t *lvglWifiApPassShowBtn = nullptr;
 static lv_obj_t *lvglWifiWebServerBtn = nullptr;
 static lv_obj_t *lvglWifiPwdModal = nullptr;
+static lv_obj_t *lvglWifiPwdInputRow = nullptr;
 static lv_obj_t *lvglWifiPwdTa = nullptr;
 static lv_obj_t *lvglWifiPwdSsidLabel = nullptr;
 static lv_obj_t *lvglWifiPwdStatusLabel = nullptr;
 static lv_obj_t *lvglWifiPwdShowBtnLabel = nullptr;
 static lv_obj_t *lvglWifiPwdShowBtn = nullptr;
+static lv_obj_t *lvglWifiPwdActionRow = nullptr;
+static lv_obj_t *lvglWifiPwdCancelBtn = nullptr;
+static lv_obj_t *lvglWifiPwdSaveBtn = nullptr;
 static lv_obj_t *lvglMediaPlayerPanel = nullptr;
 static lv_obj_t *lvglMediaList = nullptr;
 static lv_obj_t *lvglMediaTrackLabel = nullptr;
@@ -1060,6 +1117,7 @@ static lv_obj_t *lvglAirplaneBtnLabel = nullptr;
 static lv_obj_t *lvglApModeBtn = nullptr;
 static lv_obj_t *lvglApModeBtnLabel = nullptr;
 static lv_obj_t *lvglHomePowerBtn = nullptr;
+static lv_obj_t *lvglHomeRadioBtn = nullptr;
 static lv_obj_t *lvglHomeChatBtn = nullptr;
 static lv_obj_t *lvglHomeMediaBtn = nullptr;
 static lv_obj_t *lvglHomeInfoBtn = nullptr;
@@ -1067,6 +1125,7 @@ static lv_obj_t *lvglHomeGamesBtn = nullptr;
 static lv_obj_t *lvglHomeConfigBtn = nullptr;
 static lv_obj_t *lvglConfigWifiBtn = nullptr;
 static lv_obj_t *lvglConfigHc12Btn = nullptr;
+static lv_obj_t *lvglConfigRemoteBtn = nullptr;
 static lv_obj_t *lvglConfigStyleBtn = nullptr;
 static lv_obj_t *lvglConfigBatteryBtn = nullptr;
 static lv_obj_t *lvglConfigMqttBtn = nullptr;
@@ -1076,6 +1135,18 @@ static lv_obj_t *lvglConfigLanguageBtn = nullptr;
 static lv_obj_t *lvglConfigOtaBtn = nullptr;
 static lv_obj_t *lvglConfigFactoryResetBtn = nullptr;
 static lv_obj_t *lvglConfigWrap = nullptr;
+static lv_obj_t *lvglStyleScreenLockSw = nullptr;
+static lv_obj_t *lvglScreenLockModal = nullptr;
+static lv_obj_t *lvglScreenLockSetupPinTa = nullptr;
+static lv_obj_t *lvglScreenLockSetupStatusLabel = nullptr;
+static lv_obj_t *lvglScreenLockSetupCancelBtn = nullptr;
+static lv_obj_t *lvglScreenLockSetupSaveBtn = nullptr;
+static lv_obj_t *lvglScreenLockPinTa = nullptr;
+static lv_obj_t *lvglScreenLockStatusLabel = nullptr;
+static lv_obj_t *lvglScreenLockUnlockBtn = nullptr;
+static lv_obj_t *lvglScreenLockUnlockBtnLabel = nullptr;
+static lv_obj_t *lvglScreenLockResetBtn = nullptr;
+static lv_obj_t *lvglScreenLockResetBtnLabel = nullptr;
 static lv_obj_t *lvglStyleScreensaverSw = nullptr;
 static lv_obj_t *lvglStyleMenuIconsSw = nullptr;
 static lv_obj_t *lvglStyleTouchVibrationSw = nullptr;
@@ -1098,6 +1169,7 @@ static lv_obj_t *lvglStyleTimeoutValueLabel = nullptr;
 static lv_obj_t *lvglStylePowerOffDropdown = nullptr;
 static bool lvglStyleUiSyncing = false;
 static lv_obj_t *lvglStyleHomeChatSw = nullptr;
+static lv_obj_t *lvglStyleHomeRadioSw = nullptr;
 static lv_obj_t *lvglStyleHomeMediaSw = nullptr;
 static lv_obj_t *lvglStyleHomeInfoSw = nullptr;
 static lv_obj_t *lvglStyleHomeGamesSw = nullptr;
@@ -1106,6 +1178,7 @@ static lv_obj_t *lvglStyleHomePowerSw = nullptr;
 static lv_obj_t *lvglStyleHomeAirplaneSw = nullptr;
 static lv_obj_t *lvglStyleHomeApSw = nullptr;
 static lv_obj_t *lvglStyleHomeChatLabel = nullptr;
+static lv_obj_t *lvglStyleHomeRadioLabel = nullptr;
 static lv_obj_t *lvglStyleHomeMediaLabel = nullptr;
 static lv_obj_t *lvglStyleHomeInfoLabel = nullptr;
 static lv_obj_t *lvglStyleHomeGamesLabel = nullptr;
@@ -1124,6 +1197,14 @@ static lv_obj_t *lvglOtaProgressBar = nullptr;
 static lv_obj_t *lvglOtaProgressLabel = nullptr;
 static lv_obj_t *lvglOtaReleaseHeaderLabel = nullptr;
 static lv_obj_t *lvglOtaReleaseChecks[OTA_RELEASE_LIST_MAX] = {};
+static lv_obj_t *lvglRemoteModuleDropdown = nullptr;
+static lv_obj_t *lvglRemoteModuleLabel = nullptr;
+static lv_obj_t *lvglRemoteChannelLabel = nullptr;
+static lv_obj_t *lvglRemoteChannelTa = nullptr;
+static lv_obj_t *lvglRemoteBaudLabel = nullptr;
+static lv_obj_t *lvglRemoteBaudDropdown = nullptr;
+static lv_obj_t *lvglRemoteModeLabel = nullptr;
+static lv_obj_t *lvglRemoteModeDropdown = nullptr;
 static lv_obj_t *lvglBatteryTrainStatusLabel = nullptr;
 static lv_obj_t *lvglBatteryTrainCurrentLabel = nullptr;
 static lv_obj_t *lvglBatteryTrainFullLabel = nullptr;
@@ -1534,13 +1615,18 @@ unsigned long screensaverNextPoseDelayMs = SCREENSAVER_POSE_MIN_MS;
 
 enum UiScreen : uint8_t {
     UI_HOME,
+    UI_LOCK,
     UI_CHAT,
     UI_CHAT_PEERS,
     UI_WIFI_LIST,
     UI_MEDIA,
     UI_INFO,
     UI_GAMES,
+    UI_RADIO_CONTROL,
     UI_CONFIG,
+    UI_CONFIG_REMOTE_CONTROL,
+    UI_CONFIG_RADIO_BUTTONS,
+    UI_CONFIG_RADIO_RECEIVER_TEST,
     UI_CONFIG_BATTERY,
     UI_CONFIG_STYLE,
     UI_CONFIG_STYLE_HOME_ITEMS,
@@ -1577,7 +1663,26 @@ enum UiTextId : uint8_t {
     TXT_MEDIA,
     TXT_INFO,
     TXT_GAMES,
+    TXT_RADIO_CONTROL,
+    TXT_GATE_01,
+    TXT_GATE_01_LIGHT,
+    TXT_GATE_02,
+    TXT_GATE_02_LIGHT,
     TXT_CONFIG,
+    TXT_REMOTE_CONTROL,
+    TXT_BUTTON_CONFIG,
+    TXT_CONFIRM,
+    TXT_NO_RADIO_BUTTONS,
+    TXT_ADD_FIRST_RADIO_BUTTON,
+    TXT_BUTTON_LIMIT_REACHED,
+    TXT_SELECT_BUTTONS_TO_DELETE,
+    TXT_DELETE_BUTTONS,
+    TXT_DELETE_SELECTED_RADIO_BUTTONS,
+    TXT_SEND,
+    TXT_ENCRYPTION_KEY,
+    TXT_REMOTE_ID,
+    TXT_ROLLING_COUNTER,
+    TXT_TRANSFER_MODE,
     TXT_AIRPLANE_ON,
     TXT_AIRPLANE_OFF,
     TXT_AP_MODE_ON,
@@ -1662,6 +1767,7 @@ enum UiTextId : uint8_t {
 enum Hc12ConfigApplyAction : uint8_t;
 
 UiScreen uiScreen = UI_HOME;
+static UiScreen lvglSwipeSourceScreen = UI_HOME;
 UiScreen screensaverReturnScreen = UI_HOME;
 String uiStatusLine = "Ready";
 UiLanguage uiLanguage = UI_LANG_ENGLISH;
@@ -1715,6 +1821,7 @@ static void lvglApplyMsgboxModalStyle(lv_obj_t *msgbox);
 
 void lvglEnsureScreenBuilt(UiScreen screen);
 lv_obj_t *lvglScreenForUi(UiScreen screen);
+UiScreen lvglUiForScreenObj(lv_obj_t *screenObj);
 void lvglOpenScreen(UiScreen screen, lv_scr_load_anim_t anim);
 static bool uiScreenSupportsSwipeBack(UiScreen screen);
 
@@ -1939,7 +2046,13 @@ static void lvglDeferredChatOpenFirstUnreadCallback(void *param);
 static bool chatDeleteMessageById(const String &peerKey, const String &messageId, const String &status);
 static bool chatDeleteMessageAt(const String &peerKey, int index);
 static unsigned long e220RuntimeBaud();
+static unsigned long hc12RuntimeBaud();
 static void hc12SerialReopen(unsigned long baud);
+static void hc12InitIfNeeded();
+static void hc12RestartWithCurrentPins(const String &statusText);
+static void loadPersistedRemoteControlSettings();
+static void loadPersistedRadioControlButtons();
+static void savePersistedRemoteControlSettings();
 static bool hc12SetIsAsserted();
 static bool checkersHandleIncomingChatPayload(const String &peerKey,
                                               const String &author,
@@ -2536,6 +2649,7 @@ bool wsRebootOnDisconnectEnabled = false;
 bool airplaneModeEnabled = false;
 bool menuCustomIconsEnabled = true;
 bool homeChatVisible = true;
+bool homeRadioVisible = true;
 bool homeMediaVisible = true;
 bool homeInfoVisible = true;
 bool homeGamesVisible = true;
@@ -2543,6 +2657,12 @@ bool homeConfigVisible = true;
 bool homePowerVisible = true;
 bool homeAirplaneVisible = true;
 bool homeApVisible = true;
+bool screenLockEnabled = false;
+bool screenLockUnlocked = true;
+char screenLockPin[5] = "";
+uint8_t screenLockFailedTotal = 0;
+unsigned long screenLockBlockedUntilMs = 0;
+unsigned long screenLockLastUiRefreshMs = 0;
 UiButtonStyleMode uiButtonStyleMode = UI_BUTTON_STYLE_3D;
 uint32_t uiButtonStyleFlatSelectorColor = 0;
 uint32_t uiButtonStyle3dSelectorColor = 0;
@@ -3660,6 +3780,7 @@ static bool lvglGetSwipeBackPreviewTarget(UiScreen current, UiScreen &target)
         case UI_MEDIA:
         case UI_INFO:
         case UI_GAMES:
+        case UI_RADIO_CONTROL:
         case UI_CONFIG:
             target = UI_HOME;
             return true;
@@ -3667,6 +3788,7 @@ static bool lvglGetSwipeBackPreviewTarget(UiScreen current, UiScreen &target)
             target = UI_CHAT;
             return true;
         case UI_WIFI_LIST:
+        case UI_CONFIG_REMOTE_CONTROL:
         case UI_CONFIG_BATTERY:
         case UI_CONFIG_STYLE:
         case UI_CONFIG_LANGUAGE:
@@ -3675,6 +3797,12 @@ static bool lvglGetSwipeBackPreviewTarget(UiScreen current, UiScreen &target)
         case UI_CONFIG_MQTT_CONFIG:
         case UI_CONFIG_MQTT_CONTROLS:
             target = UI_CONFIG;
+            return true;
+        case UI_CONFIG_RADIO_BUTTONS:
+            target = UI_RADIO_CONTROL;
+            return true;
+        case UI_CONFIG_RADIO_RECEIVER_TEST:
+            target = UI_CONFIG_RADIO_BUTTONS;
             return true;
         case UI_CONFIG_STYLE_HOME_ITEMS:
             target = UI_CONFIG_STYLE;
@@ -3753,13 +3881,14 @@ static bool lvglEnsureSwipeBackPreviewMounted()
         (lvglSwipePreviewUsesSnapshot ? (lvglSwipePreviewSnapshot != nullptr) : true)) {
         return true;
     }
+    const UiScreen currentUi = uiScreenSupportsSwipeBack(lvglSwipeSourceScreen) ? lvglSwipeSourceScreen : uiScreen;
     UiScreen targetUi = UI_HOME;
-    if (!lvglGetSwipeBackPreviewTarget(uiScreen, targetUi)) return false;
+    if (!lvglGetSwipeBackPreviewTarget(currentUi, targetUi)) return false;
 
     lvglReleaseSwipeBackPreview();
     if (boardHasUsablePsram()) {
         lv_obj_t *targetScreen = nullptr;
-        if (uiScreen == UI_CHAT && !currentChatPeerKey.isEmpty() && targetUi == UI_CHAT) {
+        if (currentUi == UI_CHAT && !currentChatPeerKey.isEmpty() && targetUi == UI_CHAT) {
             lvglSwipePreviewSnapshot = lvglCreateChatSwipeBackSnapshot();
         } else {
             lvglEnsureScreenBuilt(targetUi);
@@ -3859,7 +3988,7 @@ static void lvglSwipeBackVisualAnimReady(lv_anim_t *a)
     lvglSwipeVisualActive = false;
     lvglSwipeVisualAnimating = false;
 
-    if (navigateBack) lvglNavigateBackBySwipe(LV_SCR_LOAD_ANIM_NONE);
+    if (navigateBack) lvglNavigateBackBySwipe();
 }
 
 static void lvglAnimateSwipeBackVisual(lv_coord_t targetX, bool navigateBack)
@@ -3867,7 +3996,7 @@ static void lvglAnimateSwipeBackVisual(lv_coord_t targetX, bool navigateBack)
     lv_obj_t *screen = lvglSwipeVisualScreen;
     if (!screen || !lv_obj_is_valid(screen)) {
         lvglResetSwipeBackVisualState(false);
-        if (navigateBack) lvglNavigateBackBySwipe(LV_SCR_LOAD_ANIM_NONE);
+        if (navigateBack) lvglNavigateBackBySwipe();
         return;
     }
 
@@ -3878,7 +4007,7 @@ static void lvglAnimateSwipeBackVisual(lv_coord_t targetX, bool navigateBack)
     const lv_coord_t previewTargetX = navigateBack ? 0 : static_cast<lv_coord_t>(-DISPLAY_WIDTH);
     if (startX == targetX) {
         lvglResetSwipeBackVisualState(true);
-        if (navigateBack) lvglNavigateBackBySwipe(LV_SCR_LOAD_ANIM_NONE);
+        if (navigateBack) lvglNavigateBackBySwipe();
         return;
     }
 
@@ -4155,6 +4284,11 @@ static void lvglApplyStyleScreenControlStyles()
         lv_obj_set_style_bg_color(lvglStyleScreensaverSw, lv_color_hex(0x48515C), LV_PART_MAIN);
         lv_obj_set_style_bg_color(lvglStyleScreensaverSw, lv_color_hex(0x3A8F4B), LV_PART_INDICATOR | LV_STATE_CHECKED);
         lv_obj_set_style_bg_color(lvglStyleScreensaverSw, lv_color_hex(0xDCE7F2), LV_PART_KNOB);
+    }
+    if (lvglStyleScreenLockSw) {
+        lv_obj_set_style_bg_color(lvglStyleScreenLockSw, lv_color_hex(0x48515C), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(lvglStyleScreenLockSw, lv_color_hex(0x3A8F4B), LV_PART_INDICATOR | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_color(lvglStyleScreenLockSw, lv_color_hex(0xDCE7F2), LV_PART_KNOB);
     }
     if (lvglStyleMenuIconsSw) {
         lv_obj_set_style_bg_color(lvglStyleMenuIconsSw, lv_color_hex(0x48515C), LV_PART_MAIN);
@@ -4518,6 +4652,7 @@ void lvglTopIndicatorsTapEvent(lv_event_t *e)
     if (lvglClickSuppressed()) return;
     lv_obj_t *obj = lv_event_get_target(e);
     if (!obj || !displayAwake) return;
+    if (screenLockShouldGateUi()) return;
 
     lv_indev_t *indev = lv_indev_get_act();
     if (!indev) return;
@@ -4543,6 +4678,7 @@ void lvglTopUnreadTapEvent(lv_event_t *e)
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
     if (lvglClickSuppressed()) return;
     if (!displayAwake) return;
+    if (screenLockShouldGateUi()) return;
     if (lvglKb && !lv_obj_has_flag(lvglKb, LV_OBJ_FLAG_HIDDEN)) lvglHideKeyboard();
     lv_async_call(lvglDeferredChatOpenFirstUnreadCallback, nullptr);
 }
@@ -4552,6 +4688,7 @@ void lvglTopSoundTapEvent(lv_event_t *e)
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
     if (lvglClickSuppressed()) return;
     if (!displayAwake) return;
+    if (screenLockShouldGateUi()) return;
     if (lvglKb && !lv_obj_has_flag(lvglKb, LV_OBJ_FLAG_HIDDEN)) lvglHideKeyboard();
     lvglShowSoundPopup();
 }
@@ -4561,6 +4698,7 @@ void lvglTopOtaTapEvent(lv_event_t *e)
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
     if (lvglClickSuppressed()) return;
     if (!displayAwake || !otaUpdateAvailable) return;
+    if (screenLockShouldGateUi()) return;
     if (lvglKb && !lv_obj_has_flag(lvglKb, LV_OBJ_FLAG_HIDDEN)) lvglHideKeyboard();
     lvglEnsureScreenBuilt(UI_CONFIG_OTA);
     lvglOpenScreen(UI_CONFIG_OTA, LV_SCR_LOAD_ANIM_MOVE_LEFT);
@@ -4854,13 +4992,18 @@ lv_obj_t *lvglCreateScreenBase(const char *title, bool backToHome = false)
 static const char *uiScreenName(UiScreen screen)
 {
     switch (screen) {
+        case UI_LOCK: return "Screen Lock";
         case UI_CHAT: return tr(TXT_CHAT);
         case UI_CHAT_PEERS: return tr(TXT_CHAT_PEERS);
         case UI_MEDIA: return tr(TXT_MEDIA);
         case UI_INFO: return tr(TXT_INFO);
+        case UI_RADIO_CONTROL: return tr(TXT_RADIO_CONTROL);
         case UI_CONFIG: return tr(TXT_CONFIG);
+        case UI_CONFIG_REMOTE_CONTROL: return tr(TXT_REMOTE_CONTROL);
+        case UI_CONFIG_RADIO_BUTTONS: return tr(TXT_BUTTON_CONFIG);
+        case UI_CONFIG_RADIO_RECEIVER_TEST: return "Receiver Test";
         case UI_CONFIG_BATTERY: return tr(TXT_BATTERY);
-        case UI_CONFIG_STYLE: return tr(TXT_STYLE);
+        case UI_CONFIG_STYLE: return tr(TXT_SCREEN);
         case UI_CONFIG_LANGUAGE: return tr(TXT_LANGUAGE);
         case UI_CONFIG_OTA: return tr(TXT_OTA_UPDATES);
         case UI_CONFIG_HC12: return tr(TXT_HC12_CONFIG);
@@ -4889,7 +5032,11 @@ static bool lvglCanBuildScreen(UiScreen screen)
             break;
         case UI_MEDIA:
         case UI_INFO:
+        case UI_RADIO_CONTROL:
         case UI_CONFIG:
+        case UI_CONFIG_REMOTE_CONTROL:
+        case UI_CONFIG_RADIO_BUTTONS:
+        case UI_CONFIG_RADIO_RECEIVER_TEST:
         case UI_CONFIG_BATTERY:
         case UI_CONFIG_STYLE:
         case UI_CONFIG_LANGUAGE:
@@ -4938,6 +5085,10 @@ static void lvglWarmupScreensService(bool uiPriorityActive)
         UI_INFO,
         UI_MEDIA,
         UI_GAMES,
+        UI_RADIO_CONTROL,
+        UI_CONFIG_REMOTE_CONTROL,
+        UI_CONFIG_RADIO_BUTTONS,
+        UI_CONFIG_RADIO_RECEIVER_TEST,
         UI_CONFIG_HC12,
         UI_CONFIG_HC12_TERMINAL,
         UI_CONFIG_HC12_INFO,
@@ -5666,6 +5817,7 @@ static ChatBeepPattern chatMessageBeepPattern(MessageBeepTone tone)
 }
 
 #include "app/ui_text.inc"
+#include "app/radio_control.inc"
 static void lvglSetMenuButtonIconMode(lv_obj_t *btn,
                                       const String &plainText,
                                       const char *symbol,
@@ -5696,6 +5848,7 @@ static void lvglSetMenuButtonIconMode(lv_obj_t *btn,
 static void lvglRefreshPrimaryMenuButtonIcons()
 {
     lvglSetMenuButtonIconMode(lvglHomeChatBtn, tr(TXT_CHAT), LV_SYMBOL_BELL, &img_chat_small_icon);
+    lvglSetMenuButtonIconMode(lvglHomeRadioBtn, tr(TXT_RADIO_CONTROL), LV_SYMBOL_HOME, &img_radio_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(lvglHomeMediaBtn, tr(TXT_MEDIA), LV_SYMBOL_AUDIO, &img_music_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(lvglHomeInfoBtn, tr(TXT_INFO), LV_SYMBOL_WARNING, &img_info_small_icon);
     lvglSetMenuButtonIconMode(lvglHomeGamesBtn, tr(TXT_GAMES), LV_SYMBOL_PLAY, &img_games_small_icon);
@@ -5716,7 +5869,8 @@ static void lvglRefreshPrimaryMenuButtonIcons()
 
     lvglSetMenuButtonIconMode(lvglConfigWifiBtn, tr(TXT_WIFI_CONFIG), LV_SYMBOL_WIFI, &img_wifi_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(lvglConfigHc12Btn, tr(TXT_HC12_CONFIG), LV_SYMBOL_SETTINGS, &img_radio_small_icon, 8, 12);
-    lvglSetMenuButtonIconMode(lvglConfigStyleBtn, tr(TXT_STYLE), LV_SYMBOL_SETTINGS, &img_styles_small_icon, 8, 12);
+    lvglSetMenuButtonIconMode(lvglConfigRemoteBtn, tr(TXT_REMOTE_CONTROL), LV_SYMBOL_HOME, &img_radio_small_icon, 8, 12);
+    lvglSetMenuButtonIconMode(lvglConfigStyleBtn, tr(TXT_SCREEN), LV_SYMBOL_SETTINGS, &img_styles_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(lvglConfigMqttBtn, tr(TXT_MQTT_CONFIG), LV_SYMBOL_SETTINGS, &img_mqtt_conf_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(lvglConfigMqttControlsBtn, tr(TXT_MQTT_CONTROLS), LV_SYMBOL_LIST, &img_mqtt_controls_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(lvglConfigScreenshotBtn, tr(TXT_SCREENSHOT), LV_SYMBOL_IMAGE, &img_screenshot_small_icon, 8, 12);
@@ -5743,6 +5897,7 @@ static void lvglSetHomeButtonVisibleState(lv_obj_t *btn, bool visible)
 static void lvglRefreshHomeButtonVisibility()
 {
     lvglSetHomeButtonVisibleState(lvglHomeChatBtn, homeChatVisible);
+    lvglSetHomeButtonVisibleState(lvglHomeRadioBtn, homeRadioVisible);
     lvglSetHomeButtonVisibleState(lvglHomeMediaBtn, homeMediaVisible);
     lvglSetHomeButtonVisibleState(lvglHomeInfoBtn, homeInfoVisible);
     lvglSetHomeButtonVisibleState(lvglHomeGamesBtn, homeGamesVisible);
@@ -5751,6 +5906,9 @@ static void lvglRefreshHomeButtonVisibility()
     lvglSetHomeButtonVisibleState(lvglAirplaneBtn, homeAirplaneVisible);
     lvglSetHomeButtonVisibleState(lvglApModeBtn, homeApVisible);
 }
+
+
+
 
 static void lvglApplyMomentaryButtonStyle(lv_obj_t *btn, lv_obj_t *label, lv_color_t bodyCol, bool compact)
 {
@@ -7590,17 +7748,23 @@ void lvglKeyboardRefreshLayout()
 {
     if (!lvglKeyboardVisible() || !lvglKeyboardFocusedTa || !lv_obj_is_valid(lvglKeyboardFocusedTa)) {
         lvglKeyboardReleasePaddedContainer();
+        lvglRefreshWifiPasswordDialogLayout();
         return;
     }
 
     if (lvglKeyboardFocusedTa == lvglChatInputTa) {
         lvglSetChatKeyboardVisible(true);
         lvglKeyboardEnsureFocusedVisible(false);
+        lvglRefreshWifiPasswordDialogLayout();
         return;
     }
 
     const bool configManagedTarget =
         (lvglKeyboardFocusedTa == lvglConfigDeviceNameTa) ||
+        (lvglKeyboardFocusedTa == lvglRemoteChannelTa) ||
+        (lvglKeyboardFocusedTa == lvglRemoteKeyTa) ||
+        (lvglKeyboardFocusedTa == lvglRemoteIdTa) ||
+        (lvglKeyboardFocusedTa == lvglRemoteCounterTa) ||
         (hc12CmdTaObj() && lvglKeyboardFocusedTa == hc12CmdTaObj());
     lvglSetConfigKeyboardVisible(configManagedTarget);
 
@@ -7617,6 +7781,7 @@ void lvglKeyboardRefreshLayout()
     }
 
     lvglKeyboardEnsureFocusedVisible(false);
+    lvglRefreshWifiPasswordDialogLayout();
 }
 
 #include "app/chat_contacts.inc"
@@ -8739,6 +8904,10 @@ static void hc12Service()
             hc12AppendTerminal(buf);
             continue;
         }
+        if (uiScreen == UI_CONFIG_RADIO_RECEIVER_TEST) {
+            radioReceiverTestHandleByte(static_cast<uint8_t>(ch));
+            continue;
+        }
         if (ch == '\n') {
             String &rxLine = hc12RadioLineBuffer();
             String line = rxLine;
@@ -8830,6 +8999,64 @@ void lvglWifiPwdShowToggleEvent(lv_event_t *e)
     if (lvglWifiPwdShowBtnLabel) lv_label_set_text(lvglWifiPwdShowBtnLabel, makeVisible ? LV_SYMBOL_EYE_OPEN : LV_SYMBOL_EYE_CLOSE);
 }
 
+static void lvglRefreshWifiPasswordDialogLayout()
+{
+    if (!lvglWifiPwdModal || !lv_obj_is_valid(lvglWifiPwdModal)) return;
+
+    const bool compactLayout = (DISPLAY_WIDTH <= 240) || (DISPLAY_HEIGHT <= 320);
+    const lv_coord_t modalW = compactLayout ? min<lv_coord_t>(DISPLAY_WIDTH - 16, 212) : static_cast<lv_coord_t>(DISPLAY_WIDTH - 24);
+    const lv_coord_t inputH = compactLayout ? 30 : 34;
+    const lv_coord_t iconBtn = compactLayout ? 30 : 34;
+    const lv_coord_t actionBtnW = compactLayout ? 74 : 84;
+    const lv_coord_t actionBtnH = compactLayout ? 28 : 30;
+    const lv_coord_t actionGap = compactLayout ? 6 : 8;
+    const lv_coord_t modalPad = compactLayout ? 8 : 10;
+
+    lv_obj_set_width(lvglWifiPwdModal, modalW);
+    lv_obj_set_style_pad_all(lvglWifiPwdModal, modalPad, 0);
+    lv_obj_set_style_pad_row(lvglWifiPwdModal, compactLayout ? 6 : 8, 0);
+
+    if (lvglWifiPwdInputRow && lv_obj_is_valid(lvglWifiPwdInputRow)) {
+        lv_obj_set_style_pad_column(lvglWifiPwdInputRow, compactLayout ? 4 : 6, 0);
+    }
+
+    if (lvglWifiPwdTa && lv_obj_is_valid(lvglWifiPwdTa)) {
+        const lv_coord_t inputW = max<lv_coord_t>(96, modalW - (modalPad * 2) - iconBtn - (compactLayout ? 4 : 6));
+        lv_obj_set_size(lvglWifiPwdTa, inputW, inputH);
+    }
+
+    if (lvglWifiPwdShowBtn && lv_obj_is_valid(lvglWifiPwdShowBtn)) {
+        lv_obj_set_size(lvglWifiPwdShowBtn, iconBtn, inputH);
+    }
+
+    if (lvglWifiPwdActionRow && lv_obj_is_valid(lvglWifiPwdActionRow)) {
+        lv_obj_set_style_pad_column(lvglWifiPwdActionRow, actionGap, 0);
+    }
+    if (lvglWifiPwdCancelBtn && lv_obj_is_valid(lvglWifiPwdCancelBtn)) {
+        lv_obj_set_size(lvglWifiPwdCancelBtn, actionBtnW, actionBtnH);
+    }
+    if (lvglWifiPwdSaveBtn && lv_obj_is_valid(lvglWifiPwdSaveBtn)) {
+        lv_obj_set_size(lvglWifiPwdSaveBtn, actionBtnW, actionBtnH);
+    }
+
+    lv_obj_update_layout(lvglWifiPwdModal);
+
+    const lv_coord_t modalH = lv_obj_get_height(lvglWifiPwdModal);
+    const lv_coord_t topInset = UI_TOP_BAR_H + (compactLayout ? 4 : 10);
+    lv_coord_t targetY = compactLayout ? (UI_TOP_BAR_H + 8) : 60;
+
+    if (lvglKeyboardVisible()) {
+        const lv_coord_t keyboardTop = DISPLAY_HEIGHT - 120;
+        targetY = min<lv_coord_t>(targetY, keyboardTop - modalH - 6);
+    }
+
+    targetY = max<lv_coord_t>(topInset, targetY);
+    targetY = min<lv_coord_t>(targetY, DISPLAY_HEIGHT - modalH - 6);
+
+    lv_obj_set_align(lvglWifiPwdModal, LV_ALIGN_TOP_MID);
+    lv_obj_set_y(lvglWifiPwdModal, targetY);
+}
+
 void lvglMqttPassShowToggleEvent(lv_event_t *e)
 {
     lv_obj_t *btn = lv_event_get_target(e);
@@ -8845,8 +9072,9 @@ void lvglOpenWifiPasswordDialog(const String &ssid)
     if (!lvglWifiPwdModal) {
         lvglWifiPwdModal = lv_obj_create(lv_layer_top());
         if (!lvglWifiPwdModal) return;
-        lv_obj_set_size(lvglWifiPwdModal, DISPLAY_WIDTH - 24, 170);
-        lv_obj_center(lvglWifiPwdModal);
+        lv_obj_set_size(lvglWifiPwdModal, DISPLAY_WIDTH - 24, LV_SIZE_CONTENT);
+        lv_obj_set_y(lvglWifiPwdModal, 60);
+        lv_obj_set_align(lvglWifiPwdModal, LV_ALIGN_TOP_MID);
         lv_obj_set_style_bg_color(lvglWifiPwdModal, lv_color_hex(0x16212C), 0);
         lv_obj_set_style_border_color(lvglWifiPwdModal, lv_color_hex(0x5A6B7C), 0);
         lv_obj_set_style_border_width(lvglWifiPwdModal, 1, 0);
@@ -8865,25 +9093,25 @@ void lvglOpenWifiPasswordDialog(const String &ssid)
         lv_label_set_long_mode(lvglWifiPwdSsidLabel, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_color(lvglWifiPwdSsidLabel, lv_color_hex(0xB7C4D1), 0);
 
-        lv_obj_t *pwdRow = lv_obj_create(lvglWifiPwdModal);
-        lv_obj_set_size(pwdRow, lv_pct(100), LV_SIZE_CONTENT);
-        lv_obj_set_style_bg_opa(pwdRow, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(pwdRow, 0, 0);
-        lv_obj_set_style_pad_all(pwdRow, 0, 0);
-        lv_obj_set_style_pad_column(pwdRow, 6, 0);
-        lv_obj_set_flex_flow(pwdRow, LV_FLEX_FLOW_ROW);
-        lv_obj_clear_flag(pwdRow, LV_OBJ_FLAG_SCROLLABLE);
+        lvglWifiPwdInputRow = lv_obj_create(lvglWifiPwdModal);
+        lv_obj_set_size(lvglWifiPwdInputRow, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(lvglWifiPwdInputRow, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(lvglWifiPwdInputRow, 0, 0);
+        lv_obj_set_style_pad_all(lvglWifiPwdInputRow, 0, 0);
+        lv_obj_set_style_pad_column(lvglWifiPwdInputRow, 6, 0);
+        lv_obj_set_flex_flow(lvglWifiPwdInputRow, LV_FLEX_FLOW_ROW);
+        lv_obj_clear_flag(lvglWifiPwdInputRow, LV_OBJ_FLAG_SCROLLABLE);
 
-        lvglWifiPwdTa = lv_textarea_create(pwdRow);
-        lv_obj_set_width(lvglWifiPwdTa, lv_pct(100));
-        lv_obj_set_flex_grow(lvglWifiPwdTa, 1);
-        lv_obj_set_height(lvglWifiPwdTa, 38);
+        lvglWifiPwdTa = lv_textarea_create(lvglWifiPwdInputRow);
+        lv_obj_set_width(lvglWifiPwdTa, 160);
+        lv_obj_set_height(lvglWifiPwdTa, 34);
         lv_textarea_set_one_line(lvglWifiPwdTa, true);
+        lv_textarea_set_max_length(lvglWifiPwdTa, 16);
         lv_textarea_set_password_mode(lvglWifiPwdTa, true);
         lv_textarea_set_placeholder_text(lvglWifiPwdTa, "Password");
         lv_obj_add_event_cb(lvglWifiPwdTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
 
-        lvglWifiPwdShowBtn = lv_btn_create(pwdRow);
+        lvglWifiPwdShowBtn = lv_btn_create(lvglWifiPwdInputRow);
         lv_obj_set_size(lvglWifiPwdShowBtn, 34, 34);
         lv_obj_set_style_radius(lvglWifiPwdShowBtn, 8, 0);
         lv_obj_set_style_border_width(lvglWifiPwdShowBtn, 0, 0);
@@ -8900,17 +9128,17 @@ void lvglOpenWifiPasswordDialog(const String &ssid)
         lv_label_set_long_mode(lvglWifiPwdStatusLabel, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_color(lvglWifiPwdStatusLabel, lv_color_hex(0xD8B36A), 0);
 
-        lv_obj_t *row = lv_obj_create(lvglWifiPwdModal);
-        lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
-        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(row, 0, 0);
-        lv_obj_set_style_pad_all(row, 0, 0);
-        lv_obj_set_style_pad_column(row, 8, 0);
-        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lvglWifiPwdActionRow = lv_obj_create(lvglWifiPwdModal);
+        lv_obj_set_size(lvglWifiPwdActionRow, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(lvglWifiPwdActionRow, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(lvglWifiPwdActionRow, 0, 0);
+        lv_obj_set_style_pad_all(lvglWifiPwdActionRow, 0, 0);
+        lv_obj_set_style_pad_column(lvglWifiPwdActionRow, 8, 0);
+        lv_obj_set_flex_flow(lvglWifiPwdActionRow, LV_FLEX_FLOW_ROW);
+        lv_obj_clear_flag(lvglWifiPwdActionRow, LV_OBJ_FLAG_SCROLLABLE);
 
-        auto makeActionBtn = [&](const char *txt, lv_color_t color, lv_event_cb_t cb) {
-            lv_obj_t *btn = lv_btn_create(row);
+        auto makeActionBtn = [&](lv_obj_t **slot, const char *txt, lv_color_t color, lv_event_cb_t cb) {
+            lv_obj_t *btn = lv_btn_create(lvglWifiPwdActionRow);
             if (!btn) return;
             lv_obj_set_size(btn, 84, 30);
             lv_obj_set_style_radius(btn, 8, 0);
@@ -8924,9 +9152,10 @@ void lvglOpenWifiPasswordDialog(const String &ssid)
                 lv_obj_center(lbl);
             }
             lvglRegisterStyledButton(btn, color, true);
+            if (slot) *slot = btn;
         };
-        makeActionBtn("Cancel", lv_color_hex(0x4E5D6C), lvglWifiPwdCancelEvent);
-        makeActionBtn("Save", lv_color_hex(0x357A38), lvglWifiPwdConnectEvent);
+        makeActionBtn(&lvglWifiPwdCancelBtn, "Cancel", lv_color_hex(0x4E5D6C), lvglWifiPwdCancelEvent);
+        makeActionBtn(&lvglWifiPwdSaveBtn, "Save", lv_color_hex(0x357A38), lvglWifiPwdConnectEvent);
     }
 
     lvglWifiPendingSsid = ssid;
@@ -8935,12 +9164,15 @@ void lvglOpenWifiPasswordDialog(const String &ssid)
     if (lvglWifiPwdTa) {
         lv_textarea_set_text(lvglWifiPwdTa, "");
         lv_textarea_set_password_mode(lvglWifiPwdTa, true);
-        lv_event_send(lvglWifiPwdTa, LV_EVENT_FOCUSED, nullptr);
     }
     if (lvglWifiPwdShowBtnLabel) lv_label_set_text(lvglWifiPwdShowBtnLabel, LV_SYMBOL_EYE_OPEN);
     if (lvglWifiPwdStatusLabel) lv_label_set_text(lvglWifiPwdStatusLabel, "");
     lv_obj_move_foreground(lvglWifiPwdModal);
     lv_obj_clear_flag(lvglWifiPwdModal, LV_OBJ_FLAG_HIDDEN);
+    lvglRefreshWifiPasswordDialogLayout();
+    if (lvglWifiPwdTa) {
+        lv_event_send(lvglWifiPwdTa, LV_EVENT_FOCUSED, nullptr);
+    }
 }
 
 void mqttPublishDiscovery()
@@ -10154,7 +10386,15 @@ void lvglBuildUi()
 {
     lvglEnsureScreenBuilt(UI_HOME);
     lvglRefreshTopIndicators();
-    lv_scr_load(lvglScrHome);
+    if (screenLockShouldGateUi()) {
+        lvglEnsureScreenBuilt(UI_LOCK);
+        uiScreen = UI_LOCK;
+        lvglRefreshLockScreenUi();
+        lv_scr_load(lvglScrLock);
+    } else {
+        uiScreen = UI_HOME;
+        lv_scr_load(lvglScrHome);
+    }
 }
 
 void lvglInitUi()
@@ -10323,6 +10563,10 @@ void lvglService()
         } else {
             p2pPairRequestPending = false;
             p2pPairRequestDiscoveredIdx = -1;
+            p2pPairRequestPeerKey = "";
+            p2pPairRequestPeerName = "";
+            p2pPairRequestPeerIp = IPAddress((uint32_t)0);
+            p2pPairRequestPeerPort = 0;
         }
     }
     if (lvglMediaRefreshPending) {
@@ -10363,6 +10607,8 @@ void lvglService()
 
     if (lvglTouchDown) {
         if (!lvglSwipeTracking) {
+            const UiScreen activeScreen = lvglUiForScreenObj(lv_scr_act());
+            if (activeScreen != uiScreen) uiScreen = activeScreen;
             const bool forceSwipeBackScreen = (uiScreen == UI_CONFIG_STYLE_HOME_ITEMS);
             lvglSwipeTracking = true;
             lvglSwipeStartX = lvglLastTouchX;
@@ -10370,7 +10616,8 @@ void lvglService()
             lvglSwipeLastX = lvglLastTouchX;
             lvglSwipeLastY = lvglLastTouchY;
             lvglSwipeStartMs = now;
-            lvglSwipeCandidate = uiScreenSupportsSwipeBack(uiScreen) &&
+            lvglSwipeSourceScreen = uiScreenSupportsSwipeBack(activeScreen) ? activeScreen : uiScreen;
+            lvglSwipeCandidate = uiScreenSupportsSwipeBack(lvglSwipeSourceScreen) &&
                                  (forceSwipeBackScreen || !lvglGestureBlocked) &&
                                  (forceSwipeBackScreen || !lvglTouchOwnsHorizontalGesture());
             lvglSwipeHorizontalLocked = false;
@@ -10466,9 +10713,8 @@ void lvglService()
             if (lvglKb && !lv_obj_has_flag(lvglKb, LV_OBJ_FLAG_HIDDEN)) {
                 if (hadSwipeVisual) lvglAnimateSwipeBackVisual(0, false);
                 lvglHideKeyboard();
-            } else if (hadSwipeVisual) {
-                lvglAnimateSwipeBackVisual(DISPLAY_WIDTH, true);
             } else {
+                if (hadSwipeVisual) lvglResetSwipeBackVisualState(true);
                 lvglNavigateBackBySwipe();
             }
         } else if (tapCandidate) {
@@ -10487,12 +10733,18 @@ void lvglService()
         lvglSwipeCandidate = false;
         lvglSwipeHorizontalLocked = false;
         lvglSwipePressCancelled = false;
+        if (!swipeComplete) lvglSwipeSourceScreen = UI_HOME;
     }
 
     if ((now - lvglLastStatusRefreshMs) >= 900UL) {
         lvglLastStatusRefreshMs = now;
         lvglSyncStatusLine();
         lvglRefreshTopIndicators();
+    }
+
+    if (uiScreen == UI_LOCK && (now - screenLockLastUiRefreshMs) >= 500UL) {
+        screenLockLastUiRefreshMs = now;
+        lvglRefreshLockScreenUi();
     }
 
     if (uiScreen == UI_MEDIA && (now - lvglLastMediaPlayerRefreshMs) >= 400UL) {

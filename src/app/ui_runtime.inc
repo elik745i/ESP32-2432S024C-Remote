@@ -1,4 +1,4 @@
-﻿void appendUiSettings(JsonDocument &doc)
+void appendUiSettings(JsonDocument &doc)
 {
     uiPrefs.begin("ui", true);
 
@@ -42,6 +42,7 @@
     doc["Model3DVisible"] = uiPrefs.getBool("mod_v", true) ? 1 : 0;
     doc["SerialVisible"] = uiPrefs.getBool("ser_v", true) ? 1 : 0;
     doc["HomeChatVisible"] = homeChatVisible ? 1 : 0;
+    doc["HomeGateVisible"] = homeRadioVisible ? 1 : 0;
     doc["HomeMediaVisible"] = homeMediaVisible ? 1 : 0;
     doc["HomeInfoVisible"] = homeInfoVisible ? 1 : 0;
     doc["HomeGamesVisible"] = homeGamesVisible ? 1 : 0;
@@ -49,6 +50,7 @@
     doc["HomePowerVisible"] = homePowerVisible ? 1 : 0;
     doc["HomeAirplaneVisible"] = homeAirplaneVisible ? 1 : 0;
     doc["HomeApVisible"] = homeApVisible ? 1 : 0;
+    doc["ScreenLockEnabled"] = uiPrefs.getBool("scr_lock", screenLockEnabled) ? 1 : 0;
 
     appendUiWidgetPositionIfPresent(doc, uiPrefs, "IndicatorsX", "IndicatorsY", "ind_x", "ind_y");
     appendUiWidgetPositionIfPresent(doc, uiPrefs, "ImuX", "ImuY", "imu_x", "imu_y");
@@ -94,6 +96,7 @@ void loadUiRuntimeConfig()
     touchVibrationEnabled = uiPrefs.getBool("touch_vib", true);
     p2pDiscoveryEnabled = uiPrefs.getBool("chat_disc", p2pDiscoveryEnabled);
     homeChatVisible = uiPrefs.getBool("home_chat", true);
+    homeRadioVisible = uiPrefs.getBool("home_gate", true);
     homeMediaVisible = uiPrefs.getBool("home_media", true);
     homeInfoVisible = uiPrefs.getBool("home_info", true);
     homeGamesVisible = uiPrefs.getBool("home_games", true);
@@ -101,6 +104,15 @@ void loadUiRuntimeConfig()
     homePowerVisible = uiPrefs.getBool("home_power", true);
     homeAirplaneVisible = uiPrefs.getBool("home_air", true);
     homeApVisible = uiPrefs.getBool("home_ap", true);
+    screenLockEnabled = uiPrefs.getBool("scr_lock", false);
+    copyTextToBuf(screenLockPin, sizeof(screenLockPin), uiPrefs.getString("scr_pin", ""));
+    if (strlen(screenLockPin) != 4) {
+        screenLockEnabled = false;
+        screenLockPin[0] = '\0';
+    }
+    screenLockUnlocked = !screenLockEnabled;
+    screenLockFailedTotal = 0;
+    screenLockBlockedUntilMs = 0;
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
     radioModuleType = static_cast<RadioModuleType>(constrain(uiPrefs.getUChar("radio_mod", static_cast<uint8_t>(RADIO_MODULE_HC12)),
                                                              static_cast<uint8_t>(RADIO_MODULE_HC12),
@@ -109,6 +121,9 @@ void loadUiRuntimeConfig()
     radioModuleType = RADIO_MODULE_HC12;
 #endif
     loadPersistedRadioSettings();
+    loadPersistedRemoteControlSettings();
+    loadPersistedRadioControlButtons();
+    gateRollingCount = static_cast<uint16_t>(constrain(uiPrefs.getUInt("gate_cnt", GATE_COUNT_INITIAL), 1U, 65535U));
     messageBeepTone = static_cast<MessageBeepTone>(constrain(uiPrefs.getUChar("msg_tone", static_cast<uint8_t>(MESSAGE_BEEP_DOUBLE_SHORT)),
                                                              static_cast<uint8_t>(MESSAGE_BEEP_SINGLE),
                                                              static_cast<uint8_t>(MESSAGE_BEEP_TONE_COUNT - 1)));
@@ -469,6 +484,14 @@ bool handleUiSettingMessage(const char *msg)
     else if (strcmp(key, "HomeChatVisible") == 0) {
         homeChatVisible = atoi(value) != 0;
         uiPrefs.putBool("home_chat", homeChatVisible);
+        if (lvglReady) {
+            lvglRefreshHomeButtonVisibility();
+            lvglRefreshStyleHomeItemsUi();
+        }
+    }
+    else if (strcmp(key, "HomeGateVisible") == 0) {
+        homeRadioVisible = atoi(value) != 0;
+        uiPrefs.putBool("home_gate", homeRadioVisible);
         if (lvglReady) {
             lvglRefreshHomeButtonVisibility();
             lvglRefreshStyleHomeItemsUi();

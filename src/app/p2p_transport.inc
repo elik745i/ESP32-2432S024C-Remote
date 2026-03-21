@@ -346,6 +346,10 @@ void p2pService()
                             p2pTouchDiscoveredSeen(device, pubKeyHex, p2pUdp.remoteIP(), port);
                             if (p2pDiscoveryEnabled) {
                                 const int requestIdx = p2pFindDiscoveredByPubKeyHex(pubKeyHex);
+                                p2pPairRequestPeerKey = pubKeyHex;
+                                p2pPairRequestPeerName = device.isEmpty() ? String("Peer") : device;
+                                p2pPairRequestPeerIp = p2pUdp.remoteIP();
+                                p2pPairRequestPeerPort = port;
                                 p2pPairRequestPending = true;
                                 p2pPairPromptVisible = false;
                                 p2pPairRequestDiscoveredIdx = requestIdx;
@@ -903,6 +907,7 @@ void lvglHideKeyboard()
     lvglKeyboardReleasePaddedContainer();
     lvglSetChatKeyboardVisible(false);
     lvglSetConfigKeyboardVisible(false);
+    lvglRefreshWifiPasswordDialogLayout();
 }
 
 void lvglTextAreaFocusEvent(lv_event_t *e)
@@ -1003,7 +1008,11 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
                     return;
                 }
                 if (code != LV_EVENT_READY && code != LV_EVENT_CANCEL) return;
-                if (code == LV_EVENT_READY && lvglWifiPwdModal && !lv_obj_has_flag(lvglWifiPwdModal, LV_OBJ_FLAG_HIDDEN) &&
+                if (code == LV_EVENT_READY && lvglScreenLockSetupPinTa && lv_keyboard_get_textarea(lvglKb) == lvglScreenLockSetupPinTa) {
+                    lvglScreenLockUnlockEvent(nullptr);
+                } else if (code == LV_EVENT_READY && lvglScreenLockPinTa && lv_keyboard_get_textarea(lvglKb) == lvglScreenLockPinTa) {
+                    lvglScreenLockUnlockEvent(nullptr);
+                } else if (code == LV_EVENT_READY && lvglWifiPwdModal && !lv_obj_has_flag(lvglWifiPwdModal, LV_OBJ_FLAG_HIDDEN) &&
                     lvglWifiPwdTa && lv_keyboard_get_textarea(lvglKb) == lvglWifiPwdTa) {
                     lvglWifiPwdConnectEvent(nullptr);
                 } else if (code == LV_EVENT_READY && lvglConfigDeviceNameTa && lv_keyboard_get_textarea(lvglKb) == lvglConfigDeviceNameTa) {
@@ -1033,14 +1042,19 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
         );
     }
     lvglKeyboardFocusedTa = ta;
-    lvglKeyboardUseLocalized = lvglKeyboardLocalizedLayoutAvailable(uiLanguage);
+    const bool numericMode = screenLockNumericTarget(ta);
+    lvglKeyboardUseLocalized = numericMode ? false : lvglKeyboardLocalizedLayoutAvailable(uiLanguage);
     lvglKeyboardSpaceSwipeActive = false;
     lvglKeyboardSpaceSwipeTriggered = false;
     lvglKeyboardShiftOneShot = false;
     lvglKeyboardShiftLocked = false;
     lvglKeyboardShiftLastPressMs = 0;
-    lvglKeyboardApplyTextMode();
     lv_keyboard_set_textarea(lvglKb, ta);
+    if (numericMode) {
+        lv_keyboard_set_mode(lvglKb, LV_KEYBOARD_MODE_NUMBER);
+    } else {
+        lvglKeyboardApplyTextMode();
+    }
     lv_obj_clear_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
     lvglKeyboardRefreshLayout();
 }
@@ -1050,6 +1064,13 @@ static unsigned long e220RuntimeBaud()
     const int maxIndex = static_cast<int>(sizeof(E220_UART_BAUD_VALUES) / sizeof(E220_UART_BAUD_VALUES[0])) - 1;
     const int idx = constrain(e220CurrentBaudIndex, 0, maxIndex);
     return E220_UART_BAUD_VALUES[idx];
+}
+
+static unsigned long hc12RuntimeBaud()
+{
+    const int maxIndex = static_cast<int>(sizeof(HC12_SUPPORTED_BAUDS) / sizeof(HC12_SUPPORTED_BAUDS[0])) - 1;
+    const int idx = constrain(hc12CurrentBaudIndex, 0, maxIndex);
+    return HC12_SUPPORTED_BAUDS[idx];
 }
 
 static void hc12SerialReopen(unsigned long baud)
@@ -1080,7 +1101,7 @@ static void hc12InitIfNeeded()
     if (radioModuleType == RADIO_MODULE_HC12) {
         pinMode(hc12ActiveSetPin(), OUTPUT);
         digitalWrite(hc12ActiveSetPin(), HIGH);
-        hc12SerialReopen(HC12_BAUD);
+        hc12SerialReopen(hc12RuntimeBaud());
     } else {
         pinMode(e220ActiveM0Pin(), OUTPUT);
         pinMode(e220ActiveM1Pin(), OUTPUT);

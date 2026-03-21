@@ -18,6 +18,8 @@ void refreshWifiScan()
     wifiScanInProgress = true;
     wifiScanAnimLastMs = millis();
     wifiScanAnimPhase = 0;
+    // Add small delay to ensure WiFi radio is fully initialized before first scan
+    delay(50);
     const int scanStart = WiFi.scanNetworks(true, true);
     if (scanStart == WIFI_SCAN_FAILED) {
         wifiScanInProgress = false;

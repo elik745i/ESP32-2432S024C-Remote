@@ -75,6 +75,7 @@ static void saveHomeScreenPrefs()
 {
     uiPrefs.begin("ui", false);
     uiPrefs.putBool("home_chat", homeChatVisible);
+    uiPrefs.putBool("home_gate", homeRadioVisible);
     uiPrefs.putBool("home_media", homeMediaVisible);
     uiPrefs.putBool("home_info", homeInfoVisible);
     uiPrefs.putBool("home_games", homeGamesVisible);
@@ -96,6 +97,7 @@ static void lvglHandleHomeVisibilityToggle(lv_event_t *e, bool &flag)
 }
 
 void lvglStyleHomeChatToggleEvent(lv_event_t *e) { lvglHandleHomeVisibilityToggle(e, homeChatVisible); }
+void lvglStyleHomeRadioToggleEvent(lv_event_t *e) { lvglHandleHomeVisibilityToggle(e, homeRadioVisible); }
 void lvglStyleHomeMediaToggleEvent(lv_event_t *e) { lvglHandleHomeVisibilityToggle(e, homeMediaVisible); }
 void lvglStyleHomeInfoToggleEvent(lv_event_t *e) { lvglHandleHomeVisibilityToggle(e, homeInfoVisible); }
 void lvglStyleHomeGamesToggleEvent(lv_event_t *e) { lvglHandleHomeVisibilityToggle(e, homeGamesVisible); }
@@ -279,3 +281,4 @@ void lvglStylePowerOffEvent(lv_event_t *e)
     }
     lvglNextHandlerDueMs = 0;
 }
+

@@ -1,4 +1,4 @@
-﻿void chatReloadRecentMessagesFromSd(const String &peerKey)
+void chatReloadRecentMessagesFromSd(const String &peerKey)
 {
     chatClearCache();
     if (peerKey.isEmpty()) return;
@@ -258,6 +258,7 @@ void lvglOpenSnake3dEvent(lv_event_t *e);
 #endif
 void lvglOpenMqttCfgEvent(lv_event_t *e);
 void lvglOpenMqttCtrlEvent(lv_event_t *e);
+void lvglOpenRemoteControlScreenEvent(lv_event_t *e);
 void lvglOpenChatPeersEvent(lv_event_t *e);
 void lvglChatDiscoveryToggleEvent(lv_event_t *e);
 void lvglOpenStyleScreenEvent(lv_event_t *e);
@@ -268,6 +269,7 @@ void lvglStyleMenuIconsToggleEvent(lv_event_t *e);
 void lvglStyleTouchVibrationToggleEvent(lv_event_t *e);
 void lvglStyleTouchSoundToggleEvent(lv_event_t *e);
 void lvglStyleHomeChatToggleEvent(lv_event_t *e);
+void lvglStyleHomeRadioToggleEvent(lv_event_t *e);
 void lvglStyleHomeMediaToggleEvent(lv_event_t *e);
 void lvglStyleHomeInfoToggleEvent(lv_event_t *e);
 void lvglStyleHomeGamesToggleEvent(lv_event_t *e);
@@ -297,6 +299,7 @@ void lvglStylePowerOffEvent(lv_event_t *e);
 void lvglRefreshStyleUi();
 void lvglRefreshStyleHomeItemsUi();
 void lvglRefreshLanguageUi();
+void lvglRefreshRemoteControlUi();
 void lvglRefreshLocalizedUi();
 void lvglGestureBlockEvent(lv_event_t *e);
 void screensaverSetActive(bool active);
@@ -418,6 +421,28 @@ inline void lvglLoadScreen(lv_obj_t *target, lv_scr_load_anim_t anim)
     } else {
         lv_scr_load_anim(target, anim, UI_ANIM_MS, 0, false);
     }
+}
+
+static void lvglPrepareScreenLeave(UiScreen screen)
+{
+    if (screen == UI_CONFIG_RADIO_RECEIVER_TEST) radioReceiverTestLeaveScreen();
+    lv_obj_t *screenObj = lvglScreenForUi(screen);
+    if (screenObj && lv_obj_is_valid(screenObj)) {
+        if (lvglKeyboardFocusedTa && lv_obj_is_valid(lvglKeyboardFocusedTa) &&
+            lv_obj_get_screen(lvglKeyboardFocusedTa) == screenObj) {
+            lvglHideKeyboard();
+        }
+
+        lv_obj_t *activeObj = lv_indev_get_obj_act();
+        if (activeObj && lv_obj_is_valid(activeObj) && lv_obj_get_screen(activeObj) == screenObj) {
+            lv_obj_clear_state(activeObj, LV_STATE_PRESSED | LV_STATE_FOCUSED | LV_STATE_EDITED);
+        }
+    }
+
+    if (lvglTouchIndev) lv_indev_reset(lvglTouchIndev, nullptr);
+    lvglResetGestureTracking();
+    lvglGestureBlocked = false;
+    lvglReorderOwnsHorizontalGesture = false;
 }
 
 static void queueInfoRefresh(bool includeRadio)
@@ -745,7 +770,11 @@ static bool uiScreenSupportsSwipeBack(UiScreen screen)
         case UI_MEDIA:
         case UI_INFO:
         case UI_GAMES:
+        case UI_RADIO_CONTROL:
         case UI_CONFIG:
+        case UI_CONFIG_REMOTE_CONTROL:
+        case UI_CONFIG_RADIO_BUTTONS:
+        case UI_CONFIG_RADIO_RECEIVER_TEST:
         case UI_CONFIG_BATTERY:
         case UI_CONFIG_STYLE:
         case UI_CONFIG_STYLE_HOME_ITEMS:
@@ -770,13 +799,18 @@ lv_obj_t *lvglScreenForUi(UiScreen screen)
 {
     switch (screen) {
         case UI_HOME: return lvglScrHome;
+        case UI_LOCK: return lvglScrLock;
         case UI_CHAT: return lvglScrChat;
         case UI_CHAT_PEERS: return lvglScrChatPeers;
         case UI_WIFI_LIST: return lvglScrWifi;
         case UI_MEDIA: return lvglScrMedia;
         case UI_INFO: return lvglScrInfo;
         case UI_GAMES: return lvglScrGames;
+        case UI_RADIO_CONTROL: return lvglScrRadioControl;
         case UI_CONFIG: return lvglScrConfig;
+        case UI_CONFIG_REMOTE_CONTROL: return lvglScrRemoteControl;
+        case UI_CONFIG_RADIO_BUTTONS: return lvglScrRadioButtonConfig;
+        case UI_CONFIG_RADIO_RECEIVER_TEST: return lvglScrRadioReceiverTest;
         case UI_CONFIG_BATTERY: return lvglScrBatteryTrain;
         case UI_CONFIG_STYLE: return lvglScrStyle;
         case UI_CONFIG_STYLE_HOME_ITEMS: return lvglScrStyleHomeItems;
@@ -796,6 +830,42 @@ lv_obj_t *lvglScreenForUi(UiScreen screen)
 #endif
         default: return nullptr;
     }
+}
+
+UiScreen lvglUiForScreenObj(lv_obj_t *screenObj)
+{
+    if (!screenObj || !lv_obj_is_valid(screenObj)) return uiScreen;
+    if (screenObj == lvglScrHome) return UI_HOME;
+    if (screenObj == lvglScrLock) return UI_LOCK;
+    if (screenObj == lvglScrChat) return UI_CHAT;
+    if (screenObj == lvglScrChatPeers) return UI_CHAT_PEERS;
+    if (screenObj == lvglScrWifi) return UI_WIFI_LIST;
+    if (screenObj == lvglScrMedia) return UI_MEDIA;
+    if (screenObj == lvglScrInfo) return UI_INFO;
+    if (screenObj == lvglScrGames) return UI_GAMES;
+    if (screenObj == lvglScrRadioControl) return UI_RADIO_CONTROL;
+    if (screenObj == lvglScrConfig) return UI_CONFIG;
+    if (screenObj == lvglScrRemoteControl) return UI_CONFIG_REMOTE_CONTROL;
+    if (screenObj == lvglScrRadioButtonConfig) return UI_CONFIG_RADIO_BUTTONS;
+    if (screenObj == lvglScrRadioReceiverTest) return UI_CONFIG_RADIO_RECEIVER_TEST;
+    if (screenObj == lvglScrBatteryTrain) return UI_CONFIG_BATTERY;
+    if (screenObj == lvglScrStyle) return UI_CONFIG_STYLE;
+    if (screenObj == lvglScrStyleHomeItems) return UI_CONFIG_STYLE_HOME_ITEMS;
+    if (screenObj == lvglScrLanguage) return UI_CONFIG_LANGUAGE;
+    if (screenObj == lvglScrOta) return UI_CONFIG_OTA;
+    if (screenObj == lvglScrHc12) return UI_CONFIG_HC12;
+    if (screenObj == lvglScrHc12Terminal) return UI_CONFIG_HC12_TERMINAL;
+    if (screenObj == lvglScrHc12Info) return UI_CONFIG_HC12_INFO;
+    if (screenObj == lvglScrScreensaver) return UI_SCREENSAVER;
+    if (screenObj == lvglScrMqttCfg) return UI_CONFIG_MQTT_CONFIG;
+    if (screenObj == lvglScrMqttCtrl) return UI_CONFIG_MQTT_CONTROLS;
+    if (screenObj == lvglScrSnake) return UI_GAME_SNAKE;
+    if (screenObj == lvglScrTetris) return UI_GAME_TETRIS;
+    if (screenObj == lvglScrCheckers) return UI_GAME_CHECKERS;
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+    if (screenObj == lvglScrSnake3d) return UI_GAME_SNAKE3D;
+#endif
+    return uiScreen;
 }
 
 void lvglEnsureScreenBuilt(UiScreen screen)
@@ -839,6 +909,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_scrollbar_mode(homeWrap, LV_SCROLLBAR_MODE_OFF);
             lvglStatusLabel = nullptr;
             lvglHomeChatBtn = lvglCreateMenuButton(homeWrap, tr(TXT_CHAT), lv_color_hex(0x7A4F2F), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CHAT)));
+            lvglHomeRadioBtn = lvglCreateMenuButton(homeWrap, tr(TXT_RADIO_CONTROL), lv_color_hex(0x7A5C2E), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_RADIO_CONTROL)));
             lvglHomeMediaBtn = lvglCreateMenuButton(homeWrap, tr(TXT_MEDIA), lv_color_hex(0x376B93), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_MEDIA)));
             lvglHomeInfoBtn = lvglCreateMenuButton(homeWrap, tr(TXT_INFO), lv_color_hex(0x7750A0), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_INFO)));
             lvglHomeGamesBtn = lvglCreateMenuButton(homeWrap, tr(TXT_GAMES), lv_color_hex(0x2B7D7D), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_GAMES)));
@@ -858,6 +929,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             }
             lvglRefreshPrimaryMenuButtonIcons();
             lvglRegisterReorderableItem(lvglHomeChatBtn, "ord_home", "chat");
+            lvglRegisterReorderableItem(lvglHomeRadioBtn, "ord_home", "gate");
             lvglRegisterReorderableItem(lvglHomeMediaBtn, "ord_home", "media");
             lvglRegisterReorderableItem(lvglHomeInfoBtn, "ord_home", "info");
             lvglRegisterReorderableItem(lvglHomeGamesBtn, "ord_home", "games");
@@ -869,6 +941,52 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglRegisterReorderableItem(lvglApModeBtn, "ord_home", "ap");
             lvglApplySavedOrder(homeWrap, "ord_home");
             lvglRefreshHomeButtonVisibility();
+            break;
+        }
+        case UI_LOCK: {
+            lvglScrLock = lvglCreateScreenBase("Screen Lock", false);
+            lv_obj_t *wrap = lv_obj_create(lvglScrLock);
+            lv_obj_set_size(wrap, lv_pct(100), UI_CONTENT_H);
+            lv_obj_align(wrap, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
+            lv_obj_set_style_bg_color(wrap, lv_color_hex(0x101922), 0);
+            lv_obj_set_style_border_width(wrap, 0, 0);
+            lv_obj_set_style_pad_all(wrap, 14, 0);
+            lv_obj_set_style_pad_row(wrap, 10, 0);
+            lv_obj_set_flex_flow(wrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_flex_align(wrap, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+            lv_obj_clear_flag(wrap, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *title = lv_label_create(wrap);
+            lv_label_set_text(title, "Enter PIN to unlock");
+            lv_obj_set_style_text_color(title, lv_color_hex(0xE5ECF3), 0);
+            lv_obj_set_style_text_font(title, LV_FONT_DEFAULT, 0);
+
+            lvglScreenLockPinTa = lv_textarea_create(wrap);
+            lv_obj_set_width(lvglScreenLockPinTa, min<lv_coord_t>(DISPLAY_WIDTH - 44, 150));
+            lv_obj_set_height(lvglScreenLockPinTa, 42);
+            lv_textarea_set_one_line(lvglScreenLockPinTa, true);
+            lv_textarea_set_max_length(lvglScreenLockPinTa, 4);
+            lv_textarea_set_placeholder_text(lvglScreenLockPinTa, "0000");
+            lv_textarea_set_password_mode(lvglScreenLockPinTa, true);
+            lv_obj_add_event_cb(lvglScreenLockPinTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
+            lv_obj_add_event_cb(lvglScreenLockPinTa, lvglScreenLockPinChangedEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+
+            lvglScreenLockStatusLabel = lv_label_create(wrap);
+            lv_obj_set_width(lvglScreenLockStatusLabel, lv_pct(100));
+            lv_label_set_long_mode(lvglScreenLockStatusLabel, LV_LABEL_LONG_WRAP);
+            lv_obj_set_style_text_align(lvglScreenLockStatusLabel, LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_set_style_text_color(lvglScreenLockStatusLabel, lv_color_hex(0xB7C4D1), 0);
+
+            lvglScreenLockUnlockBtn = makeSmallBtn(wrap, "Unlock", min<int>(DISPLAY_WIDTH - 44, 140), 38, lv_color_hex(0x2F7A45), lvglScreenLockUnlockEvent, nullptr);
+            if (lvglScreenLockUnlockBtn) lvglScreenLockUnlockBtnLabel = lv_obj_get_child(lvglScreenLockUnlockBtn, 0);
+
+            lvglScreenLockResetBtn = makeSmallBtn(wrap, tr(TXT_FACTORY_RESET), min<int>(DISPLAY_WIDTH - 44, 168), 34, lv_color_hex(0x8E2D2D), lvglScreenLockFactoryResetEvent, nullptr);
+            if (lvglScreenLockResetBtn) {
+                lvglScreenLockResetBtnLabel = lv_obj_get_child(lvglScreenLockResetBtn, 0);
+                lv_obj_add_flag(lvglScreenLockResetBtn, LV_OBJ_FLAG_HIDDEN);
+            }
+
+            lvglRefreshLockScreenUi();
             break;
         }
         case UI_CHAT: {
@@ -1260,6 +1378,129 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglApplySavedOrder(gamesWrap, "ord_games");
             break;
         }
+        case UI_RADIO_CONTROL: {
+            lvglScrRadioControl = lvglCreateScreenBase(tr(TXT_RADIO_CONTROL), true);
+            lv_obj_t *wrap = lv_obj_create(lvglScrRadioControl);
+            lv_obj_set_size(wrap, lv_pct(100), UI_CONTENT_H);
+            lv_obj_align(wrap, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
+            lv_obj_set_style_bg_opa(wrap, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(wrap, 0, 0);
+            lv_obj_set_style_pad_all(wrap, 10, 0);
+            lv_obj_set_style_pad_row(wrap, 10, 0);
+            lv_obj_set_flex_flow(wrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_scroll_dir(wrap, LV_DIR_VER);
+            lv_obj_set_scrollbar_mode(wrap, LV_SCROLLBAR_MODE_OFF);
+            lvglRadioControlConfigBtn = lvglCreateMenuButton(wrap, tr(TXT_BUTTON_CONFIG), lv_color_hex(0x7A5C2E), lvglOpenRadioButtonConfigScreenEvent, nullptr);
+            lvglRadioControlConfigBtnLabel = lvglRadioControlConfigBtn ? lv_obj_get_child(lvglRadioControlConfigBtn, 0) : nullptr;
+            lvglRadioControlList = lv_obj_create(wrap);
+            lv_obj_set_size(lvglRadioControlList, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(lvglRadioControlList, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(lvglRadioControlList, 0, 0);
+            lv_obj_set_style_pad_all(lvglRadioControlList, 0, 0);
+            lv_obj_set_style_pad_row(lvglRadioControlList, 10, 0);
+            lv_obj_set_flex_flow(lvglRadioControlList, LV_FLEX_FLOW_COLUMN);
+            lv_obj_clear_flag(lvglRadioControlList, LV_OBJ_FLAG_SCROLLABLE);
+
+            lvglRefreshRadioControlUi();
+            break;
+        }
+        case UI_CONFIG_RADIO_BUTTONS: {
+            lvglScrRadioButtonConfig = lvglCreateScreenBase(tr(TXT_BUTTON_CONFIG), true);
+            lv_obj_t *wrap = lv_obj_create(lvglScrRadioButtonConfig);
+            lv_obj_set_size(wrap, lv_pct(100), UI_CONTENT_H);
+            lv_obj_align(wrap, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
+            lv_obj_set_style_bg_opa(wrap, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(wrap, 0, 0);
+            lv_obj_set_style_pad_all(wrap, 10, 0);
+            lv_obj_set_style_pad_row(wrap, 10, 0);
+            lv_obj_set_flex_flow(wrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_scrollbar_mode(wrap, LV_SCROLLBAR_MODE_OFF);
+            lv_obj_clear_flag(wrap, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *topRow = lv_obj_create(wrap);
+            lv_obj_set_size(topRow, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(topRow, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(topRow, 0, 0);
+            lv_obj_set_style_pad_all(topRow, 0, 0);
+            lv_obj_set_style_pad_column(topRow, 6, 0);
+            lv_obj_set_flex_flow(topRow, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(topRow, LV_OBJ_FLAG_SCROLLABLE);
+
+            lvglRadioButtonAddBtn = makeSmallBtn(topRow, "+", 44, 30, lv_color_hex(0x2F7A45), lvglRadioButtonAddEvent, nullptr);
+            lvglRadioButtonSelBtn = makeSmallBtn(topRow, "Sel", 54, 30, lv_color_hex(0x2F6D86), lvglRadioButtonSelectModeEvent, nullptr);
+            lvglRadioButtonDelBtn = makeSmallBtn(topRow, "Del", 54, 30, lv_color_hex(0x8A3A3A), lvglRadioButtonDeletePromptEvent, nullptr);
+
+            lv_obj_t *headerRow = lv_obj_create(wrap);
+            lv_obj_set_size(headerRow, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(headerRow, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(headerRow, 0, 0);
+            lv_obj_set_style_pad_all(headerRow, 0, 0);
+            lv_obj_set_style_pad_column(headerRow, 6, 0);
+            lv_obj_set_flex_flow(headerRow, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(headerRow, LV_OBJ_FLAG_SCROLLABLE);
+
+            auto makeHeaderLabel = [&](const char *txt, lv_coord_t w) {
+                lv_obj_t *lbl = lv_label_create(headerRow);
+                lv_obj_set_width(lbl, w);
+                lv_label_set_text(lbl, txt);
+                lv_obj_set_style_text_color(lbl, lv_color_hex(0xAFC3D7), 0);
+                lv_obj_set_style_text_font(lbl, LV_FONT_DEFAULT, 0);
+            };
+
+            makeHeaderLabel("", 24);
+            makeHeaderLabel("Name", 78);
+            makeHeaderLabel("Dest.", 46);
+            makeHeaderLabel("ON", 34);
+            makeHeaderLabel("OFF", 34);
+            makeHeaderLabel("Conf", 44);
+
+            lvglRadioButtonConfigList = lv_obj_create(wrap);
+            lv_obj_set_size(lvglRadioButtonConfigList, lv_pct(100), UI_CONTENT_H - 126);
+            lv_obj_set_style_bg_opa(lvglRadioButtonConfigList, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(lvglRadioButtonConfigList, 0, 0);
+            lv_obj_set_style_pad_all(lvglRadioButtonConfigList, 0, 0);
+            lv_obj_set_style_pad_row(lvglRadioButtonConfigList, 8, 0);
+            lv_obj_set_flex_flow(lvglRadioButtonConfigList, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_scroll_dir(lvglRadioButtonConfigList, LV_DIR_VER);
+            lv_obj_set_scrollbar_mode(lvglRadioButtonConfigList, LV_SCROLLBAR_MODE_OFF);
+
+            lvglRadioReceiverTestBtn = makeSmallBtn(wrap, "Receiver Test", DISPLAY_WIDTH - 20, 32, lv_color_hex(0x7A5C2E), lvglOpenRadioReceiverTestScreenEvent, nullptr);
+
+            lvglRefreshRadioButtonConfigUi();
+            break;
+        }
+        case UI_CONFIG_RADIO_RECEIVER_TEST: {
+            lvglScrRadioReceiverTest = lvglCreateScreenBase("Receiver Test", true);
+            lv_obj_t *wrap = lv_obj_create(lvglScrRadioReceiverTest);
+            lv_obj_set_size(wrap, lv_pct(100), UI_CONTENT_H);
+            lv_obj_align(wrap, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
+            lv_obj_set_style_bg_opa(wrap, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(wrap, 0, 0);
+            lv_obj_set_style_pad_all(wrap, 10, 0);
+            lv_obj_set_style_pad_row(wrap, 8, 0);
+            lv_obj_set_flex_flow(wrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_clear_flag(wrap, LV_OBJ_FLAG_SCROLLABLE);
+
+            lvglRadioReceiverTestStatusLabel = lv_label_create(wrap);
+            lv_obj_set_width(lvglRadioReceiverTestStatusLabel, lv_pct(100));
+            lv_label_set_long_mode(lvglRadioReceiverTestStatusLabel, LV_LABEL_LONG_WRAP);
+            lv_obj_set_style_text_color(lvglRadioReceiverTestStatusLabel, lv_color_hex(0xC8D3DD), 0);
+
+            lvglRadioReceiverTestTa = lv_textarea_create(wrap);
+            lv_obj_set_width(lvglRadioReceiverTestTa, lv_pct(100));
+            lv_obj_set_height(lvglRadioReceiverTestTa, UI_CONTENT_H - 44);
+            lv_textarea_set_one_line(lvglRadioReceiverTestTa, false);
+            lv_textarea_set_placeholder_text(lvglRadioReceiverTestTa, "Listening for legacy HC-12 packets...");
+            lv_obj_set_style_bg_color(lvglRadioReceiverTestTa, lv_color_hex(0x091118), 0);
+            lv_obj_set_style_text_color(lvglRadioReceiverTestTa, lv_color_hex(0x82F6A2), 0);
+            lv_obj_set_style_border_color(lvglRadioReceiverTestTa, lv_color_hex(0x2D495E), 0);
+            lv_obj_set_style_border_width(lvglRadioReceiverTestTa, 1, 0);
+            lv_obj_clear_flag(lvglRadioReceiverTestTa, LV_OBJ_FLAG_CLICKABLE);
+            lv_textarea_set_cursor_click_pos(lvglRadioReceiverTestTa, false);
+
+            lvglRefreshRadioReceiverTestUi();
+            break;
+        }
         case UI_CONFIG: {
             lvglScrConfig = lvglCreateScreenBase(tr(TXT_CONFIG), true);
             lvglConfigWrap = lv_obj_create(lvglScrConfig);
@@ -1273,7 +1514,8 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_scrollbar_mode(lvglConfigWrap, LV_SCROLLBAR_MODE_OFF);
             lvglConfigWifiBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_WIFI_CONFIG), lv_color_hex(0x3A8F4B), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_WIFI_LIST)));
             lvglConfigHc12Btn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_HC12_CONFIG), lv_color_hex(0x7A5C2E), lvglOpenHc12ScreenEvent, nullptr);
-            lvglConfigStyleBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_STYLE), lv_color_hex(0x2D6D8E), lvglOpenStyleScreenEvent, nullptr);
+            lvglConfigRemoteBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_REMOTE_CONTROL), lv_color_hex(0x8A5A2D), lvglOpenRemoteControlScreenEvent, nullptr);
+            lvglConfigStyleBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_SCREEN), lv_color_hex(0x2D6D8E), lvglOpenStyleScreenEvent, nullptr);
             lvglConfigBatteryBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_BATTERY), lv_color_hex(0x6C7E2C), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CONFIG_BATTERY)));
             lvglConfigMqttBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_MQTT_CONFIG), lv_color_hex(0x6D4B9A), lvglOpenMqttCfgEvent, nullptr);
             lvglConfigMqttControlsBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_MQTT_CONTROLS), lv_color_hex(0x2D6D8E), lvglOpenMqttCtrlEvent, nullptr);
@@ -1508,6 +1750,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglApplyConfigScreenControlStyles();
             lvglRegisterReorderableItem(lvglConfigWifiBtn, "ord_cfg", "wifi");
             lvglRegisterReorderableItem(lvglConfigHc12Btn, "ord_cfg", "hc12");
+            lvglRegisterReorderableItem(lvglConfigRemoteBtn, "ord_cfg", "rctl");
             lvglRegisterReorderableItem(lvglConfigStyleBtn, "ord_cfg", "style");
             lvglRegisterReorderableItem(lvglConfigMqttBtn, "ord_cfg", "mqtt");
             lvglRegisterReorderableItem(lvglConfigMqttControlsBtn, "ord_cfg", "mctl");
@@ -1523,6 +1766,102 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglRegisterReorderableItem(rgbWrap, "ord_cfg", "rgb");
             lvglApplySavedOrder(lvglConfigWrap, "ord_cfg");
             lvglRefreshConfigUi();
+            break;
+        }
+        case UI_CONFIG_REMOTE_CONTROL: {
+            lvglScrRemoteControl = lvglCreateScreenBase(tr(TXT_REMOTE_CONTROL), true);
+            lv_obj_t *wrap = lv_obj_create(lvglScrRemoteControl);
+            lv_obj_set_size(wrap, lv_pct(100), UI_CONTENT_H);
+            lv_obj_align(wrap, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
+            lv_obj_set_style_bg_opa(wrap, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(wrap, 0, 0);
+            lv_obj_set_style_pad_all(wrap, 10, 0);
+            lv_obj_set_style_pad_row(wrap, 10, 0);
+            lv_obj_set_flex_flow(wrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_scrollbar_mode(wrap, LV_SCROLLBAR_MODE_OFF);
+
+            auto makeFieldCard = [&](const char *title, lv_obj_t **titleOut) -> lv_obj_t * {
+                lv_obj_t *card = lv_obj_create(wrap);
+                lv_obj_set_size(card, lv_pct(100), LV_SIZE_CONTENT);
+                lv_obj_set_style_bg_color(card, lv_color_hex(0x18222D), 0);
+                lv_obj_set_style_border_width(card, 0, 0);
+                lv_obj_set_style_radius(card, 12, 0);
+                lv_obj_set_style_pad_all(card, 10, 0);
+                lv_obj_set_style_pad_row(card, 6, 0);
+                lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+                lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+                lv_obj_t *lbl = lv_label_create(card);
+                lv_label_set_text(lbl, title);
+                lv_obj_set_style_text_color(lbl, lv_color_hex(0xE5ECF3), 0);
+                if (titleOut) *titleOut = lbl;
+                return card;
+            };
+
+            lv_obj_t *moduleCard = makeFieldCard(tr(TXT_RADIO_MODULE), &lvglRemoteModuleLabel);
+            lvglRemoteModuleDropdown = lv_dropdown_create(moduleCard);
+            lv_obj_set_width(lvglRemoteModuleDropdown, lv_pct(100));
+            lv_dropdown_set_options(lvglRemoteModuleDropdown, buildRadioModuleDropdownOptions().c_str());
+            lv_obj_add_event_cb(lvglRemoteModuleDropdown, lvglRemoteControlModuleChangedEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+
+            lv_obj_t *channelCard = makeFieldCard(tr(TXT_CHANNEL), &lvglRemoteChannelLabel);
+            lvglRemoteChannelTa = lv_textarea_create(channelCard);
+            lv_obj_set_width(lvglRemoteChannelTa, lv_pct(100));
+            lv_textarea_set_one_line(lvglRemoteChannelTa, true);
+            lv_textarea_set_max_length(lvglRemoteChannelTa, 4);
+            lv_textarea_set_placeholder_text(lvglRemoteChannelTa, "Channel");
+            lv_obj_add_event_cb(lvglRemoteChannelTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
+
+            lv_obj_t *baudCard = makeFieldCard(tr(TXT_BAUD_RATE), &lvglRemoteBaudLabel);
+            lvglRemoteBaudDropdown = lv_dropdown_create(baudCard);
+            lv_obj_set_width(lvglRemoteBaudDropdown, lv_pct(100));
+
+            lv_obj_t *modeCard = makeFieldCard(tr(TXT_FU_MODE), &lvglRemoteModeLabel);
+            lvglRemoteModeDropdown = lv_dropdown_create(modeCard);
+            lv_obj_set_width(lvglRemoteModeDropdown, lv_pct(100));
+
+            lv_obj_t *powerCard = makeFieldCard(tr(TXT_POWER), &lvglRemotePowerLabel);
+            lvglRemotePowerDropdown = lv_dropdown_create(powerCard);
+            lv_obj_set_width(lvglRemotePowerDropdown, lv_pct(100));
+
+            lvglRemoteExtraCard = makeFieldCard(tr(TXT_TRANSFER_MODE), &lvglRemoteExtraLabel);
+            lvglRemoteExtraDropdown = lv_dropdown_create(lvglRemoteExtraCard);
+            lv_obj_set_width(lvglRemoteExtraDropdown, lv_pct(100));
+
+            lv_obj_t *keyCard = makeFieldCard(tr(TXT_ENCRYPTION_KEY), &lvglRemoteKeyLabel);
+            lvglRemoteKeyTa = lv_textarea_create(keyCard);
+            lv_obj_set_width(lvglRemoteKeyTa, lv_pct(100));
+            lv_textarea_set_one_line(lvglRemoteKeyTa, true);
+            lv_textarea_set_max_length(lvglRemoteKeyTa, 24);
+            lv_textarea_set_placeholder_text(lvglRemoteKeyTa, "16 hex chars");
+            lv_obj_add_event_cb(lvglRemoteKeyTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
+
+            lv_obj_t *remoteIdCard = makeFieldCard(tr(TXT_REMOTE_ID), &lvglRemoteIdLabel);
+            lvglRemoteIdTa = lv_textarea_create(remoteIdCard);
+            lv_obj_set_width(lvglRemoteIdTa, lv_pct(100));
+            lv_textarea_set_one_line(lvglRemoteIdTa, true);
+            lv_textarea_set_max_length(lvglRemoteIdTa, 5);
+            lv_textarea_set_accepted_chars(lvglRemoteIdTa, "0123456789");
+            lv_textarea_set_placeholder_text(lvglRemoteIdTa, "1..65535");
+            lv_obj_add_event_cb(lvglRemoteIdTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
+
+            lv_obj_t *counterCard = makeFieldCard(tr(TXT_ROLLING_COUNTER), &lvglRemoteCounterLabel);
+            lvglRemoteCounterTa = lv_textarea_create(counterCard);
+            lv_obj_set_width(lvglRemoteCounterTa, lv_pct(100));
+            lv_textarea_set_one_line(lvglRemoteCounterTa, true);
+            lv_textarea_set_max_length(lvglRemoteCounterTa, 5);
+            lv_textarea_set_accepted_chars(lvglRemoteCounterTa, "0123456789");
+            lv_textarea_set_placeholder_text(lvglRemoteCounterTa, "1..65535");
+            lv_obj_add_event_cb(lvglRemoteCounterTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
+
+            lvglRemoteSaveBtn = lvglCreateMenuButton(wrap, tr(TXT_SAVE), lv_color_hex(0x2F7A45), lvglRemoteControlSaveEvent, nullptr);
+            lvglRemoteSaveBtnLabel = lvglRemoteSaveBtn ? lv_obj_get_child(lvglRemoteSaveBtn, 0) : nullptr;
+
+            lvglRemoteStatusLabel = lv_label_create(wrap);
+            lv_obj_set_width(lvglRemoteStatusLabel, lv_pct(100));
+            lv_label_set_long_mode(lvglRemoteStatusLabel, LV_LABEL_LONG_WRAP);
+            lv_obj_set_style_text_color(lvglRemoteStatusLabel, lv_color_hex(0xC8D3DD), 0);
+
+            lvglRefreshRemoteControlUi();
             break;
         }
         case UI_CONFIG_BATTERY: {
@@ -1613,7 +1952,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             break;
         }
         case UI_CONFIG_STYLE: {
-            lvglScrStyle = lvglCreateScreenBase(tr(TXT_STYLE), false);
+            lvglScrStyle = lvglCreateScreenBase(tr(TXT_SCREEN), false);
             lvglStyleButtonFlatBtn = nullptr;
             lvglStyleButtonFlatBtnLabel = nullptr;
             lvglStyleButton3dBtn = nullptr;
@@ -1661,6 +2000,27 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_add_event_cb(lvglStyleScreensaverSw, lvglGestureBlockEvent, LV_EVENT_PRESSED, nullptr);
             lv_obj_add_event_cb(lvglStyleScreensaverSw, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
             lv_obj_add_event_cb(lvglStyleScreensaverSw, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
+
+            lv_obj_t *screenLockRow = lv_obj_create(wrap);
+            lv_obj_set_size(screenLockRow, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_color(screenLockRow, lv_color_hex(0x18222D), 0);
+            lv_obj_set_style_border_width(screenLockRow, 0, 0);
+            lv_obj_set_style_radius(screenLockRow, 12, 0);
+            lv_obj_set_style_pad_all(screenLockRow, 12, 0);
+            lv_obj_set_style_pad_column(screenLockRow, 8, 0);
+            lv_obj_set_flex_flow(screenLockRow, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(screenLockRow, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *screenLockLbl = lv_label_create(screenLockRow);
+            lv_label_set_text(screenLockLbl, "Screen Lock");
+            lv_obj_set_style_text_color(screenLockLbl, lv_color_hex(0xE5ECF3), 0);
+            lv_obj_set_flex_grow(screenLockLbl, 1);
+
+            lvglStyleScreenLockSw = lv_switch_create(screenLockRow);
+            lv_obj_add_event_cb(lvglStyleScreenLockSw, lvglStyleScreenLockToggleEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+            lv_obj_add_event_cb(lvglStyleScreenLockSw, lvglGestureBlockEvent, LV_EVENT_PRESSED, nullptr);
+            lv_obj_add_event_cb(lvglStyleScreenLockSw, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
+            lv_obj_add_event_cb(lvglStyleScreenLockSw, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
 
             lv_obj_t *menuIconsRow = lv_obj_create(wrap);
             lv_obj_set_size(menuIconsRow, lv_pct(100), LV_SIZE_CONTENT);
@@ -1923,6 +2283,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
         case UI_CONFIG_STYLE_HOME_ITEMS: {
             lvglScrStyleHomeItems = lvglCreateScreenBase(tr(TXT_MAIN_SCREEN_ITEMS), false);
             lvglStyleHomeChatSw = nullptr;
+            lvglStyleHomeRadioSw = nullptr;
             lvglStyleHomeMediaSw = nullptr;
             lvglStyleHomeInfoSw = nullptr;
             lvglStyleHomeGamesSw = nullptr;
@@ -1931,6 +2292,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglStyleHomeAirplaneSw = nullptr;
             lvglStyleHomeApSw = nullptr;
             lvglStyleHomeChatLabel = nullptr;
+            lvglStyleHomeRadioLabel = nullptr;
             lvglStyleHomeMediaLabel = nullptr;
             lvglStyleHomeInfoLabel = nullptr;
             lvglStyleHomeGamesLabel = nullptr;
@@ -1973,6 +2335,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             };
 
             makeHomeRow(&lvglStyleHomeChatLabel, &lvglStyleHomeChatSw, tr(TXT_CHAT), lvglStyleHomeChatToggleEvent);
+            makeHomeRow(&lvglStyleHomeRadioLabel, &lvglStyleHomeRadioSw, tr(TXT_RADIO_CONTROL), lvglStyleHomeRadioToggleEvent);
             makeHomeRow(&lvglStyleHomeMediaLabel, &lvglStyleHomeMediaSw, tr(TXT_MEDIA), lvglStyleHomeMediaToggleEvent);
             makeHomeRow(&lvglStyleHomeInfoLabel, &lvglStyleHomeInfoSw, tr(TXT_INFO), lvglStyleHomeInfoToggleEvent);
             makeHomeRow(&lvglStyleHomeGamesLabel, &lvglStyleHomeGamesSw, tr(TXT_GAMES), lvglStyleHomeGamesToggleEvent);
@@ -3024,13 +3387,20 @@ void lvglEnsureScreenBuilt(UiScreen screen)
 
 void lvglOpenScreen(UiScreen screen, lv_scr_load_anim_t anim)
 {
+    if (screenLockShouldGateUi() && screen != UI_LOCK) {
+        screen = UI_LOCK;
+        anim = LV_SCR_LOAD_ANIM_NONE;
+    }
     const UiScreen prevScreen = uiScreen;
     lvglEnsureScreenBuilt(screen);
     lv_obj_t *target = lvglScreenForUi(screen);
     if (!target) return;
+    if (prevScreen != screen) lvglPrepareScreenLeave(prevScreen);
     uiScreen = screen;
     if (prevScreen == UI_CHAT && screen != UI_CHAT) chatClearCache();
-    if (screen == UI_WIFI_LIST) {
+    if (screen == UI_LOCK) {
+        lvglRefreshLockScreenUi();
+    } else if (screen == UI_WIFI_LIST) {
         lvglRefreshWifiList();
     } else if (screen == UI_CHAT) {
         if (currentChatPeerKey.isEmpty()) chatClearCache();
@@ -3044,8 +3414,16 @@ void lvglOpenScreen(UiScreen screen, lv_scr_load_anim_t anim)
     } else if (screen == UI_INFO) {
         queueInfoRefresh(true);
         lvglRefreshInfoPanel();        
+    } else if (screen == UI_RADIO_CONTROL) {
+        lvglRefreshRadioControlUi();
     } else if (screen == UI_CONFIG) {
         lvglRefreshConfigUi();
+    } else if (screen == UI_CONFIG_REMOTE_CONTROL) {
+        lvglRefreshRemoteControlUi();
+    } else if (screen == UI_CONFIG_RADIO_BUTTONS) {
+        lvglRefreshRadioButtonConfigUi();
+    } else if (screen == UI_CONFIG_RADIO_RECEIVER_TEST) {
+        lvglRefreshRadioReceiverTestUi();
     } else if (screen == UI_CONFIG_BATTERY) {
         lvglRefreshBatteryTrainUi();
     } else if (screen == UI_CONFIG_STYLE) {
@@ -3069,11 +3447,12 @@ void lvglOpenScreen(UiScreen screen, lv_scr_load_anim_t anim)
     lvglLoadScreen(target, anim);
 }
 
-void lvglNavigateBackBySwipe(lv_scr_load_anim_t anim)
+static void lvglNavigateBackFromScreen(UiScreen sourceScreen, lv_scr_load_anim_t anim)
 {
-    const UiScreen prev = uiScreen;
+    uiScreen = sourceScreen;
+    const UiScreen prev = sourceScreen;
     if (!lvglReady) return;
-    switch (uiScreen) {
+    switch (sourceScreen) {
         case UI_CHAT:
             if (!currentChatPeerKey.isEmpty()) {
                 lvglHideChatMenu();
@@ -3089,15 +3468,24 @@ void lvglNavigateBackBySwipe(lv_scr_load_anim_t anim)
         case UI_MEDIA:
         case UI_INFO:
         case UI_GAMES:
+        case UI_RADIO_CONTROL:
         case UI_CONFIG:
+        case UI_LOCK:
             lvglOpenScreen(UI_HOME, anim);
             break;
         case UI_CHAT_PEERS:
             lvglOpenScreen(UI_CHAT, anim);
             break;
         case UI_WIFI_LIST:
+        case UI_CONFIG_REMOTE_CONTROL:
         case UI_CONFIG_BATTERY:
             lvglOpenScreen(UI_CONFIG, anim);
+            break;
+        case UI_CONFIG_RADIO_BUTTONS:
+            lvglOpenScreen(UI_RADIO_CONTROL, anim);
+            break;
+        case UI_CONFIG_RADIO_RECEIVER_TEST:
+            lvglOpenScreen(UI_CONFIG_RADIO_BUTTONS, anim);
             break;
         case UI_CONFIG_STYLE:
         case UI_CONFIG_LANGUAGE:
@@ -3151,6 +3539,17 @@ void lvglNavigateBackBySwipe(lv_scr_load_anim_t anim)
     if (prev == UI_MEDIA && networkSuspendedForAudio && !mediaIsPlaying && !mediaPaused) {
         networkResumeAfterAudio();
     }
+}
+
+void lvglNavigateBackBySwipe(lv_scr_load_anim_t anim)
+{
+    UiScreen sourceScreen = lvglSwipeSourceScreen;
+    if (!uiScreenSupportsSwipeBack(sourceScreen)) {
+        const UiScreen activeScreen = lvglUiForScreenObj(lv_scr_act());
+        sourceScreen = uiScreenSupportsSwipeBack(activeScreen) ? activeScreen : uiScreen;
+    }
+    lvglSwipeSourceScreen = UI_HOME;
+    lvglNavigateBackFromScreen(sourceScreen, anim);
 }
 
 void lvglHomeNavEvent(lv_event_t *e)
@@ -4082,7 +4481,7 @@ static bool hc12SendRadioPayload(const char *payload, size_t len)
     hc12InitIfNeeded();
     if (hc12SetIsAsserted() || !radioModuleCanCarryChat() || !payload || len == 0 || len >= HC12_RADIO_MAX_LINE) return false;
     const size_t frameBytes = strlen(HC12_RADIO_FRAME_PREFIX) + len + 1U;
-    const unsigned long baud = (radioModuleType == RADIO_MODULE_E220) ? e220RuntimeBaud() : HC12_BAUD;
+    const unsigned long baud = (radioModuleType == RADIO_MODULE_E220) ? e220RuntimeBaud() : hc12RuntimeBaud();
     const unsigned long bits = static_cast<unsigned long>(frameBytes) * 10UL;
     radioLastTxLeadMs = max<unsigned long>(1UL, ((bits * 1000UL) + (baud - 1UL)) / baud) + RADIO_TX_TIMING_SLOP_MS;
     Serial1.print(HC12_RADIO_FRAME_PREFIX);
@@ -4746,4 +5145,3 @@ void lvglRefreshChatPeerUi()
 
     lvglApplySavedOrder(lvglChatPeerList, "ord_cpr");
 }
-
