@@ -555,11 +555,11 @@ static void serviceInfoRefresh()
     const uint32_t psramTotal = boardHasUsablePsram()
                                     ? static_cast<uint32_t>(heap_caps_get_total_size(MALLOC_CAP_SPIRAM))
                                     : 0U;
-    infoPsramPercentValue = psramTotal > 0U ? static_cast<uint8_t>((psramFree * 100ULL) / psramTotal) : 0U;
-    // Note: this is percent free, so 100% means almost all PSRAM is free/available.
-    infoPsramValueText = psramTotal > 0U ? String(infoPsramPercentValue) + "% free" : String("Off");
+    const uint32_t psramUsed = (psramTotal > psramFree) ? (psramTotal - psramFree) : 0U;
+    infoPsramPercentValue = psramTotal > 0U ? static_cast<uint8_t>((psramUsed * 100ULL) / psramTotal) : 0U;
+    infoPsramValueText = psramTotal > 0U ? String(infoPsramPercentValue) + "% used" : String("Off");
     infoPsramSubText = psramTotal > 0U
-                           ? String("Free ") + String(static_cast<unsigned long long>(psramFree / (1024ULL * 1024ULL))) +
+                           ? String("Used ") + String(static_cast<unsigned long long>(psramUsed / (1024ULL * 1024ULL))) +
                                  " / " + String(static_cast<unsigned long long>(psramTotal / (1024ULL * 1024ULL))) + " MB"
                            : String("PSRAM unavailable");
 
