@@ -1,0 +1,35 @@
+name: Publish Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release_assets/${{ github.ref_name }}/esp32-2432s024c-${{ github.ref_name }}.bin
+            release_assets/${{ github.ref_name }}/esp32-2432s024c-${{ github.ref_name }}_bootloader.bin
+            release_assets/${{ github.ref_name }}/esp32-2432s024c-${{ github.ref_name }}_boot_app0.bin
+            release_assets/${{ github.ref_name }}/esp32-2432s024c-${{ github.ref_name }}_partitions.bin
+            release_assets/${{ github.ref_name }}/esp32-3248s035-${{ github.ref_name }}.bin
+            release_assets/${{ github.ref_name }}/esp32-3248s035-${{ github.ref_name }}_bootloader.bin
+            release_assets/${{ github.ref_name }}/esp32-3248s035-${{ github.ref_name }}_boot_app0.bin
+            release_assets/${{ github.ref_name }}/esp32-3248s035-${{ github.ref_name }}_partitions.bin
+            release_assets/${{ github.ref_name }}/esp32-s3-3248s035-n16r8-${{ github.ref_name }}.bin
+            release_assets/${{ github.ref_name }}/esp32-s3-3248s035-n16r8-${{ github.ref_name }}_bootloader.bin
+            release_assets/${{ github.ref_name }}/esp32-s3-3248s035-n16r8-${{ github.ref_name }}_boot_app0.bin
+            release_assets/${{ github.ref_name }}/esp32-s3-3248s035-n16r8-${{ github.ref_name }}_partitions.bin
+          body_path: release_assets/${{ github.ref_name }}/RELEASE_NOTES.md
+          fail_on_unmatched_files: true
