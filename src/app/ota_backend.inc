@@ -35,7 +35,7 @@ static bool otaFetchReleaseCatalog(String &latestTagOut, String &latestUrlOut, S
     otaSelectedReleaseIndex = -1;
 
     int ghStatus = -1;
-    const String body = httpsGetText("https://api.github.com/repos/elik745i/ESP32-2432S024C-Remote/releases?per_page=10", &ghStatus);
+    const String body = httpsGetText("https://api.github.com/repos/elik745i/ESP32-2432S024C-Remote/releases?per_page=16", &ghStatus);
     if (body.isEmpty()) {
         errorOut = "github_fetch_failed";
         return false;

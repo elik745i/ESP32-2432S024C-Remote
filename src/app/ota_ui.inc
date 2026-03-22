@@ -994,14 +994,22 @@ void lvglRefreshLocalizedUi()
 
 void lvglRefreshOtaUi()
 {
+    const int versionCmp =
+        (otaLatestVersion[0] != '\0') ? otaCompareVersions(String(FW_VERSION), String(otaLatestVersion)) : 0;
+
     if (lvglOtaCurrentLabel) lvglLabelSetTextIfChanged(lvglOtaCurrentLabel, FW_VERSION);
     if (lvglOtaLatestLabel) {
         if (!OTA_FIRMWARE_FLASH_SUPPORTED) lvglLabelSetTextIfChanged(lvglOtaLatestLabel, "Unavailable on this board");
-        else if (otaLatestVersion[0] != '\0') lvglLabelSetTextIfChanged(lvglOtaLatestLabel, otaLatestVersion);
+        else if (otaLatestVersion[0] != '\0' && versionCmp > 0) {
+            lvglLabelSetTextIfChanged(lvglOtaLatestLabel, String(otaLatestVersion) + " (latest published)");
+        } else if (otaLatestVersion[0] != '\0') {
+            lvglLabelSetTextIfChanged(lvglOtaLatestLabel, otaLatestVersion);
+        }
         else lvglLabelSetTextIfChanged(lvglOtaLatestLabel, otaUiState == OTA_UI_CHECKING ? "Checking..." : "Unknown");
     }
     if (lvglOtaStatusLabel) {
         if (!OTA_FIRMWARE_FLASH_SUPPORTED) lvglLabelSetTextIfChanged(lvglOtaStatusLabel, "Firmware image is too large for dual-slot OTA on the 4 MB layout.");
+        else if (otaLatestVersion[0] != '\0' && versionCmp > 0) lvglLabelSetTextIfChanged(lvglOtaStatusLabel, "Current firmware is newer than the latest published GitHub release.");
         else if (otaStatusText.length()) lvglLabelSetTextIfChanged(lvglOtaStatusLabel, otaStatusText);
         else if (otaUpdateAvailable) lvglLabelSetTextIfChanged(lvglOtaStatusLabel, "Update available");
         else lvglLabelSetTextIfChanged(lvglOtaStatusLabel, "Idle");
@@ -1050,7 +1058,7 @@ void lvglRefreshOtaUi()
         }
     }
     if (lvglOtaReleaseHeaderLabel) {
-        lvglLabelSetTextIfChanged(lvglOtaReleaseHeaderLabel, tr(TXT_OTA_PREVIOUS_RELEASES));
+        lvglLabelSetTextIfChanged(lvglOtaReleaseHeaderLabel, "Published releases");
         const bool visible = OTA_FIRMWARE_FLASH_SUPPORTED && (otaUiState == OTA_UI_CHECKING || otaReleaseEntryCount > 0);
         if (visible) lv_obj_clear_flag(lvglOtaReleaseHeaderLabel, LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(lvglOtaReleaseHeaderLabel, LV_OBJ_FLAG_HIDDEN);

@@ -2422,6 +2422,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_style_pad_all(wrap, 10, 0);
             lv_obj_set_style_pad_row(wrap, 10, 0);
             lv_obj_set_flex_flow(wrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_scroll_dir(wrap, LV_DIR_VER);
             lv_obj_set_scrollbar_mode(wrap, LV_SCROLLBAR_MODE_OFF);
 
             auto makeInfoLine = [&](const char *title, lv_obj_t **valueOut) -> lv_obj_t * {
