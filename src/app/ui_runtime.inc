@@ -44,6 +44,18 @@ static bool moduleNeedsP2pRuntime()
            moduleInstalled[APP_MODULE_GAMES];
 }
 
+static bool moduleNeedsRuntime()
+{
+    return moduleInstalled[APP_MODULE_CHAT] ||
+           moduleInstalled[APP_MODULE_RADIO] ||
+           moduleInstalled[APP_MODULE_MEDIA] ||
+           moduleInstalled[APP_MODULE_INFO] ||
+           moduleInstalled[APP_MODULE_GAMES] ||
+           moduleInstalled[APP_MODULE_MQTT] ||
+           moduleInstalled[APP_MODULE_SCREENSAVER] ||
+           moduleInstalled[APP_MODULE_WEBSERVER];
+}
+
 static int moduleIndexForScreen(UiScreen screen)
 {
     switch (screen) {

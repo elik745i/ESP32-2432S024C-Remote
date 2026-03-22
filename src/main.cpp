@@ -2522,6 +2522,8 @@ void loop()
     const bool realtimeMessaging = uiScreenNeedsRealtimeMessaging();
 
     const unsigned long now = millis();
+    const bool modulesRuntimeActive = moduleNeedsRuntime();
+
     if (bootSdInitPending && static_cast<unsigned long>(now - bootDeferredStartMs) >= BOOT_DEFER_SD_MS) {
         bootSdInitPending = false;
         setupSd();
@@ -2544,16 +2546,16 @@ void loop()
         switch (serviceSlicePhase) {
             case 0:
                 wifiConnectionService();
-                if (moduleInstalled[APP_MODULE_MQTT] && (!uiPriorityActive || realtimeMessaging)) mqttService();
+                if (modulesRuntimeActive && moduleInstalled[APP_MODULE_MQTT] && (!uiPriorityActive || realtimeMessaging)) mqttService();
                 break;
 
             case 1:
-                if (moduleNeedsP2pRuntime() && p2pReady && (!uiPriorityActive || realtimeMessaging)) p2pService();
+                if (modulesRuntimeActive && moduleNeedsP2pRuntime() && p2pReady && (!uiPriorityActive || realtimeMessaging)) p2pService();
                 break;
 
             case 2:
                 if (!uiPriorityActive || uiScreen == UI_WIFI_LIST) wifiScanService();
-                if (moduleInstalled[APP_MODULE_CHAT] && (!uiPriorityActive || realtimeMessaging)) {
+                if (modulesRuntimeActive && moduleInstalled[APP_MODULE_CHAT] && (!uiPriorityActive || realtimeMessaging)) {
                     chatPendingService();   // keep for WiFi/MQTT generic outbox maintenance
                 }
                 break;
@@ -2578,15 +2580,17 @@ void loop()
         }
     }
     otaUpdateService();
-    if (moduleInstalled[APP_MODULE_RADIO]) hc12Service();
-    if (moduleInstalled[APP_MODULE_RADIO] && (!uiPriorityActive || uiScreen == UI_CONFIG_HC12) && hc12ConfigApplyPending != HC12_CFG_APPLY_NONE) {
-        serviceDeferredHc12ConfigApply();
+    if (modulesRuntimeActive) {
+        if (moduleInstalled[APP_MODULE_RADIO]) hc12Service();
+        if (moduleInstalled[APP_MODULE_RADIO] && (!uiPriorityActive || uiScreen == UI_CONFIG_HC12) && hc12ConfigApplyPending != HC12_CFG_APPLY_NONE) {
+            serviceDeferredHc12ConfigApply();
+        }
+        if (moduleInstalled[APP_MODULE_RADIO] && moduleInstalled[APP_MODULE_CHAT]) radioChatService();
+        if (moduleInstalled[APP_MODULE_CHAT] && (!uiPriorityActive || realtimeMessaging || chatPendingCount > 0)) {
+            chatPendingService();
+        }
+        if (moduleInstalled[APP_MODULE_CHAT]) chatPendingOutboxService();
     }
-    if (moduleInstalled[APP_MODULE_RADIO] && moduleInstalled[APP_MODULE_CHAT]) radioChatService();
-    if (moduleInstalled[APP_MODULE_CHAT] && (!uiPriorityActive || realtimeMessaging || chatPendingCount > 0)) {
-        chatPendingService();
-    }
-    if (moduleInstalled[APP_MODULE_CHAT]) chatPendingOutboxService();
     screenshotService(isDown);
     const bool allowSdAutoRetry = (moduleInstalled[APP_MODULE_MEDIA] && uiScreen == UI_MEDIA) || !displayAwake;
     if (!sdMounted && allowSdAutoRetry && !isDown && !fsWriteBusy() &&
