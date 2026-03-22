@@ -199,6 +199,9 @@ static lv_obj_t *lvglScreenLockUnlockBtnLabel = nullptr;
 static lv_obj_t *lvglScreenLockResetBtn = nullptr;
 static lv_obj_t *lvglScreenLockResetBtnLabel = nullptr;
 static lv_obj_t *lvglStyleScreensaverSw = nullptr;
+static lv_obj_t *lvglStyleScreensaverRow = nullptr;
+static lv_obj_t *lvglStyleScreensaverTypeRow = nullptr;
+static lv_obj_t *lvglStyleScreensaverTypeDd = nullptr;
 static lv_obj_t *lvglStyleMenuIconsSw = nullptr;
 static lv_obj_t *lvglStyleTouchVibrationSw = nullptr;
 static lv_obj_t *lvglStyleTouchSoundSw = nullptr;
@@ -3438,6 +3441,20 @@ void lvglKeyboardRefreshLayout()
 
     lvglKeyboardEnsureFocusedVisible(false);
     lvglRefreshWifiPasswordDialogLayout();
+}
+
+void lvglStyleScreensaverTypeEvent(lv_event_t *e)
+{
+    if (lvglStyleUiSyncing) return;
+    if (!lvglStyleScreensaverTypeDd) return;
+
+    const uint16_t selected = lv_dropdown_get_selected(lvglStyleScreensaverTypeDd);
+    if (selected >= static_cast<uint16_t>(SCREENSAVER_MODE_COUNT)) return;
+
+    screensaverMode = static_cast<ScreensaverMode>(selected);
+    uiPrefs.begin("ui", false);
+    uiPrefs.putUChar("scrsvr_type", static_cast<uint8_t>(screensaverMode));
+    uiPrefs.end();
 }
 
 #include "app/chat_contacts.inc"

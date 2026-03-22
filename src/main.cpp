@@ -233,7 +233,7 @@ static constexpr uint8_t VIBRATION_QUEUE_MAX = 4;
 
 static constexpr const char *AP_PASS = "12345678";
 static constexpr const char *FW_VERSION = "0.21.08";
-static constexpr uint8_t MODULE_SLOT_COUNT = 6U;
+static constexpr uint8_t MODULE_SLOT_COUNT = 8U;
 static constexpr const char *MODULES_MANIFEST_URL = "https://raw.githubusercontent.com/elik745i/ESP32-2432S024C-Remote/main/modules_manifest.json";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
@@ -244,10 +244,10 @@ static constexpr size_t OTA_DOWNLOAD_BUF_SIZE = 2048U;
 static constexpr uint8_t OTA_RELEASE_LIST_MAX = 6U;
 static constexpr size_t OTA_RELEASE_NOTES_STORE_MAX = 3072U;
 static constexpr const char *APP_MODULE_IDS[MODULE_SLOT_COUNT] = {
-    "chat", "radio", "media", "info", "games", "mqtt"
+    "chat", "radio", "media", "info", "games", "mqtt", "screensaver", "webserver"
 };
 static constexpr const char *APP_MODULE_TITLES[MODULE_SLOT_COUNT] = {
-    "Chat Pack", "Radio Pack", "Media Pack", "Info Pack", "Games Pack", "MQTT Pack"
+    "Chat Pack", "Radio Pack", "Media Pack", "Info Pack", "Games Pack", "MQTT Pack", "Screensaver Pack", "WebServer Pack"
 };
 static constexpr const char *APP_MODULE_DESCRIPTIONS[MODULE_SLOT_COUNT] = {
     "Peer chat and contacts",
@@ -255,7 +255,9 @@ static constexpr const char *APP_MODULE_DESCRIPTIONS[MODULE_SLOT_COUNT] = {
     "Player and media browser",
     "System info and diagnostics",
     "Snake, Tetris, and Checkers",
-    "MQTT config and controls"
+    "MQTT config and controls",
+    "Screensaver toggle and presets",
+    "Web server control and remote APIs"
 };
 static constexpr unsigned long STA_RETRY_INTERVAL_MS = 5000UL;
 static constexpr bool SERIAL_TERMINAL_TRANSFER_ENABLED = false;
@@ -1027,6 +1029,8 @@ enum AppModuleId : uint8_t {
     APP_MODULE_INFO,
     APP_MODULE_GAMES,
     APP_MODULE_MQTT,
+    APP_MODULE_SCREENSAVER,
+    APP_MODULE_WEBSERVER,
     APP_MODULE_COUNT
 };
 
@@ -1183,9 +1187,15 @@ enum MessageBeepTone : uint8_t {
     MESSAGE_BEEP_TONE_COUNT
 };
 
+enum ScreensaverMode : uint8_t {
+    SCREENSAVER_MODE_EYES = 0,
+    SCREENSAVER_MODE_COUNT
+};
+
 VibrationIntensity vibrationIntensity = VIBRATION_INTENSITY_MEDIUM;
 RadioModuleType radioModuleType = RADIO_MODULE_HC12;
 MessageBeepTone messageBeepTone = MESSAGE_BEEP_DOUBLE_SHORT;
+ScreensaverMode screensaverMode = SCREENSAVER_MODE_EYES;
 bool vibrationEnabled = true;
 
 static const char *tr(UiTextId id);
@@ -1193,9 +1203,11 @@ static String buildLanguageDropdownOptions();
 static String buildVibrationIntensityDropdownOptions();
 static String buildRadioModuleDropdownOptions();
 static String buildMessageBeepDropdownOptions();
+static String buildScreensaverDropdownOptions();
 static const char *vibrationIntensityLabel(VibrationIntensity intensity);
 static const char *radioModuleLabel(RadioModuleType module);
 static const char *messageBeepToneLabel(MessageBeepTone tone);
+static const char *screensaverModeLabel(ScreensaverMode mode);
 static void saveSoundPrefs();
 static uint8_t uiSoundMode();
 static const lv_img_dsc_t *uiSoundModeIcon();

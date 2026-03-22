@@ -346,11 +346,28 @@ void lvglRefreshStyleUi()
         }
     }
 
+    if (lvglStyleScreensaverRow) {
+        if (moduleInstalled[APP_MODULE_SCREENSAVER]) {
+            lv_obj_clear_flag(lvglStyleScreensaverRow, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(lvglStyleScreensaverTypeRow, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(lvglStyleScreensaverRow, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(lvglStyleScreensaverTypeRow, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
     if (lvglStyleScreensaverSw) {
         const bool checked = lv_obj_has_state(lvglStyleScreensaverSw, LV_STATE_CHECKED);
         if (screensaverEnabled != checked) {
             if (screensaverEnabled) lv_obj_add_state(lvglStyleScreensaverSw, LV_STATE_CHECKED);
             else lv_obj_clear_state(lvglStyleScreensaverSw, LV_STATE_CHECKED);
+        }
+    }
+    if (lvglStyleScreensaverTypeDd) {
+        lv_dropdown_set_options(lvglStyleScreensaverTypeDd, buildScreensaverDropdownOptions().c_str());
+        const uint16_t selected = static_cast<uint16_t>(screensaverMode);
+        if (lv_dropdown_get_selected(lvglStyleScreensaverTypeDd) != selected) {
+            lv_dropdown_set_selected(lvglStyleScreensaverTypeDd, selected);
         }
     }
     if (lvglStyleMenuIconsSw) {
@@ -472,12 +489,24 @@ void lvglRefreshStyleHomeItemsUi()
         }
     };
 
-    syncSwitch(lvglStyleHomeChatSw, homeChatVisible);
-    syncSwitch(lvglStyleHomeRadioSw, homeRadioVisible);
-    syncSwitch(lvglStyleHomeMediaSw, homeMediaVisible);
-    syncSwitch(lvglStyleHomeInfoSw, homeInfoVisible);
-    syncSwitch(lvglStyleHomeGamesSw, homeGamesVisible);
-    syncSwitch(lvglStyleHomeMqttSw, homeMqttVisible);
+    auto syncModuleRow = [&](lv_obj_t *label, lv_obj_t *sw, bool installed, bool enabled) {
+        lv_obj_t *row = label ? lv_obj_get_parent(label) : (sw ? lv_obj_get_parent(sw) : nullptr);
+        if (row) {
+            if (installed) lv_obj_clear_flag(row, LV_OBJ_FLAG_HIDDEN);
+            else lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (!sw) return;
+        if (installed) lv_obj_clear_state(sw, LV_STATE_DISABLED);
+        else lv_obj_add_state(sw, LV_STATE_DISABLED);
+        syncSwitch(sw, installed && enabled);
+    };
+
+    syncModuleRow(lvglStyleHomeChatLabel, lvglStyleHomeChatSw, moduleInstalled[APP_MODULE_CHAT], homeChatVisible);
+    syncModuleRow(lvglStyleHomeRadioLabel, lvglStyleHomeRadioSw, moduleInstalled[APP_MODULE_RADIO], homeRadioVisible);
+    syncModuleRow(lvglStyleHomeMediaLabel, lvglStyleHomeMediaSw, moduleInstalled[APP_MODULE_MEDIA], homeMediaVisible);
+    syncModuleRow(lvglStyleHomeInfoLabel, lvglStyleHomeInfoSw, moduleInstalled[APP_MODULE_INFO], homeInfoVisible);
+    syncModuleRow(lvglStyleHomeGamesLabel, lvglStyleHomeGamesSw, moduleInstalled[APP_MODULE_GAMES], homeGamesVisible);
+    syncModuleRow(lvglStyleHomeMqttLabel, lvglStyleHomeMqttSw, moduleInstalled[APP_MODULE_MQTT], homeMqttVisible);
     syncSwitch(lvglStyleHomeConfigSw, homeConfigVisible);
     syncSwitch(lvglStyleHomePowerSw, homePowerVisible);
     syncSwitch(lvglStyleHomeAirplaneSw, homeAirplaneVisible);
@@ -990,6 +1019,17 @@ void lvglRefreshModulesUi()
     }
 
     for (uint8_t i = 0; i < APP_MODULE_COUNT; ++i) {
+        lv_obj_t *card = nullptr;
+        if (lvglModulesNameLabels[i]) card = lv_obj_get_parent(lvglModulesNameLabels[i]);
+
+        const bool shouldShow = moduleAvailable[i] || moduleInstalled[i];
+        if (card) {
+            if (shouldShow) lv_obj_clear_flag(card, LV_OBJ_FLAG_HIDDEN);
+            else lv_obj_add_flag(card, LV_OBJ_FLAG_HIDDEN);
+        }
+
+        if (!shouldShow) continue;
+
         if (lvglModulesNameLabels[i]) lvglLabelSetTextIfChanged(lvglModulesNameLabels[i], APP_MODULE_TITLES[i]);
         if (lvglModulesDescLabels[i]) lvglLabelSetTextIfChanged(lvglModulesDescLabels[i], APP_MODULE_DESCRIPTIONS[i]);
         if (lvglModulesVersionLabels[i]) {
@@ -997,7 +1037,7 @@ void lvglRefreshModulesUi()
             if (moduleAvailable[i]) {
                 line += moduleRemoteVersion[i].isEmpty() ? " | GitHub package available" : String(" | GitHub: ") + moduleRemoteVersion[i];
             } else {
-                line += " | GitHub package unavailable";
+                line += " | local install";
             }
             lvglLabelSetTextIfChanged(lvglModulesVersionLabels[i], line);
         }

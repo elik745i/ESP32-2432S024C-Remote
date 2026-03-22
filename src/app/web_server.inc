@@ -30,7 +30,7 @@ static void stopWebServerRuntime()
 
 static void ensureWebServerRuntime()
 {
-    if (!webServerEnabled || airplaneModeEnabled || networkSuspendedForAudio) return;
+    if (!moduleInstalled[APP_MODULE_WEBSERVER] || !webServerEnabled || airplaneModeEnabled || networkSuspendedForAudio) return;
     if (!webRoutesRegistered) {
         setupWebRoutes();
         webRoutesRegistered = true;
@@ -58,11 +58,11 @@ static void wifiEnsureRuntimeEnabled(const char *reason, wifi_mode_t mode, bool 
     WiFi.setAutoReconnect(false);
     WiFi.setSleep(false);
     if (WiFi.getMode() != mode) WiFi.mode(mode);
-    if (startWebServer && webServerEnabled) ensureWebServerRuntime();
+    if (startWebServer && moduleInstalled[APP_MODULE_WEBSERVER] && webServerEnabled) ensureWebServerRuntime();
     Serial.printf("[WIFI] runtime enabled reason=%s mode=%d web=%d\n",
                   reason ? reason : "-",
                   static_cast<int>(mode),
-                  (startWebServer && webServerEnabled) ? 1 : 0);
+                  (startWebServer && moduleInstalled[APP_MODULE_WEBSERVER] && webServerEnabled) ? 1 : 0);
 }
 
 void ensureApOnline(const char *reason)

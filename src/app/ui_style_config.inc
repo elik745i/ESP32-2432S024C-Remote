@@ -40,6 +40,8 @@ void lvglStyleScreensaverToggleEvent(lv_event_t *e)
     lvglRefreshStyleUi();
 }
 
+// lvglStyleScreensaverTypeEvent is implemented in ui_display.inc to satisfy compile-time ordering of includes.
+
 void lvglStyleMenuIconsToggleEvent(lv_event_t *e)
 {
     if (lvglStyleUiSyncing) return;

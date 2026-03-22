@@ -1,0 +1,8 @@
+{
+  "id": "screensaver",
+  "title": "Screensaver Pack",
+  "version": "0.21.08",
+  "screens": ["screensaver"],
+  "services": ["screensaver"],
+  "notes": "Installs the screensaver feature and display style controls."
+}

@@ -640,6 +640,25 @@ static String buildMessageBeepDropdownOptions()
     return options;
 }
 
+static const char *screensaverModeLabel(ScreensaverMode mode)
+{
+    switch (mode) {
+        case SCREENSAVER_MODE_EYES:
+        default:
+            return "Eyes";
+    }
+}
+
+static String buildScreensaverDropdownOptions()
+{
+    String options;
+    for (int i = 0; i < static_cast<int>(SCREENSAVER_MODE_COUNT); ++i) {
+        if (i > 0) options += "\n";
+        options += screensaverModeLabel(static_cast<ScreensaverMode>(i));
+    }
+    return options;
+}
+
 struct ChatBeepStep {
     uint16_t freq;
     uint16_t durationMs;

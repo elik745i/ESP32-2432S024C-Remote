@@ -7,6 +7,8 @@ static const char *modulePrefKey(AppModuleId id)
         case APP_MODULE_INFO: return "mod_info";
         case APP_MODULE_GAMES: return "mod_games";
         case APP_MODULE_MQTT: return "mod_mqtt";
+        case APP_MODULE_SCREENSAVER: return "mod_scrsvr";
+        case APP_MODULE_WEBSERVER: return "mod_ws";
         default: return "mod_x";
     }
 }
@@ -70,6 +72,8 @@ static int moduleIndexForScreen(UiScreen screen)
         case UI_CONFIG_MQTT_CONTROLS:
         case UI_CONFIG_MQTT_BUTTONS:
             return APP_MODULE_MQTT;
+        case UI_SCREENSAVER:
+            return APP_MODULE_SCREENSAVER;
         default:
             return -1;
     }
@@ -221,7 +225,30 @@ static void moduleApplyRuntimeState()
     if (!moduleInstalled[APP_MODULE_MEDIA] && (mediaIsPlaying || mediaPaused)) {
         audioStopPlayback(true);
     }
+
+    if (!moduleInstalled[APP_MODULE_SCREENSAVER]) {
+        if (screensaverEnabled) {
+            screensaverEnabled = false;
+            uiPrefs.begin("ui", false);
+            uiPrefs.putBool("scrsvr_en", false);
+            uiPrefs.end();
+        }
+        if (screensaverActive) {
+            screensaverSetActive(false);
+        }
+    }
+
+    if (!moduleInstalled[APP_MODULE_WEBSERVER]) {
+        if (webServerEnabled) {
+            webServerEnabled = false;
+            uiPrefs.begin("ui", false);
+            uiPrefs.putBool("web_srv", false);
+            uiPrefs.end();
+        }
+        stopWebServerRuntime();
+    }
 }
+
 
 static void moduleLoadInstalledState()
 {
@@ -469,6 +496,7 @@ void loadUiRuntimeConfig()
     serialLogWsMinIntervalMs = uiPrefs.getUInt("ser_rate", SERIAL_LOG_RATE_MS_DEFAULT);
     serialLogKeepLines = static_cast<size_t>(uiPrefs.getUInt("ser_keep", SERIAL_LOG_RING_SIZE));
     screensaverEnabled = uiPrefs.getBool("scrsvr_en", false);
+    screensaverMode = static_cast<ScreensaverMode>(constrain(uiPrefs.getUChar("scrsvr_type", static_cast<uint8_t>(SCREENSAVER_MODE_EYES)), static_cast<uint8_t>(SCREENSAVER_MODE_EYES), static_cast<uint8_t>(SCREENSAVER_MODE_COUNT - 1)));
     displayIdleTimeoutMs = clampIdleTimeoutMs(uiPrefs.getULong("disp_idle", LCD_IDLE_TIMEOUT_MS_DEFAULT));
     powerOffIdleTimeoutMs = POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS[powerOffTimeoutOptionIndex(uiPrefs.getULong("pwr_idle", 0UL))];
     applyDisplayIdleTimeoutPowerOffCap(true);

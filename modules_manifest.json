@@ -36,6 +36,18 @@
       "version": "0.21.08",
       "notes": "Enables MQTT config and control screens.",
       "package_url": "https://raw.githubusercontent.com/elik745i/ESP32-2432S024C-Remote/main/module_packages/mqtt.json"
+    },
+    {
+      "id": "screensaver",
+      "version": "0.21.08",
+      "notes": "Enables screensaver menu and options.",
+      "package_url": "https://raw.githubusercontent.com/elik745i/ESP32-2432S024C-Remote/main/module_packages/screensaver.json"
+    },
+    {
+      "id": "webserver",
+      "version": "0.21.08",
+      "notes": "Enables HTTP web server for remote API and WiFi status.",
+      "package_url": "https://raw.githubusercontent.com/elik745i/ESP32-2432S024C-Remote/main/module_packages/webserver.json"
     }
   ]
 }

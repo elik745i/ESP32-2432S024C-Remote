@@ -1,0 +1,9 @@
+{
+  "id": "webserver",
+  "title": "WebServer Pack",
+  "version": "0.21.08",
+  "screens": ["wifi"],
+  "home_buttons": [],
+  "services": ["webserver"],
+  "notes": "Enables HTTP web server and remote WiFi control features."
+}

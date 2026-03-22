@@ -2002,7 +2002,8 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglStyleHomeItemsBtn = lvglCreateMenuButton(wrap, tr(TXT_MAIN_SCREEN_ITEMS), lv_color_hex(0x3A6D8F), lvglOpenStyleHomeItemsScreenEvent, nullptr);
             if (lvglStyleHomeItemsBtn) lvglStyleHomeItemsBtnLabel = lv_obj_get_child(lvglStyleHomeItemsBtn, 0);
 
-            lv_obj_t *screensaverRow = lv_obj_create(wrap);
+            lvglStyleScreensaverRow = lv_obj_create(wrap);
+            lv_obj_t *screensaverRow = lvglStyleScreensaverRow;
             lv_obj_set_size(screensaverRow, lv_pct(100), LV_SIZE_CONTENT);
             lv_obj_set_style_bg_color(screensaverRow, lv_color_hex(0x18222D), 0);
             lv_obj_set_style_border_width(screensaverRow, 0, 0);
@@ -2022,6 +2023,33 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_add_event_cb(lvglStyleScreensaverSw, lvglGestureBlockEvent, LV_EVENT_PRESSED, nullptr);
             lv_obj_add_event_cb(lvglStyleScreensaverSw, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
             lv_obj_add_event_cb(lvglStyleScreensaverSw, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
+
+            lvglStyleScreensaverTypeRow = lv_obj_create(wrap);
+            lv_obj_set_size(lvglStyleScreensaverTypeRow, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_color(lvglStyleScreensaverTypeRow, lv_color_hex(0x18222D), 0);
+            lv_obj_set_style_border_width(lvglStyleScreensaverTypeRow, 0, 0);
+            lv_obj_set_style_radius(lvglStyleScreensaverTypeRow, 12, 0);
+            lv_obj_set_style_pad_all(lvglStyleScreensaverTypeRow, 12, 0);
+            lv_obj_set_style_pad_column(lvglStyleScreensaverTypeRow, 8, 0);
+            lv_obj_set_flex_flow(lvglStyleScreensaverTypeRow, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(lvglStyleScreensaverTypeRow, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *screensaverTypeLbl = lv_label_create(lvglStyleScreensaverTypeRow);
+            lv_label_set_text(screensaverTypeLbl, "Screensaver type");
+            lv_obj_set_style_text_color(screensaverTypeLbl, lv_color_hex(0xE5ECF3), 0);
+            lv_obj_set_flex_grow(screensaverTypeLbl, 1);
+
+            lvglStyleScreensaverTypeDd = lv_dropdown_create(lvglStyleScreensaverTypeRow);
+            lv_dropdown_set_options(lvglStyleScreensaverTypeDd, buildScreensaverDropdownOptions().c_str());
+            lv_obj_set_style_bg_color(lvglStyleScreensaverTypeDd, lv_color_hex(0x111922), 0);
+            lv_obj_set_style_text_color(lvglStyleScreensaverTypeDd, lv_color_hex(0xE5ECF3), 0);
+            lv_obj_set_style_border_color(lvglStyleScreensaverTypeDd, lv_color_hex(0x2F4658), 0);
+            lv_obj_set_style_border_width(lvglStyleScreensaverTypeDd, 1, 0);
+            lv_obj_set_style_radius(lvglStyleScreensaverTypeDd, 8, 0);
+            lv_obj_add_event_cb(lvglStyleScreensaverTypeDd, lvglStyleScreensaverTypeEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+            lv_obj_add_event_cb(lvglStyleScreensaverTypeDd, lvglGestureBlockEvent, LV_EVENT_PRESSED, nullptr);
+            lv_obj_add_event_cb(lvglStyleScreensaverTypeDd, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
+            lv_obj_add_event_cb(lvglStyleScreensaverTypeDd, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
 
             lv_obj_t *screenLockRow = lv_obj_create(wrap);
             lv_obj_set_size(screenLockRow, lv_pct(100), LV_SIZE_CONTENT);

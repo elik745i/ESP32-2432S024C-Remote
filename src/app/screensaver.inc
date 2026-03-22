@@ -239,6 +239,9 @@ static void screensaverApplyPose(const ScreensaverPose &pose)
 
 void screensaverSetActive(bool active)
 {
+    if (!moduleInstalled[APP_MODULE_SCREENSAVER]) {
+        return;
+    }
     if (screensaverActive == active) return;
     screensaverActive = active;
     if (active) {
@@ -258,7 +261,7 @@ void screensaverSetActive(bool active)
 
 void screensaverService()
 {
-    if (!screensaverActive || !lvglReady) return;
+    if (!moduleInstalled[APP_MODULE_SCREENSAVER] || !screensaverActive || !lvglReady) return;
     const unsigned long now = millis();
     if (screensaverLastPoseMs != 0 && static_cast<unsigned long>(now - screensaverLastPoseMs) < screensaverNextPoseDelayMs) return;
     const bool blinkNow = random(0, 100) < 24;

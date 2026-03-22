@@ -707,16 +707,18 @@ void lvglRefreshWifiList()
             makeBtn(row, lvglSymbolText(LV_SYMBOL_TRASH, "Forget").c_str(), 82, 28, lv_color_hex(0x8A3A3A), lvglWifiForgetEvent);
         }
 
-        lvglWifiWebServerBtn = makeBtn(
-            staCard,
-            lvglSymbolText(LV_SYMBOL_DIRECTORY, webServerEnabled ? "Web Server: ON" : "Web Server: OFF").c_str(),
-            164,
-            30,
-            webServerEnabled ? lv_color_hex(0x357A38) : lv_color_hex(0x6B3A3A),
-            lvglWifiWebServerToggleEvent
-        );
-        if (lvglWifiWebServerBtn) {
-            lvglApplyWifiWebServerButtonStyle();
+        if (moduleInstalled[APP_MODULE_WEBSERVER]) {
+            lvglWifiWebServerBtn = makeBtn(
+                staCard,
+                lvglSymbolText(LV_SYMBOL_DIRECTORY, webServerEnabled ? "Web Server: ON" : "Web Server: OFF").c_str(),
+                164,
+                30,
+                webServerEnabled ? lv_color_hex(0x357A38) : lv_color_hex(0x6B3A3A),
+                lvglWifiWebServerToggleEvent
+            );
+            if (lvglWifiWebServerBtn) {
+                lvglApplyWifiWebServerButtonStyle();
+            }
         }
     }
 
