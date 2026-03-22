@@ -120,130 +120,153 @@ void snakeTick()
     lvglRefreshSnakeBoard();
 }
 
-#if defined(BOARD_ESP32S3_3248S035_N16R8)
-static bool snake3dCellOccupied(int x, int y, int z)
+void lvglSnakeDirEvent(lv_event_t *e)
 {
-    for (int i = 0; i < snake3dLen; ++i) {
-        if (snake3dX[i] == x && snake3dY[i] == y && snake3dZ[i] == z) return true;
-    }
-    return false;
+    if (!snakeStarted || snakePaused || snakeGameOver) return;
+    const int d = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
+    if (d == 3 && snakeDir != 1) snakeNextDir = 3;
+    else if (d == 1 && snakeDir != 3) snakeNextDir = 1;
+    else if (d == 0 && snakeDir != 2) snakeNextDir = 0;
+    else if (d == 2 && snakeDir != 0) snakeNextDir = 2;
 }
 
-static void snake3dSpawnFood()
+void lvglSnakePauseEvent(lv_event_t *e)
 {
-    for (int tries = 0; tries < 400; ++tries) {
-        const int fx = random(0, SNAKE3D_COLS);
-        const int fy = random(0, SNAKE3D_ROWS);
-        const int fz = random(0, SNAKE3D_LAYERS);
-        if (!snake3dCellOccupied(fx, fy, fz)) {
-            snake3dFoodX = static_cast<int8_t>(fx);
-            snake3dFoodY = static_cast<int8_t>(fy);
-            snake3dFoodZ = static_cast<int8_t>(fz);
-            return;
+    (void)e;
+    if (snakeGameOver) return;
+    if (!snakeStarted) {
+        snakeStartGame();
+    } else {
+        snakePaused = !snakePaused;
+        if (!snakePaused) snakeLastStepMs = millis();
+    }
+    lvglRefreshSnakeBoard();
+}
+
+// Legacy unused snake back callback moved to app/garbage.inc:
+// lvglSnakeBackEvent(lv_event_t *)
+
+void lvglSnakeRestartEvent(lv_event_t *e)
+{
+    (void)e;
+    snakeStartGame();
+    lvglRefreshSnakeBoard();
+}
+
+void lvglDrawGridCell(lv_draw_ctx_t *drawCtx, int x, int y, int w, int h, lv_color_t color)
+{
+    lv_draw_rect_dsc_t dsc;
+    lv_draw_rect_dsc_init(&dsc);
+    dsc.bg_opa = LV_OPA_COVER;
+    dsc.bg_color = color;
+    dsc.border_width = 0;
+    dsc.radius = 1;
+    lv_area_t a;
+    a.x1 = static_cast<lv_coord_t>(x);
+    a.y1 = static_cast<lv_coord_t>(y);
+    a.x2 = static_cast<lv_coord_t>(x + w - 1);
+    a.y2 = static_cast<lv_coord_t>(y + h - 1);
+    lv_draw_rect(drawCtx, &dsc, &a);
+}
+
+void lvglSnakeBoardDrawEvent(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_DRAW_MAIN) return;
+    lv_obj_t *obj = lv_event_get_target(e);
+    lv_draw_ctx_t *drawCtx = lv_event_get_draw_ctx(e);
+    if (!obj || !drawCtx) return;
+
+    lv_area_t coords;
+    lv_obj_get_coords(obj, &coords);
+    const int gap = 1;
+    const int width = static_cast<int>(coords.x2 - coords.x1 + 1);
+    const int height = static_cast<int>(coords.y2 - coords.y1 + 1);
+    const int cellW = (width - ((SNAKE_COLS - 1) * gap)) / SNAKE_COLS;
+    const int cellH = (height - ((SNAKE_ROWS - 1) * gap)) / SNAKE_ROWS;
+    if (cellW < 2 || cellH < 2) return;
+
+    const lv_color_t bg = lv_color_hex(0x1B2430);
+    const lv_color_t food = lv_color_hex(0xC62828);
+    const lv_color_t head = lv_color_hex(0xC5E84A);
+    const lv_color_t body = lv_color_hex(0x4CAF50);
+
+    for (int y = 0; y < SNAKE_ROWS; y++) {
+        for (int x = 0; x < SNAKE_COLS; x++) {
+            const int px = static_cast<int>(coords.x1) + x * (cellW + gap);
+            const int py = static_cast<int>(coords.y1) + y * (cellH + gap);
+            lvglDrawGridCell(drawCtx, px, py, cellW, cellH, bg);
         }
     }
-    snake3dFoodX = 0;
-    snake3dFoodY = 0;
-    snake3dFoodZ = 0;
-}
 
-void snake3dResetGame()
-{
-    snake3dLen = 4;
-    snake3dDir = 1;
-    snake3dNextDir = 1;
-    snake3dViewDir = 1;
-    snake3dStarted = true;
-    snake3dPaused = false;
-    snake3dGameOver = false;
-    snake3dScore = 0;
-    const int cy = SNAKE3D_ROWS / 2;
-    const int cz = SNAKE3D_LAYERS / 2;
-    for (int i = 0; i < snake3dLen; ++i) {
-        snake3dX[i] = static_cast<int8_t>((SNAKE3D_COLS - 2) - i);
-        snake3dY[i] = static_cast<int8_t>(cy);
-        snake3dZ[i] = static_cast<int8_t>(cz);
+    if (snakeFoodX >= 0 && snakeFoodX < SNAKE_COLS && snakeFoodY >= 0 && snakeFoodY < SNAKE_ROWS) {
+        const int fx = static_cast<int>(coords.x1) + snakeFoodX * (cellW + gap);
+        const int fy = static_cast<int>(coords.y1) + snakeFoodY * (cellH + gap);
+        lvglDrawGridCell(drawCtx, fx, fy, cellW, cellH, food);
     }
-    snake3dSpawnFood();
-    snake3dLastStepMs = millis();
-}
-
-void snake3dPrepareGame()
-{
-    snake3dResetGame();
-    snake3dStarted = false;
-    snake3dPaused = false;
-    snake3dGameOver = false;
-}
-
-void snake3dStartGame()
-{
-    snake3dResetGame();
-    snake3dStarted = true;
-    snake3dPaused = false;
-    snake3dLastStepMs = millis();
-}
-
-static unsigned long snake3dCurrentStepMs()
-{
-    const unsigned long foods = static_cast<unsigned long>(snake3dScore / 10U);
-    const unsigned long reduction = foods * SNAKE3D_STEP_MS_DELTA_PER_FOOD;
-    if (reduction >= (SNAKE3D_STEP_MS_START - SNAKE3D_STEP_MS_MIN)) return SNAKE3D_STEP_MS_MIN;
-    return SNAKE3D_STEP_MS_START - reduction;
-}
-
-static void snake3dStep()
-{
-    if (!snake3dStarted || snake3dPaused || snake3dGameOver) return;
-    snake3dDir = snake3dNextDir;
-    int nx = snake3dX[0];
-    int ny = snake3dY[0];
-    int nz = snake3dZ[0];
-    if (snake3dDir == 0) ny--;
-    else if (snake3dDir == 1) nx++;
-    else if (snake3dDir == 2) ny++;
-    else if (snake3dDir == 3) nx--;
-    else if (snake3dDir == 4) nz++;
-    else nz--;
-
-    if (nx < 0 || nx >= SNAKE3D_COLS || ny < 0 || ny >= SNAKE3D_ROWS || nz < 0 || nz >= SNAKE3D_LAYERS || snake3dCellOccupied(nx, ny, nz)) {
-        snake3dGameOver = true;
-        snake3dStarted = false;
-        snake3dLastScore = snake3dScore;
-        saveGameValue("snake3d_last", snake3dLastScore);
-        snake3dMaybeStoreHighScore(true);
-        return;
-    }
-
-    const bool ate = (nx == snake3dFoodX && ny == snake3dFoodY && nz == snake3dFoodZ);
-    const int oldLen = snake3dLen;
-    if (ate && snake3dLen < SNAKE3D_MAX_CELLS) snake3dLen++;
-    for (int i = snake3dLen - 1; i > 0; --i) {
-        snake3dX[i] = snake3dX[i - 1];
-        snake3dY[i] = snake3dY[i - 1];
-        snake3dZ[i] = snake3dZ[i - 1];
-    }
-    snake3dX[0] = static_cast<int8_t>(nx);
-    snake3dY[0] = static_cast<int8_t>(ny);
-    snake3dZ[0] = static_cast<int8_t>(nz);
-
-    if (ate) {
-        snake3dScore += 10;
-        snake3dMaybeStoreHighScore(false);
-        snake3dSpawnFood();
-    } else if (oldLen < snake3dLen) {
-        snake3dLen = oldLen;
+    for (int i = snakeLen - 1; i >= 0; i--) {
+        const int sx = snakeX[i];
+        const int sy = snakeY[i];
+        if (sx < 0 || sx >= SNAKE_COLS || sy < 0 || sy >= SNAKE_ROWS) continue;
+        const int px = static_cast<int>(coords.x1) + sx * (cellW + gap);
+        const int py = static_cast<int>(coords.y1) + sy * (cellH + gap);
+        lvglDrawGridCell(drawCtx, px, py, cellW, cellH, (i == 0) ? head : body);
     }
 }
 
-void snake3dTick()
+void lvglRefreshSnakeBoard()
 {
-    if (uiScreen != UI_GAME_SNAKE3D) return;
-    const unsigned long now = millis();
-    if (!snake3dStarted || snake3dPaused || snake3dGameOver) return;
-    if (now - snake3dLastStepMs < snake3dCurrentStepMs()) return;
-    snake3dLastStepMs = now;
-    snake3dStep();
-    lvglRefreshSnake3dBoard();
+    if (lvglSnakeBoardObj) lv_obj_invalidate(lvglSnakeBoardObj);
+    if (lvglSnakeScoreLabel) {
+        lv_label_set_text_fmt(lvglSnakeScoreLabel, "Score %u", snakeScore);
+    }
+    if (lvglSnakeBestLabel) {
+        lv_label_set_text_fmt(lvglSnakeBestLabel, "Best %u", snakeHighScore);
+    }
+    if (lvglSnakeOverlay) {
+        const bool showOverlay = !snakeStarted || snakeGameOver || snakePaused;
+        const bool pauseOverlay = snakePaused && snakeStarted && !snakeGameOver;
+        lv_coord_t overlayW = pauseOverlay ? min<lv_coord_t>(DISPLAY_WIDTH - 64, 140) : min<lv_coord_t>(DISPLAY_WIDTH - 20, 324);
+        lv_coord_t overlayH = pauseOverlay ? 76 : min<lv_coord_t>(UI_CONTENT_H - 8, 467);
+        if (lvglSnakeBoardObj) {
+            lv_area_t boardCoords;
+            lv_obj_get_coords(lvglSnakeBoardObj, &boardCoords);
+            const lv_coord_t boardWidth = static_cast<lv_coord_t>(boardCoords.x2 - boardCoords.x1 + 1);
+            const lv_coord_t boardHeight = static_cast<lv_coord_t>(boardCoords.y2 - boardCoords.y1 + 1);
+            overlayW = min<lv_coord_t>(overlayW, max<lv_coord_t>(120, boardWidth - 16));
+            overlayH = min<lv_coord_t>(overlayH, max<lv_coord_t>(137, boardHeight - 16));
+        }
+        lv_obj_set_size(lvglSnakeOverlay, overlayW, overlayH);
+        lv_obj_center(lvglSnakeOverlay);
+        lv_obj_move_foreground(lvglSnakeOverlay);
+        if (showOverlay) lv_obj_clear_flag(lvglSnakeOverlay, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(lvglSnakeOverlay, LV_OBJ_FLAG_HIDDEN);
+        if (lvglSnakeOverlayTitle) {
+            if (pauseOverlay) lv_label_set_text(lvglSnakeOverlayTitle, "PAUSE");
+            else lv_label_set_text(lvglSnakeOverlayTitle, snakeGameOver ? "Game Over" : "Snake");
+        }
+        if (lvglSnakeOverlaySubLabel) {
+            String msg = pauseOverlay ? String("Tap center button to resume")
+                                      : (snakeGameOver ? ("Score " + String(snakeScore) + "\nBest " + String(snakeHighScore))
+                                                       : ("Tap Start when ready\nBest " + String(snakeHighScore) + "\nLast " + String(snakeLastScore)));
+            lv_label_set_text(lvglSnakeOverlaySubLabel, msg.c_str());
+        }
+        if (lvglSnakeOverlayBtn) {
+            if (pauseOverlay) lv_obj_add_flag(lvglSnakeOverlayBtn, LV_OBJ_FLAG_HIDDEN);
+            else lv_obj_clear_flag(lvglSnakeOverlayBtn, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (lvglSnakeOverlayBtnLabel && !pauseOverlay) lv_label_set_text(lvglSnakeOverlayBtnLabel, snakeGameOver ? "Replay" : "Start");
+    }
+    if (lvglSnakePauseBtnLabel) lv_label_set_text(lvglSnakePauseBtnLabel, (!snakeStarted || snakePaused) ? LV_SYMBOL_PLAY : LV_SYMBOL_PAUSE);
 }
-#endif
+
+void lvglOpenSnakeEvent(lv_event_t *e)
+{
+    (void)e;
+    lvglEnsureScreenBuilt(UI_GAME_SNAKE);
+    snakePrepareGame();
+    if (screensaverActive) screensaverSetActive(false);
+    if (!displayAwake) displaySetAwake(true);
+    lastUserActivityMs = millis();
+    lvglRefreshSnakeBoard();
+    lvglOpenScreen(UI_GAME_SNAKE, LV_SCR_LOAD_ANIM_MOVE_LEFT);
+}

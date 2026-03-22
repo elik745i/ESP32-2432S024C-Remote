@@ -7,7 +7,14 @@ void lvglOtaUpdateEvent(lv_event_t *e)
         lvglSyncStatusLine();
         return;
     }
-    otaStartUpdateTask(otaLatestBinUrl, String(otaLatestVersion), "Starting update...");
+    String releaseNotes;
+    for (uint8_t i = 0; i < otaReleaseEntryCount; ++i) {
+        if (otaReleaseEntries[i].tag.equalsIgnoreCase(String(otaLatestVersion))) {
+            releaseNotes = otaReleaseEntries[i].notes;
+            break;
+        }
+    }
+    otaStartUpdateTask(otaLatestBinUrl, String(otaLatestVersion), "Starting update...", releaseNotes);
 }
 
 void lvglOtaReleaseSelectEvent(lv_event_t *e)
@@ -44,7 +51,8 @@ void lvglOtaReflashEvent(lv_event_t *e)
     }
     otaStartUpdateTask(otaReleaseEntries[idx].binUrl,
                        otaReleaseEntries[idx].tag,
-                       String("Starting flush to ") + otaReleaseEntries[idx].tag + "...");
+                       String("Starting flush to ") + otaReleaseEntries[idx].tag + "...",
+                       otaReleaseEntries[idx].notes);
 }
 
 static bool screenLockIsConfigured()

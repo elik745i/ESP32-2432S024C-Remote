@@ -67,13 +67,6 @@ bool p2pSendChatMessageWithId(const String &peerKey, const String &text, const S
     return p2pSendPacketToPeer(p2pPeers[peerIdx], P2P_PKT_TYPE_CHAT, reinterpret_cast<const uint8_t *>(plain), plainLen);
 }
 
-bool p2pSendChatMessage(const String &text)
-{
-    if (currentChatPeerKey.isEmpty()) return false;
-    const String messageId = chatGenerateMessageId();
-    return p2pSendChatMessageWithId(currentChatPeerKey, text, messageId);
-}
-
 bool p2pSendChatAck(const String &peerKey, const String &messageId)
 {
     if (!p2pReady || peerKey.isEmpty() || messageId.isEmpty()) return false;
@@ -568,20 +561,26 @@ void lvglRefreshInfoPanel(bool refreshIndicators)
         lvglSetInfoBarColor(psramBar, psramTotal > 0 ? psramColor : lv_color_hex(0x3A4150));
     }
 
-    if (lv_obj_t *cpuValue = lvglInfoCardValueLabel(lvglInfoCpuCard)) lv_label_set_text_fmt(cpuValue, "%u%%", static_cast<unsigned int>(cpuLoadPercent));
+    if (lv_obj_t *cpuValue = lvglInfoCardValueLabel(lvglInfoCpuCard)) {
+        lvglLabelSetTextIfChanged(cpuValue, String(cpuLoadPercent) + "%");
+    }
     if (lv_obj_t *cpuSub = lvglInfoCardSubLabel(lvglInfoCpuCard)) {
         if (psramTotal > 0) {
-            lv_label_set_text_fmt(cpuSub,
-                                  "Approx. main-loop load  |  SRAM %lu KB  |  PSRAM %lu KB",
-                                  static_cast<unsigned long>(freeHeap / 1024U),
-                                  static_cast<unsigned long>(psramFree / 1024U));
+            lvglLabelSetTextIfChanged(cpuSub,
+                                      String("Approx. main-loop load  |  SRAM ") +
+                                      String(static_cast<unsigned long>(freeHeap / 1024U)) +
+                                      " KB  |  PSRAM " +
+                                      String(static_cast<unsigned long>(psramFree / 1024U)) +
+                                      " KB");
         } else {
-            lv_label_set_text_fmt(cpuSub, "Approx. main-loop load  |  SRAM %lu KB",
-                                  static_cast<unsigned long>(freeHeap / 1024U));
+            lvglLabelSetTextIfChanged(cpuSub,
+                                      String("Approx. main-loop load  |  SRAM ") +
+                                      String(static_cast<unsigned long>(freeHeap / 1024U)) +
+                                      " KB");
         }
     }
     if (lv_obj_t *cpuBar = lvglInfoCardBar(lvglInfoCpuCard)) {
-        lv_bar_set_value(cpuBar, static_cast<int32_t>(cpuLoadPercent), LV_ANIM_OFF);
+        lvglBarSetValueIfChanged(cpuBar, static_cast<int32_t>(cpuLoadPercent), LV_ANIM_OFF);
         lv_color_t cpuColor = lv_color_hex(0x52B788);
         if (cpuLoadPercent >= 85) cpuColor = lv_color_hex(0xD95C5C);
         else if (cpuLoadPercent >= 65) cpuColor = lv_color_hex(0xF2C35E);
@@ -593,7 +592,7 @@ void lvglRefreshInfoPanel(bool refreshIndicators)
     }
     if (lv_obj_t *tempSub = lvglInfoCardSubLabel(lvglInfoTempCard)) lvglLabelSetTextIfChanged(tempSub, infoTempSubText);
     if (lv_obj_t *tempBar = lvglInfoCardBar(lvglInfoTempCard)) {
-        lv_bar_set_value(tempBar, static_cast<int32_t>(infoTempBarValue), LV_ANIM_OFF);
+        lvglBarSetValueIfChanged(tempBar, static_cast<int32_t>(infoTempBarValue), LV_ANIM_OFF);
         lv_color_t tempColor = lv_color_hex(0x4FC3F7);
         if (infoTempBarValue >= INFO_TEMP_HOT_C) tempColor = lv_color_hex(0xD95C5C);
         else if (infoTempBarValue >= INFO_TEMP_WARN_C) tempColor = lv_color_hex(0xF2C35E);

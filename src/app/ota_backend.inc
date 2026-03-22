@@ -3,6 +3,20 @@
     return otaFetchReleaseCatalog(tagNameOut, binUrlOut, errorOut);
 }
 
+static String otaNormalizeReleaseNotes(const String &raw)
+{
+    String notes = raw;
+    notes.replace("\r\n", "\n");
+    notes.replace("\r", "\n");
+    while (notes.indexOf("\n\n\n") >= 0) notes.replace("\n\n\n", "\n\n");
+    notes.trim();
+    if (notes.length() > OTA_RELEASE_NOTES_STORE_MAX) {
+        notes = notes.substring(0, OTA_RELEASE_NOTES_STORE_MAX - 32);
+        notes += "\n\n[Release notes truncated]";
+    }
+    return notes;
+}
+
 static bool otaFetchReleaseCatalog(String &latestTagOut, String &latestUrlOut, String &errorOut)
 {
     latestTagOut = "";
@@ -15,6 +29,7 @@ static bool otaFetchReleaseCatalog(String &latestTagOut, String &latestUrlOut, S
     for (uint8_t i = 0; i < OTA_RELEASE_LIST_MAX; ++i) {
         otaReleaseEntries[i].tag = "";
         otaReleaseEntries[i].binUrl = "";
+        otaReleaseEntries[i].notes = "";
     }
     otaReleaseEntryCount = 0;
     otaSelectedReleaseIndex = -1;
@@ -29,6 +44,7 @@ static bool otaFetchReleaseCatalog(String &latestTagOut, String &latestUrlOut, S
     JsonDocument filter;
     JsonObject rel = filter[0].to<JsonObject>();
     rel["tag_name"] = true;
+    rel["body"] = true;
     rel["draft"] = true;
     rel["prerelease"] = true;
     rel["assets"][0]["name"] = true;
@@ -50,6 +66,7 @@ static bool otaFetchReleaseCatalog(String &latestTagOut, String &latestUrlOut, S
         if (draft || prerelease) continue;
 
         const String tag = String(static_cast<const char *>(releaseObj["tag_name"] | ""));
+        const String notes = otaNormalizeReleaseNotes(String(static_cast<const char *>(releaseObj["body"] | "")));
         const String url = chooseLatestFirmwareBinUrl(releaseObj["assets"]);
         if (tag.isEmpty() || url.isEmpty()) continue;
 
@@ -62,6 +79,7 @@ static bool otaFetchReleaseCatalog(String &latestTagOut, String &latestUrlOut, S
         if (releaseCount >= OTA_RELEASE_LIST_MAX) continue;
         otaReleaseEntries[releaseCount].tag = tag;
         otaReleaseEntries[releaseCount].binUrl = url;
+        otaReleaseEntries[releaseCount].notes = notes;
         if (!prevSelectedTag.isEmpty() && prevSelectedTag.equalsIgnoreCase(tag)) {
             otaSelectedReleaseIndex = static_cast<int8_t>(releaseCount);
         }
@@ -79,43 +97,7 @@ static bool otaFetchReleaseCatalog(String &latestTagOut, String &latestUrlOut, S
     return true;
 }
 
-static bool otaFetchReleaseInfoForTag(const String &tagName, String &binUrlOut, String &errorOut)
-{
-    binUrlOut = "";
-    errorOut = "";
-    if (tagName.isEmpty()) {
-        errorOut = "missing_tag";
-        return false;
-    }
-
-    int ghStatus = -1;
-    const String url = String("https://api.github.com/repos/elik745i/ESP32-2432S024C-Remote/releases/tags/") + tagName;
-    const String body = httpsGetText(url, &ghStatus);
-    if (body.isEmpty()) {
-        errorOut = "github_fetch_failed";
-        return false;
-    }
-
-    JsonDocument filter;
-    filter["assets"][0]["name"] = true;
-    filter["assets"][0]["browser_download_url"] = true;
-
-    JsonDocument parsed;
-    const DeserializationError err = deserializeJson(parsed, body, DeserializationOption::Filter(filter));
-    if (err) {
-        errorOut = "json_parse_failed";
-        return false;
-    }
-
-    binUrlOut = chooseLatestFirmwareBinUrl(parsed["assets"]);
-    if (binUrlOut.isEmpty()) {
-        errorOut = "release_asset_not_found";
-        return false;
-    }
-    return true;
-}
-
-static bool otaStartUpdateTask(const String &binUrl, const String &targetVersion, const String &statusText)
+static bool otaStartUpdateTask(const String &binUrl, const String &targetVersion, const String &statusText, const String &releaseNotes)
 {
     if (otaUpdateTaskHandle || otaUiState == OTA_UI_DOWNLOADING || otaUiState == OTA_UI_FINALIZING) return false;
     if (!OTA_FIRMWARE_FLASH_SUPPORTED) {
@@ -143,6 +125,7 @@ static bool otaStartUpdateTask(const String &binUrl, const String &targetVersion
 
     otaLatestBinUrl = binUrl;
     copyTextToBuf(otaLatestVersion, sizeof(otaLatestVersion), otaNormalizedVersion(targetVersion));
+    otaPendingPopupNotes = otaNormalizeReleaseNotes(releaseNotes);
     otaUiState = OTA_UI_DOWNLOADING;
     otaProgressPercent = 0;
     otaUpdatePromptPending = false;
@@ -287,4 +270,3 @@ bool otaDownloadAndApplyFromUrl(const String &url, String &errorOut)
     }
     return true;
 }
-

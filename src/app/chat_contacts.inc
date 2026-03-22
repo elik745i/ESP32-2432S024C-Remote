@@ -415,7 +415,6 @@ static bool checkersPromotionContinuesCapture();
 inline void lvglLoadScreen(lv_obj_t *target, lv_scr_load_anim_t anim)
 {
     if (!target) return;
-    lvglResetSwipeBackVisualState(true);
     lvglResetGestureTracking();
     lvglGestureBlocked = false;
     lvglReorderOwnsHorizontalGesture = false;
@@ -425,7 +424,9 @@ inline void lvglLoadScreen(lv_obj_t *target, lv_scr_load_anim_t anim)
     if (anim == LV_SCR_LOAD_ANIM_NONE) {
         lv_scr_load(target);
         lv_refr_now(nullptr);
+        lvglResetSwipeBackVisualState(true);
     } else {
+        lvglResetSwipeBackVisualState(true);
         lv_scr_load_anim(target, anim, UI_ANIM_MS, 0, false);
     }
 }
@@ -4137,15 +4138,17 @@ void lvglRefreshMediaPlayerUi()
 
     String trackText = hasTrack ? mediaSelectedTrackName : String("No track selected");
     if (trackText.length() > 34) trackText = trackText.substring(0, 31) + "...";
-    lv_label_set_text_fmt(lvglMediaTrackLabel, "Track: %s", trackText.c_str());
+    lvglLabelSetTextIfChanged(lvglMediaTrackLabel, String("Track: ") + trackText);
 
-    lv_label_set_text(lvglMediaPlayBtnLabel, lvglSymbolText((mediaIsPlaying || mediaPaused) ? LV_SYMBOL_STOP : LV_SYMBOL_PLAY,
-                                                            (mediaIsPlaying || mediaPaused) ? "Stop" : "Play").c_str());
+    lvglLabelSetTextIfChanged(
+        lvglMediaPlayBtnLabel,
+        lvglSymbolText((mediaIsPlaying || mediaPaused) ? LV_SYMBOL_STOP : LV_SYMBOL_PLAY,
+                       (mediaIsPlaying || mediaPaused) ? "Stop" : "Play"));
 
     if (lvglMediaVolSlider && lv_slider_get_value(lvglMediaVolSlider) != static_cast<int32_t>(mediaVolumePercent)) {
         lv_slider_set_value(lvglMediaVolSlider, static_cast<int32_t>(mediaVolumePercent), LV_ANIM_OFF);
     }
-    if (lvglMediaVolValueLabel) lv_label_set_text_fmt(lvglMediaVolValueLabel, "%u%%", static_cast<unsigned int>(mediaVolumePercent));
+    if (lvglMediaVolValueLabel) lvglLabelSetTextIfChanged(lvglMediaVolValueLabel, String(mediaVolumePercent) + "%");
 
     if (lvglMediaPlayBtn) {
         if (hasTrack) lv_obj_clear_state(lvglMediaPlayBtn, LV_STATE_DISABLED);
@@ -4168,13 +4171,13 @@ void lvglRefreshMediaPlayerUi()
         if (durSec > 0 && curSec > durSec) curSec = durSec;
     }
     const int32_t progress = (durSec > 0U) ? static_cast<int32_t>((static_cast<uint64_t>(curSec) * 1000ULL) / static_cast<uint64_t>(durSec)) : 0;
-    lv_bar_set_value(lvglMediaProgressBar, progress, LV_ANIM_OFF);
+    lvglBarSetValueIfChanged(lvglMediaProgressBar, progress, LV_ANIM_OFF);
 
     char curBuf[8] = {0};
     char durBuf[8] = {0};
     mediaFormatSeconds(curSec, curBuf, sizeof(curBuf));
     mediaFormatSeconds(durSec, durBuf, sizeof(durBuf));
-    lv_label_set_text_fmt(lvglMediaProgressLabel, "%s / %s", curBuf, durBuf);
+    lvglLabelSetTextIfChanged(lvglMediaProgressLabel, String(curBuf) + " / " + durBuf);
 }
 
 void lvglMediaEntryEvent(lv_event_t *e)

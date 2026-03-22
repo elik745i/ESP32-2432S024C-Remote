@@ -4,3 +4,13 @@ in it add Screen Lock tickbox, if ticked, popup shall apear with short input fie
 When PIN entered and user hits save, it iss going to be saved in memory and on boot lockscreen shall apear to enter PIN, once entered correct pin, only then Main menu shall appear.
 Protect lockscreen with timer so if 3 wrong pin attempts happened there shall be message that 3 attempts failed wait 1 minute to repeat attempt, if in 1 minute wrong pin entered again, next attempt shall be in 2 minutes and so on. 
 After 3 attempts display factory reset button at the bottom of the lock screen sso user can factory reset the device.
+
+Done.
+
+Fix MQTT - DONE
+
+move MQTT to separate file from main.cpp - DONE
+
+Create integration for Home Assistant to map advertised buttons to  existing homeassistant buttons.
+
+when unit OTA updated, popup comes that unit is updated to blabla firmware, in that popup can we also list update notes, which are in that release, I know they wont fit, there for lets have that popup full screen

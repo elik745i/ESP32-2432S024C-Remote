@@ -2,7 +2,7 @@
 
 Firmware for Sunton-style ESP32 touch display boards with an LVGL UI, Wi-Fi/AP tools, SD recovery/file access, MQTT controls, encrypted chat, and optional radio modules.
 
-Current firmware version: **`0.21.07`**
+Current firmware version: **`0.21.08`**
 
 ![ESP32 Remote Render](3D_Models/render1.jpeg)
 
@@ -282,16 +282,16 @@ pio run -e esp32-s3-3248s035-n16r8 -t upload
 
 Do not flash only `firmware.bin` on `ESP32-2432S024C`. That board needs the full release image set written at the correct offsets or it can boot to a blank screen.
 
-For the latest verified release (`v0.21.07`), download these four files from:
+For the latest verified release (`v0.21.08`), download these four files from:
 
-- `https://github.com/elik745i/ESP32-2432S024C-Remote/releases/tag/v0.21.07`
+- `https://github.com/elik745i/ESP32-2432S024C-Remote/releases/tag/v0.21.08`
 
 For `ESP32-2432S024C`, use:
 
-- `esp32-2432s024c-v0.21.07_bootloader.bin` at `0x1000`
-- `esp32-2432s024c-v0.21.07_partitions.bin` at `0x8000`
-- `esp32-2432s024c-v0.21.07_boot_app0.bin` at `0xE000`
-- `esp32-2432s024c-v0.21.07.bin` at `0x10000`
+- `esp32-2432s024c-v0.21.08_bootloader.bin` at `0x1000`
+- `esp32-2432s024c-v0.21.08_partitions.bin` at `0x8000`
+- `esp32-2432s024c-v0.21.08_boot_app0.bin` at `0xE000`
+- `esp32-2432s024c-v0.21.08.bin` at `0x10000`
 
 Using Espressif `Flash Download Tool` on Windows:
 
@@ -309,10 +309,10 @@ If you use `esptool.py`, the equivalent command is:
 
 ```powershell
 esptool.py --chip esp32 --port COMx --baud 460800 write_flash -z `
-  0x1000 esp32-2432s024c-v0.21.07_bootloader.bin `
-  0x8000 esp32-2432s024c-v0.21.07_partitions.bin `
-  0xE000 esp32-2432s024c-v0.21.07_boot_app0.bin `
-  0x10000 esp32-2432s024c-v0.21.07.bin
+  0x1000 esp32-2432s024c-v0.21.08_bootloader.bin `
+  0x8000 esp32-2432s024c-v0.21.08_partitions.bin `
+  0xE000 esp32-2432s024c-v0.21.08_boot_app0.bin `
+  0x10000 esp32-2432s024c-v0.21.08.bin
 ```
 
 `ESP32-3248S035` uses the same `ESP32` flash layout as `ESP32-2432S024C`:

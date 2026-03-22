@@ -206,3 +206,142 @@ void tetrisTick()
     tetrisStepDown();
     lvglRefreshTetrisBoard();
 }
+
+// Legacy unused tetris back callback moved to app/garbage.inc:
+// lvglTetrisBackEvent(lv_event_t *)
+
+void lvglTetrisRestartEvent(lv_event_t *e)
+{
+    (void)e;
+    tetrisStartGame();
+    lvglRefreshTetrisBoard();
+}
+
+void lvglTetrisPauseEvent(lv_event_t *e)
+{
+    (void)e;
+    if (tetrisGameOver) return;
+    if (tetrisDropAnimFlags & TETRIS_DROP_ANIM_ACTIVE) return;
+    if (!tetrisStarted) {
+        tetrisStartGame();
+    } else {
+        tetrisPaused = !tetrisPaused;
+        if (!tetrisPaused) tetrisLastStepMs = millis();
+    }
+    lvglRefreshTetrisBoard();
+}
+
+void lvglTetrisMoveLeftEvent(lv_event_t *e) { (void)e; tetrisMove(-1); }
+void lvglTetrisMoveRightEvent(lv_event_t *e) { (void)e; tetrisMove(1); }
+void lvglTetrisRotateEvent(lv_event_t *e) { (void)e; tetrisRotate(); }
+void lvglTetrisDropEvent(lv_event_t *e) { (void)e; tetrisDrop(); }
+
+void lvglTetrisBoardDrawEvent(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_DRAW_MAIN) return;
+    lv_obj_t *obj = lv_event_get_target(e);
+    lv_draw_ctx_t *drawCtx = lv_event_get_draw_ctx(e);
+    if (!obj || !drawCtx) return;
+
+    static const lv_color_t cols[8] = {
+        lv_color_hex(0x111922), lv_color_hex(0x26C6DA), lv_color_hex(0x1565C0), lv_color_hex(0xEF6C00),
+        lv_color_hex(0xFDD835), lv_color_hex(0x43A047), lv_color_hex(0x8E24AA), lv_color_hex(0xD32F2F)
+    };
+
+    lv_area_t coords;
+    lv_obj_get_coords(obj, &coords);
+    const int gap = 1;
+    const int width = static_cast<int>(coords.x2 - coords.x1 + 1);
+    const int height = static_cast<int>(coords.y2 - coords.y1 + 1);
+    const int cellW = (width - ((TETRIS_COLS - 1) * gap)) / TETRIS_COLS;
+    const int cellH = (height - ((TETRIS_ROWS - 1) * gap)) / TETRIS_ROWS;
+    if (cellW < 2 || cellH < 2) return;
+
+    for (int y = 0; y < TETRIS_ROWS; y++) {
+        for (int x = 0; x < TETRIS_COLS; x++) {
+            const int px = static_cast<int>(coords.x1) + x * (cellW + gap);
+            const int py = static_cast<int>(coords.y1) + y * (cellH + gap);
+            lvglDrawGridCell(drawCtx, px, py, cellW, cellH, cols[tetrisGrid[y][x] & 0x07]);
+        }
+    }
+
+    const bool dropAnimating = (tetrisDropAnimFlags & TETRIS_DROP_ANIM_ACTIVE) != 0;
+    const int drawPieceBaseY = dropAnimating ? static_cast<int>(tetrisAnimFromY) : static_cast<int>(tetrisY);
+    int animOffsetPx = 0;
+    if (dropAnimating && tetrisAnimDurationMs > 0) {
+        const uint16_t elapsedTick = static_cast<uint16_t>(millis()) - tetrisAnimStartTick;
+        const unsigned long elapsed = min<unsigned long>(elapsedTick, tetrisAnimDurationMs);
+        const int totalRows = static_cast<int>(tetrisY - tetrisAnimFromY);
+        const int stepPx = cellH + gap;
+        animOffsetPx = static_cast<int>((static_cast<uint64_t>(stepPx * totalRows) * elapsed) / tetrisAnimDurationMs);
+    }
+
+    for (int i = 0; i < 4; i++) {
+        int ox = 0, oy = 0;
+        tetrisCellFor(tetrisType, tetrisRot, i, ox, oy);
+        int gx = tetrisX + ox;
+        int gy = drawPieceBaseY + oy;
+        if (gx < 0 || gx >= TETRIS_COLS || gy < 0 || gy >= TETRIS_ROWS) continue;
+        const int px = static_cast<int>(coords.x1) + gx * (cellW + gap);
+        const int py = static_cast<int>(coords.y1) + gy * (cellH + gap) + animOffsetPx;
+        lvglDrawGridCell(drawCtx, px, py, cellW, cellH, cols[(tetrisType + 1) & 0x07]);
+    }
+}
+
+void lvglRefreshTetrisBoard()
+{
+    if (lvglTetrisBoardObj) lv_obj_invalidate(lvglTetrisBoardObj);
+    if (lvglTetrisScoreLabel) {
+        lv_label_set_text_fmt(lvglTetrisScoreLabel, "Score %u", tetrisScore);
+    }
+    if (lvglTetrisBestLabel) {
+        lv_label_set_text_fmt(lvglTetrisBestLabel, "Best %u", tetrisHighScore);
+    }
+    if (lvglTetrisOverlay) {
+        const bool showOverlay = !tetrisStarted || tetrisGameOver || tetrisPaused;
+        const bool pauseOverlay = tetrisPaused && tetrisStarted && !tetrisGameOver;
+        lv_coord_t overlayW = pauseOverlay ? min<lv_coord_t>(DISPLAY_WIDTH - 64, 140) : min<lv_coord_t>(DISPLAY_WIDTH - 20, 324);
+        lv_coord_t overlayH = pauseOverlay ? 76 : min<lv_coord_t>(UI_CONTENT_H - 8, 467);
+        if (lvglTetrisBoardObj) {
+            lv_area_t boardCoords;
+            lv_obj_get_coords(lvglTetrisBoardObj, &boardCoords);
+            const lv_coord_t boardWidth = static_cast<lv_coord_t>(boardCoords.x2 - boardCoords.x1 + 1);
+            const lv_coord_t boardHeight = static_cast<lv_coord_t>(boardCoords.y2 - boardCoords.y1 + 1);
+            overlayW = min<lv_coord_t>(overlayW, max<lv_coord_t>(120, boardWidth - 16));
+            overlayH = min<lv_coord_t>(overlayH, max<lv_coord_t>(137, boardHeight - 16));
+        }
+        lv_obj_set_size(lvglTetrisOverlay, overlayW, overlayH);
+        lv_obj_center(lvglTetrisOverlay);
+        lv_obj_move_foreground(lvglTetrisOverlay);
+        if (showOverlay) lv_obj_clear_flag(lvglTetrisOverlay, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(lvglTetrisOverlay, LV_OBJ_FLAG_HIDDEN);
+        if (lvglTetrisOverlayTitle) {
+            if (pauseOverlay) lv_label_set_text(lvglTetrisOverlayTitle, "PAUSE");
+            else lv_label_set_text(lvglTetrisOverlayTitle, tetrisGameOver ? "Game Over" : "Tetris");
+        }
+        if (lvglTetrisOverlaySubLabel) {
+            String msg = pauseOverlay ? String("Tap center button to resume")
+                                      : (tetrisGameOver ? ("Score " + String(tetrisScore) + "\nBest " + String(tetrisHighScore))
+                                                       : ("Tap Start when ready\nBest " + String(tetrisHighScore) + "\nLast " + String(tetrisLastScore)));
+            lv_label_set_text(lvglTetrisOverlaySubLabel, msg.c_str());
+        }
+        if (lvglTetrisOverlayBtn) {
+            if (pauseOverlay) lv_obj_add_flag(lvglTetrisOverlayBtn, LV_OBJ_FLAG_HIDDEN);
+            else lv_obj_clear_flag(lvglTetrisOverlayBtn, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (lvglTetrisOverlayBtnLabel && !pauseOverlay) lv_label_set_text(lvglTetrisOverlayBtnLabel, tetrisGameOver ? "Replay" : "Start");
+    }
+    if (lvglTetrisPauseBtnLabel) lv_label_set_text(lvglTetrisPauseBtnLabel, (!tetrisStarted || tetrisPaused) ? LV_SYMBOL_PLAY : LV_SYMBOL_PAUSE);
+}
+
+void lvglOpenTetrisEvent(lv_event_t *e)
+{
+    (void)e;
+    lvglEnsureScreenBuilt(UI_GAME_TETRIS);
+    tetrisPrepareGame();
+    if (screensaverActive) screensaverSetActive(false);
+    if (!displayAwake) displaySetAwake(true);
+    lastUserActivityMs = millis();
+    lvglRefreshTetrisBoard();
+    lvglOpenScreen(UI_GAME_TETRIS, LV_SCR_LOAD_ANIM_MOVE_LEFT);
+}
