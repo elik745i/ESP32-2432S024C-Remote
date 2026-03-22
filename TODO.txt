@@ -11,6 +11,7 @@ Fix MQTT - DONE
 
 move MQTT to separate file from main.cpp - DONE
 
+when unit OTA updated, popup comes that unit is updated to blabla firmware, in that popup can we also list update notes, which are in that release, I know they wont fit, there for lets have that popup full screen - DONE
+
 Create integration for Home Assistant to map advertised buttons to  existing homeassistant buttons.
 
-when unit OTA updated, popup comes that unit is updated to blabla firmware, in that popup can we also list update notes, which are in that release, I know they wont fit, there for lets have that popup full screen
