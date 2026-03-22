@@ -2510,6 +2510,21 @@ void setup()
     }
 }
 
+static inline void cpuBoostForUi(bool uiPriorityActive)
+{
+#if defined(ESP32)
+    if (uiPriorityActive) {
+        if (getCpuFrequencyMhz() < 240) {
+            setCpuFrequencyMhz(240);
+        }
+    } else {
+        if (getCpuFrequencyMhz() > 80) {
+            setCpuFrequencyMhz(80);
+        }
+    }
+#endif
+}
+
 void loop()
 {
     const uint32_t loopStartUs = micros();
@@ -2518,6 +2533,7 @@ void loop()
     screensaverService();
     bool isDown = lvglReady ? lvglTouchDown : false;
     const bool uiPriorityActive = uiPerformancePriorityActive(isDown);
+    cpuBoostForUi(uiPriorityActive);
     lvglWarmupScreensService(uiPriorityActive);
     const bool realtimeMessaging = uiScreenNeedsRealtimeMessaging();
 
@@ -2543,40 +2559,53 @@ void loop()
         serviceSlicePhase = static_cast<uint8_t>((serviceSlicePhase + 1U) % 5U);
         if (dnsRunning) dnsServer.processNextRequest();
         rgbService();
-        switch (serviceSlicePhase) {
-            case 0:
+
+        if (!modulesRuntimeActive) {
+            // Minimal runtime path for smooth UI when no modules are installed.
+            if (serviceSlicePhase == 0) {
                 wifiConnectionService();
-                if (modulesRuntimeActive && moduleInstalled[APP_MODULE_MQTT] && (!uiPriorityActive || realtimeMessaging)) mqttService();
-                break;
+            }
+            if (!uiPriorityActive || uiScreen == UI_INFO) serviceInfoRefresh();
+            if (!uiPriorityActive) {
+                refreshMdnsState();
+                otaCheckService();
+            }
+        } else {
+            switch (serviceSlicePhase) {
+                case 0:
+                    wifiConnectionService();
+                    if (moduleInstalled[APP_MODULE_MQTT] && (!uiPriorityActive || realtimeMessaging)) mqttService();
+                    break;
 
-            case 1:
-                if (modulesRuntimeActive && moduleNeedsP2pRuntime() && p2pReady && (!uiPriorityActive || realtimeMessaging)) p2pService();
-                break;
+                case 1:
+                    if (moduleNeedsP2pRuntime() && p2pReady && (!uiPriorityActive || realtimeMessaging)) p2pService();
+                    break;
 
-            case 2:
-                if (!uiPriorityActive || uiScreen == UI_WIFI_LIST) wifiScanService();
-                if (modulesRuntimeActive && moduleInstalled[APP_MODULE_CHAT] && (!uiPriorityActive || realtimeMessaging)) {
-                    chatPendingService();   // keep for WiFi/MQTT generic outbox maintenance
-                }
-                break;
+                case 2:
+                    if (!uiPriorityActive || uiScreen == UI_WIFI_LIST) wifiScanService();
+                    if (moduleInstalled[APP_MODULE_CHAT] && (!uiPriorityActive || realtimeMessaging)) {
+                        chatPendingService();   // keep for WiFi/MQTT generic outbox maintenance
+                    }
+                    break;
 
-            case 3:
-                if (!uiPriorityActive || !sdMounted) sdStatsService();
-                if (!uiPriorityActive) serviceCarInputTelemetry();
-                if (!uiPriorityActive || uiScreen == UI_INFO) serviceInfoRefresh();
+                case 3:
+                    if (!uiPriorityActive || !sdMounted) sdStatsService();
+                    if (!uiPriorityActive) serviceCarInputTelemetry();
+                    if (!uiPriorityActive || uiScreen == UI_INFO) serviceInfoRefresh();
 
-                if (!uiPriorityActive || uiScreen == UI_INFO || uiScreen == UI_CONFIG_HC12_INFO) {
-                    serviceDeferredRadioInfoFetch();
-                }
-                break;
+                    if (!uiPriorityActive || uiScreen == UI_INFO || uiScreen == UI_CONFIG_HC12_INFO) {
+                        serviceDeferredRadioInfoFetch();
+                    }
+                    break;
 
-            case 4:
-                if (moduleInstalled[APP_MODULE_MQTT] && !uiPriorityActive) mqttPruneDiscoveredPeers();
-                if (moduleInstalled[APP_MODULE_RADIO] && !uiPriorityActive) hc12PruneDiscoveredPeers();
+                case 4:
+                    if (moduleInstalled[APP_MODULE_MQTT] && !uiPriorityActive) mqttPruneDiscoveredPeers();
+                    if (moduleInstalled[APP_MODULE_RADIO] && !uiPriorityActive) hc12PruneDiscoveredPeers();
 
-                if (!uiPriorityActive) refreshMdnsState();
-                if (!uiPriorityActive || uiScreen == UI_CONFIG_OTA) otaCheckService();
-                break;
+                    if (!uiPriorityActive) refreshMdnsState();
+                    if (!uiPriorityActive || uiScreen == UI_CONFIG_OTA) otaCheckService();
+                    break;
+            }
         }
     }
     otaUpdateService();
