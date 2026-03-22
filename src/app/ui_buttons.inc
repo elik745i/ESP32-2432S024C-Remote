@@ -750,6 +750,7 @@ static void lvglRefreshPrimaryMenuButtonIcons()
     lvglSetMenuButtonIconMode(lvglConfigScreenshotBtn, tr(TXT_SCREENSHOT), LV_SYMBOL_IMAGE, &img_screenshot_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(lvglConfigLanguageBtn, tr(TXT_LANGUAGE), LV_SYMBOL_EDIT, &img_styles_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(lvglConfigOtaBtn, tr(TXT_OTA_UPDATES), LV_SYMBOL_UPLOAD, &img_ota_small_icon, 8, 12);
+    lvglSetMenuButtonIconMode(lvglConfigModulesBtn, "Modules", LV_SYMBOL_LIST, &img_config_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(
         lvglConfigFactoryResetBtn,
         tr(TXT_FACTORY_RESET),
@@ -770,12 +771,12 @@ static void lvglSetHomeButtonVisibleState(lv_obj_t *btn, bool visible)
 
 static void lvglRefreshHomeButtonVisibility()
 {
-    lvglSetHomeButtonVisibleState(lvglHomeChatBtn, homeChatVisible);
-    lvglSetHomeButtonVisibleState(lvglHomeRadioBtn, homeRadioVisible);
-    lvglSetHomeButtonVisibleState(lvglHomeMediaBtn, homeMediaVisible);
-    lvglSetHomeButtonVisibleState(lvglHomeInfoBtn, homeInfoVisible);
-    lvglSetHomeButtonVisibleState(lvglHomeGamesBtn, homeGamesVisible);
-    lvglSetHomeButtonVisibleState(lvglHomeMqttControlsBtn, homeMqttVisible);
+    lvglSetHomeButtonVisibleState(lvglHomeChatBtn, homeChatVisible && moduleInstalled[APP_MODULE_CHAT]);
+    lvglSetHomeButtonVisibleState(lvglHomeRadioBtn, homeRadioVisible && moduleInstalled[APP_MODULE_RADIO]);
+    lvglSetHomeButtonVisibleState(lvglHomeMediaBtn, homeMediaVisible && moduleInstalled[APP_MODULE_MEDIA]);
+    lvglSetHomeButtonVisibleState(lvglHomeInfoBtn, homeInfoVisible && moduleInstalled[APP_MODULE_INFO]);
+    lvglSetHomeButtonVisibleState(lvglHomeGamesBtn, homeGamesVisible && moduleInstalled[APP_MODULE_GAMES]);
+    lvglSetHomeButtonVisibleState(lvglHomeMqttControlsBtn, homeMqttVisible && moduleInstalled[APP_MODULE_MQTT]);
     lvglSetHomeButtonVisibleState(lvglHomeConfigBtn, homeConfigVisible);
     lvglSetHomeButtonVisibleState(lvglHomePowerBtn, homePowerVisible);
     lvglSetHomeButtonVisibleState(lvglAirplaneBtn, homeAirplaneVisible);

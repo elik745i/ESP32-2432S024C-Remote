@@ -934,6 +934,19 @@ void lvglRefreshConfigUi()
     if (lvglConfigMessageToneHeader) lvglLabelSetTextIfChanged(lvglConfigMessageToneHeader, "Message tone");
     if (lvglConfigStartupSoundLabel) lvglLabelSetTextIfChanged(lvglConfigStartupSoundLabel, "Play sound on start");
     if (lvglConfigRgbHeader) lvglLabelSetTextIfChanged(lvglConfigRgbHeader, tr(TXT_RGB_LED));
+    if (lvglConfigModulesBtn) lv_obj_clear_flag(lvglConfigModulesBtn, LV_OBJ_FLAG_HIDDEN);
+    if (lvglConfigHc12Btn) {
+        if (moduleInstalled[APP_MODULE_RADIO]) lv_obj_clear_flag(lvglConfigHc12Btn, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(lvglConfigHc12Btn, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (lvglConfigRemoteBtn) {
+        if (moduleInstalled[APP_MODULE_RADIO]) lv_obj_clear_flag(lvglConfigRemoteBtn, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(lvglConfigRemoteBtn, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (lvglConfigMqttBtn) {
+        if (moduleInstalled[APP_MODULE_MQTT]) lv_obj_clear_flag(lvglConfigMqttBtn, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(lvglConfigMqttBtn, LV_OBJ_FLAG_HIDDEN);
+    }
     if (lvglConfigDeviceNameTa) {
         String current = lv_textarea_get_text(lvglConfigDeviceNameTa);
         if (current != deviceShortNameValue()) lv_textarea_set_text(lvglConfigDeviceNameTa, deviceShortNameValue().c_str());
@@ -966,6 +979,43 @@ void lvglRefreshConfigUi()
     lvglRefreshSoundPopupUi();
     if (lvglKeyboardVisible() && lvglKeyboardFocusedTa && lvglKeyboardFocusedTa != lvglChatInputTa) {
         lvglKeyboardRefreshLayout();
+    }
+}
+
+void lvglRefreshModulesUi()
+{
+    if (lvglModulesStatusLabel) {
+        const String text = modulesStatusText.isEmpty() ? String("Available modules are fetched from GitHub when this screen opens.") : modulesStatusText;
+        lvglLabelSetTextIfChanged(lvglModulesStatusLabel, text);
+    }
+
+    for (uint8_t i = 0; i < APP_MODULE_COUNT; ++i) {
+        if (lvglModulesNameLabels[i]) lvglLabelSetTextIfChanged(lvglModulesNameLabels[i], APP_MODULE_TITLES[i]);
+        if (lvglModulesDescLabels[i]) lvglLabelSetTextIfChanged(lvglModulesDescLabels[i], APP_MODULE_DESCRIPTIONS[i]);
+        if (lvglModulesVersionLabels[i]) {
+            String line = moduleInstalled[i] ? String("Installed") : String("Not installed");
+            if (moduleAvailable[i]) {
+                line += moduleRemoteVersion[i].isEmpty() ? " | GitHub package available" : String(" | GitHub: ") + moduleRemoteVersion[i];
+            } else {
+                line += " | GitHub package unavailable";
+            }
+            lvglLabelSetTextIfChanged(lvglModulesVersionLabels[i], line);
+        }
+        if (!lvglModulesActionBtns[i] || !lvglModulesActionLabels[i]) continue;
+
+        if (moduleInstalled[i]) {
+            lv_obj_clear_state(lvglModulesActionBtns[i], LV_STATE_DISABLED);
+            lvglLabelSetTextIfChanged(lvglModulesActionLabels[i], "Uninstall");
+            lvglRegisterStyledButton(lvglModulesActionBtns[i], lv_color_hex(0xA33F3F), false);
+        } else if (moduleAvailable[i]) {
+            lv_obj_clear_state(lvglModulesActionBtns[i], LV_STATE_DISABLED);
+            lvglLabelSetTextIfChanged(lvglModulesActionLabels[i], "Install");
+            lvglRegisterStyledButton(lvglModulesActionBtns[i], lv_color_hex(0x3A8F4B), false);
+        } else {
+            lv_obj_add_state(lvglModulesActionBtns[i], LV_STATE_DISABLED);
+            lvglLabelSetTextIfChanged(lvglModulesActionLabels[i], "Unavailable");
+            lvglRegisterStyledButton(lvglModulesActionBtns[i], lv_color_hex(0x4E5D6C), false);
+        }
     }
 }
 

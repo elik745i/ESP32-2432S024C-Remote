@@ -26,6 +26,7 @@ static lv_obj_t *lvglScrStyleHomeItems = nullptr;
 static lv_obj_t *lvglScrBatteryTrain = nullptr;
 static lv_obj_t *lvglScrLanguage = nullptr;
 static lv_obj_t *lvglScrOta = nullptr;
+static lv_obj_t *lvglScrModules = nullptr;
 static lv_obj_t *lvglScrScreensaver = nullptr;
 static lv_obj_t *lvglScrHc12 = nullptr;
 static lv_obj_t *lvglScrHc12Terminal = nullptr;
@@ -175,8 +176,16 @@ static lv_obj_t *lvglConfigMqttBtn = nullptr;
 static lv_obj_t *lvglConfigScreenshotBtn = nullptr;
 static lv_obj_t *lvglConfigLanguageBtn = nullptr;
 static lv_obj_t *lvglConfigOtaBtn = nullptr;
+static lv_obj_t *lvglConfigModulesBtn = nullptr;
 static lv_obj_t *lvglConfigFactoryResetBtn = nullptr;
 static lv_obj_t *lvglConfigWrap = nullptr;
+static lv_obj_t *lvglModulesStatusLabel = nullptr;
+static lv_obj_t *lvglModulesWrap = nullptr;
+static lv_obj_t *lvglModulesNameLabels[MODULE_SLOT_COUNT] = {};
+static lv_obj_t *lvglModulesDescLabels[MODULE_SLOT_COUNT] = {};
+static lv_obj_t *lvglModulesVersionLabels[MODULE_SLOT_COUNT] = {};
+static lv_obj_t *lvglModulesActionBtns[MODULE_SLOT_COUNT] = {};
+static lv_obj_t *lvglModulesActionLabels[MODULE_SLOT_COUNT] = {};
 static lv_obj_t *lvglStyleScreenLockSw = nullptr;
 static lv_obj_t *lvglScreenLockModal = nullptr;
 static lv_obj_t *lvglScreenLockSetupPinTa = nullptr;
@@ -599,6 +608,7 @@ static bool lvglGetSwipeBackPreviewTarget(UiScreen current, UiScreen &target)
         case UI_CONFIG_STYLE:
         case UI_CONFIG_LANGUAGE:
         case UI_CONFIG_OTA:
+        case UI_CONFIG_MODULES:
         case UI_CONFIG_HC12:
         case UI_CONFIG_MQTT_CONFIG:
         case UI_CONFIG_MQTT_BUTTONS:
@@ -1948,6 +1958,7 @@ static const char *uiScreenName(UiScreen screen)
         case UI_CONFIG_STYLE: return tr(TXT_SCREEN);
         case UI_CONFIG_LANGUAGE: return tr(TXT_LANGUAGE);
         case UI_CONFIG_OTA: return tr(TXT_OTA_UPDATES);
+        case UI_CONFIG_MODULES: return "Modules";
         case UI_CONFIG_HC12: return tr(TXT_HC12_CONFIG);
         case UI_CONFIG_HC12_TERMINAL: return tr(TXT_HC12_TERMINAL);
         case UI_CONFIG_HC12_INFO: return tr(TXT_HC12_INFO);
@@ -1985,6 +1996,7 @@ static bool lvglCanBuildScreen(UiScreen screen)
         case UI_CONFIG_STYLE:
         case UI_CONFIG_LANGUAGE:
         case UI_CONFIG_OTA:
+        case UI_CONFIG_MODULES:
         case UI_CONFIG_HC12:
         case UI_CONFIG_HC12_TERMINAL:
         case UI_CONFIG_HC12_INFO:
@@ -2025,6 +2037,7 @@ static void lvglWarmupScreensService(bool uiPriorityActive)
         UI_CONFIG_STYLE,
         UI_CONFIG_LANGUAGE,
         UI_CONFIG_OTA,
+        UI_CONFIG_MODULES,
         UI_WIFI_LIST,
         UI_INFO,
         UI_MEDIA,
@@ -4970,6 +4983,13 @@ void lvglOpenOtaScreenEvent(lv_event_t *e)
     lvglRefreshOtaUi();
     lvglOpenScreen(UI_CONFIG_OTA, LV_SCR_LOAD_ANIM_MOVE_LEFT);
     otaCheckRequested = true;
+}
+
+void lvglOpenModulesScreenEvent(lv_event_t *e)
+{
+    (void)e;
+    lvglEnsureScreenBuilt(UI_CONFIG_MODULES);
+    lvglOpenScreen(UI_CONFIG_MODULES, LV_SCR_LOAD_ANIM_MOVE_LEFT);
 }
 
 void lvglOpenHc12ScreenEvent(lv_event_t *e)

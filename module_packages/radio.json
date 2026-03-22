@@ -1,0 +1,9 @@
+{
+  "id": "radio",
+  "title": "Radio Pack",
+  "version": "0.21.08",
+  "screens": ["radio_control", "remote_control", "radio_config", "radio_terminal", "radio_info"],
+  "home_buttons": ["radio"],
+  "services": ["hc12", "radio_runtime"],
+  "notes": "Installs radio control, remote control, and HC12/E220 runtime."
+}

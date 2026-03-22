@@ -1,0 +1,9 @@
+{
+  "id": "games",
+  "title": "Games Pack",
+  "version": "0.21.08",
+  "screens": ["games", "snake", "tetris", "checkers", "snake3d"],
+  "home_buttons": ["games"],
+  "services": ["game_ticks"],
+  "notes": "Installs Snake, Tetris, Checkers, and Snake 3D."
+}

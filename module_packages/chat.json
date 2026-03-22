@@ -1,0 +1,9 @@
+{
+  "id": "chat",
+  "title": "Chat Pack",
+  "version": "0.21.08",
+  "screens": ["chat", "chat_peers"],
+  "home_buttons": ["chat"],
+  "services": ["p2p", "chat_outbox"],
+  "notes": "Installs peer chat, chat contacts, and messaging runtime."
+}

@@ -1,0 +1,9 @@
+{
+  "id": "mqtt",
+  "title": "MQTT Pack",
+  "version": "0.21.08",
+  "screens": ["mqtt_config", "mqtt_controls", "mqtt_buttons"],
+  "home_buttons": ["mqtt"],
+  "services": ["mqtt"],
+  "notes": "Installs MQTT configuration and control runtime."
+}

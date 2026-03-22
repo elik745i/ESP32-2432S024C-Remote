@@ -1,0 +1,9 @@
+{
+  "id": "media",
+  "title": "Media Pack",
+  "version": "0.21.08",
+  "screens": ["media"],
+  "home_buttons": ["media"],
+  "services": ["audio"],
+  "notes": "Installs the media browser and playback runtime."
+}

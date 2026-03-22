@@ -788,6 +788,7 @@ static bool uiScreenSupportsSwipeBack(UiScreen screen)
         case UI_CONFIG_STYLE_HOME_ITEMS:
         case UI_CONFIG_LANGUAGE:
         case UI_CONFIG_OTA:
+        case UI_CONFIG_MODULES:
         case UI_CONFIG_HC12:
         case UI_CONFIG_HC12_TERMINAL:
         case UI_CONFIG_HC12_INFO:
@@ -825,6 +826,7 @@ lv_obj_t *lvglScreenForUi(UiScreen screen)
         case UI_CONFIG_STYLE_HOME_ITEMS: return lvglScrStyleHomeItems;
         case UI_CONFIG_LANGUAGE: return lvglScrLanguage;
         case UI_CONFIG_OTA: return lvglScrOta;
+        case UI_CONFIG_MODULES: return lvglScrModules;
         case UI_CONFIG_HC12: return lvglScrHc12;
         case UI_CONFIG_HC12_TERMINAL: return lvglScrHc12Terminal;
         case UI_CONFIG_HC12_INFO: return lvglScrHc12Info;
@@ -863,6 +865,7 @@ UiScreen lvglUiForScreenObj(lv_obj_t *screenObj)
     if (screenObj == lvglScrStyleHomeItems) return UI_CONFIG_STYLE_HOME_ITEMS;
     if (screenObj == lvglScrLanguage) return UI_CONFIG_LANGUAGE;
     if (screenObj == lvglScrOta) return UI_CONFIG_OTA;
+    if (screenObj == lvglScrModules) return UI_CONFIG_MODULES;
     if (screenObj == lvglScrHc12) return UI_CONFIG_HC12;
     if (screenObj == lvglScrHc12Terminal) return UI_CONFIG_HC12_TERMINAL;
     if (screenObj == lvglScrHc12Info) return UI_CONFIG_HC12_INFO;
@@ -882,6 +885,7 @@ UiScreen lvglUiForScreenObj(lv_obj_t *screenObj)
 void lvglEnsureScreenBuilt(UiScreen screen)
 {
     if (lvglScreenForUi(screen)) return;
+    if (!moduleInstalledForScreen(screen)) return;
     if (!lvglCanBuildScreen(screen)) return;
 
     auto makeSmallBtn = [](lv_obj_t *parent, const char *txt, int w, int h, lv_color_t col, lv_event_cb_t cb, void *ud = nullptr) -> lv_obj_t * {
@@ -1539,6 +1543,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglConfigScreenshotBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_SCREENSHOT), lv_color_hex(0x6B5B2A), lvglScreenshotEvent, nullptr);
             lvglConfigLanguageBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_LANGUAGE), lv_color_hex(0x5A6FA8), lvglOpenLanguageScreenEvent, nullptr);
             lvglConfigOtaBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_OTA_UPDATES), lv_color_hex(0x2E6F95), lvglOpenOtaScreenEvent, nullptr);
+            lvglConfigModulesBtn = lvglCreateMenuButton(lvglConfigWrap, "Modules", lv_color_hex(0x357A38), lvglOpenModulesScreenEvent, nullptr);
             lvglConfigFactoryResetBtn = lvglCreateMenuButton(
                 lvglConfigWrap,
                 tr(TXT_FACTORY_RESET),
@@ -1773,6 +1778,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglRegisterReorderableItem(lvglConfigScreenshotBtn, "ord_cfg", "shot");
             lvglRegisterReorderableItem(lvglConfigLanguageBtn, "ord_cfg", "lang");
             lvglRegisterReorderableItem(lvglConfigOtaBtn, "ord_cfg", "ota");
+            lvglRegisterReorderableItem(lvglConfigModulesBtn, "ord_cfg", "mods");
             lvglRegisterReorderableItem(lvglConfigFactoryResetBtn, "ord_cfg", "freset");            
             lvglRegisterReorderableItem(nameWrap, "ord_cfg", "name");
             lvglRegisterReorderableItem(brightWrap, "ord_cfg", "bright");
@@ -2500,6 +2506,68 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             }
             lvglApplySavedOrder(wrap, "ord_ota");
             lvglRefreshOtaUi();
+            break;
+        }
+        case UI_CONFIG_MODULES: {
+            lvglScrModules = lvglCreateScreenBase("Modules", false);
+            lvglModulesWrap = lv_obj_create(lvglScrModules);
+            lv_obj_set_size(lvglModulesWrap, lv_pct(100), UI_CONTENT_H);
+            lv_obj_align(lvglModulesWrap, LV_ALIGN_TOP_MID, 0, UI_CONTENT_TOP_Y);
+            lv_obj_set_style_bg_opa(lvglModulesWrap, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(lvglModulesWrap, 0, 0);
+            lv_obj_set_style_pad_all(lvglModulesWrap, 10, 0);
+            lv_obj_set_style_pad_row(lvglModulesWrap, 10, 0);
+            lv_obj_set_flex_flow(lvglModulesWrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_scroll_dir(lvglModulesWrap, LV_DIR_VER);
+            lv_obj_set_scrollbar_mode(lvglModulesWrap, LV_SCROLLBAR_MODE_OFF);
+
+            lvglModulesStatusLabel = lv_label_create(lvglModulesWrap);
+            lv_obj_set_width(lvglModulesStatusLabel, lv_pct(100));
+            lv_label_set_long_mode(lvglModulesStatusLabel, LV_LABEL_LONG_WRAP);
+            lv_obj_set_style_text_color(lvglModulesStatusLabel, lv_color_hex(0x9FB0C2), 0);
+            lv_label_set_text(lvglModulesStatusLabel, "Loading modules...");
+
+            for (uint8_t i = 0; i < APP_MODULE_COUNT; ++i) {
+                lv_obj_t *card = lv_obj_create(lvglModulesWrap);
+                lv_obj_set_width(card, lv_pct(100));
+                lv_obj_set_height(card, LV_SIZE_CONTENT);
+                lv_obj_set_style_bg_color(card, lv_color_hex(0x16212C), 0);
+                lv_obj_set_style_border_color(card, lv_color_hex(0x536274), 0);
+                lv_obj_set_style_border_width(card, 1, 0);
+                lv_obj_set_style_radius(card, 12, 0);
+                lv_obj_set_style_pad_all(card, 12, 0);
+                lv_obj_set_style_pad_row(card, 6, 0);
+                lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+                lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+                lvglModulesNameLabels[i] = lv_label_create(card);
+                lv_obj_set_width(lvglModulesNameLabels[i], lv_pct(100));
+                lv_obj_set_style_text_color(lvglModulesNameLabels[i], lv_color_hex(0xF5F8FB), 0);
+
+                lvglModulesDescLabels[i] = lv_label_create(card);
+                lv_obj_set_width(lvglModulesDescLabels[i], lv_pct(100));
+                lv_label_set_long_mode(lvglModulesDescLabels[i], LV_LABEL_LONG_WRAP);
+                lv_obj_set_style_text_color(lvglModulesDescLabels[i], lv_color_hex(0xB9C7D5), 0);
+
+                lvglModulesVersionLabels[i] = lv_label_create(card);
+                lv_obj_set_width(lvglModulesVersionLabels[i], lv_pct(100));
+                lv_label_set_long_mode(lvglModulesVersionLabels[i], LV_LABEL_LONG_WRAP);
+                lv_obj_set_style_text_color(lvglModulesVersionLabels[i], lv_color_hex(0x8EA5BA), 0);
+
+                lv_obj_t *btn = lv_btn_create(card);
+                lv_obj_set_size(btn, lv_pct(100), 40);
+                lv_obj_set_style_radius(btn, 10, 0);
+                lv_obj_set_style_border_width(btn, 0, 0);
+                lv_obj_add_event_cb(btn, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
+                lv_obj_add_event_cb(btn, lvglFilteredClickFlashEvent, LV_EVENT_CLICKED, nullptr);
+                lv_obj_add_event_cb(btn, lvglModuleActionEvent, LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(i)));
+                lvglModulesActionBtns[i] = btn;
+
+                lv_obj_t *lbl = lv_label_create(btn);
+                lv_obj_center(lbl);
+                lvglModulesActionLabels[i] = lbl;
+            }
+            lvglRefreshModulesUi();
             break;
         }
         case UI_CONFIG_HC12: {
@@ -3484,6 +3552,11 @@ void lvglOpenScreen(UiScreen screen, lv_scr_load_anim_t anim)
         screen = UI_LOCK;
         anim = LV_SCR_LOAD_ANIM_NONE;
     }
+    if (!moduleInstalledForScreen(screen)) {
+        uiStatusLine = "Install this module first";
+        if (lvglReady) lvglSyncStatusLine();
+        return;
+    }
     const UiScreen prevScreen = uiScreen;
     lvglEnsureScreenBuilt(screen);
     lv_obj_t *target = lvglScreenForUi(screen);
@@ -3527,6 +3600,9 @@ void lvglOpenScreen(UiScreen screen, lv_scr_load_anim_t anim)
         lvglRefreshLanguageUi();
     } else if (screen == UI_CONFIG_OTA) {
         lvglRefreshOtaUi();
+    } else if (screen == UI_CONFIG_MODULES) {
+        moduleRefreshCatalog();
+        lvglRefreshModulesUi();
     } else if (screen == UI_CONFIG_HC12) {
         hc12ReadConfigSelection();
         lvglRefreshHc12ConfigUi();
@@ -3582,6 +3658,7 @@ static void lvglNavigateBackFromScreen(UiScreen sourceScreen, lv_scr_load_anim_t
             break;
         case UI_CONFIG_STYLE:
         case UI_CONFIG_LANGUAGE:
+        case UI_CONFIG_MODULES:
             lvglOpenScreen(UI_CONFIG, anim);
             break;
         case UI_CONFIG_STYLE_HOME_ITEMS:

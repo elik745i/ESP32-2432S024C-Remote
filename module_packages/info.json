@@ -1,0 +1,9 @@
+{
+  "id": "info",
+  "title": "Info Pack",
+  "version": "0.21.08",
+  "screens": ["info"],
+  "home_buttons": ["info"],
+  "services": ["info_refresh"],
+  "notes": "Installs system info and diagnostics views."
+}

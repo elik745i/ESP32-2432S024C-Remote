@@ -1,3 +1,320 @@
+static const char *modulePrefKey(AppModuleId id)
+{
+    switch (id) {
+        case APP_MODULE_CHAT: return "mod_chat";
+        case APP_MODULE_RADIO: return "mod_radio";
+        case APP_MODULE_MEDIA: return "mod_media";
+        case APP_MODULE_INFO: return "mod_info";
+        case APP_MODULE_GAMES: return "mod_games";
+        case APP_MODULE_MQTT: return "mod_mqtt";
+        default: return "mod_x";
+    }
+}
+
+static int moduleIndexFromId(const String &id)
+{
+    for (uint8_t i = 0; i < APP_MODULE_COUNT; ++i) {
+        if (id.equalsIgnoreCase(APP_MODULE_IDS[i])) return i;
+    }
+    return -1;
+}
+
+static void moduleClearCatalog()
+{
+    for (uint8_t i = 0; i < APP_MODULE_COUNT; ++i) {
+        moduleAvailable[i] = false;
+        moduleRemoteVersion[i] = "";
+        moduleRemoteNotes[i] = "";
+        moduleRemotePackageUrl[i] = "";
+    }
+}
+
+static String modulePackagePath(AppModuleId id)
+{
+    return String("/modules/") + modulePrefKey(id) + ".json";
+}
+
+static bool moduleNeedsP2pRuntime()
+{
+    return moduleInstalled[APP_MODULE_CHAT] ||
+           moduleInstalled[APP_MODULE_RADIO] ||
+           moduleInstalled[APP_MODULE_MQTT] ||
+           moduleInstalled[APP_MODULE_GAMES];
+}
+
+static int moduleIndexForScreen(UiScreen screen)
+{
+    switch (screen) {
+        case UI_CHAT:
+        case UI_CHAT_PEERS:
+            return APP_MODULE_CHAT;
+        case UI_MEDIA:
+            return APP_MODULE_MEDIA;
+        case UI_INFO:
+            return APP_MODULE_INFO;
+        case UI_GAMES:
+        case UI_GAME_SNAKE:
+        case UI_GAME_TETRIS:
+        case UI_GAME_CHECKERS:
+        case UI_GAME_SNAKE3D:
+            return APP_MODULE_GAMES;
+        case UI_RADIO_CONTROL:
+        case UI_CONFIG_REMOTE_CONTROL:
+        case UI_CONFIG_RADIO_BUTTONS:
+        case UI_CONFIG_RADIO_RECEIVER_TEST:
+        case UI_CONFIG_HC12:
+        case UI_CONFIG_HC12_TERMINAL:
+        case UI_CONFIG_HC12_INFO:
+            return APP_MODULE_RADIO;
+        case UI_CONFIG_MQTT_CONFIG:
+        case UI_CONFIG_MQTT_CONTROLS:
+        case UI_CONFIG_MQTT_BUTTONS:
+            return APP_MODULE_MQTT;
+        default:
+            return -1;
+    }
+}
+
+static bool moduleInstalledForScreen(UiScreen screen)
+{
+    const int idx = moduleIndexForScreen(screen);
+    return idx < 0 || moduleInstalled[idx];
+}
+
+static void modulePersistInstalledState(AppModuleId id, bool installed)
+{
+    moduleInstalled[id] = installed;
+    uiPrefs.begin("ui", false);
+    uiPrefs.putBool(modulePrefKey(id), installed);
+    uiPrefs.putBool("mods_init", true);
+    uiPrefs.end();
+}
+
+static bool moduleDownloadPackage(AppModuleId id, String &errorOut)
+{
+    errorOut = "";
+    const int idx = static_cast<int>(id);
+    if (idx < 0 || idx >= static_cast<int>(APP_MODULE_COUNT)) {
+        errorOut = "invalid_module";
+        return false;
+    }
+    if (!wifiConnectedSafe()) {
+        errorOut = "wifi_required";
+        return false;
+    }
+    if (!sdEnsureMounted(true)) {
+        errorOut = "sd_unavailable";
+        return false;
+    }
+    if (moduleRemotePackageUrl[idx].isEmpty()) {
+        errorOut = "package_url_missing";
+        return false;
+    }
+    if (!sdLock()) {
+        errorOut = "sd_busy";
+        return false;
+    }
+
+    fsWriteBegin();
+    ensureFolderExists(modulePackagePath(id));
+    SD.remove(modulePackagePath(id));
+
+    WiFiClientSecure client;
+    client.setInsecure();
+    HTTPClient http;
+    http.setConnectTimeout(7000);
+    http.setTimeout(10000);
+    http.addHeader("Accept", "application/json");
+    http.addHeader("User-Agent", deviceShortNameValue());
+    if (!http.begin(client, moduleRemotePackageUrl[idx])) {
+        fsWriteEnd();
+        sdUnlock();
+        errorOut = "http_begin_failed";
+        return false;
+    }
+
+    const int code = http.GET();
+    if (code < 200 || code >= 300) {
+        http.end();
+        fsWriteEnd();
+        sdUnlock();
+        errorOut = String("http_") + code;
+        return false;
+    }
+
+    String payload = http.getString();
+    http.end();
+    if (payload.isEmpty()) {
+        fsWriteEnd();
+        sdUnlock();
+        errorOut = "empty_package";
+        return false;
+    }
+
+    File f = SD.open(modulePackagePath(id), FILE_WRITE);
+    if (!f) {
+        fsWriteEnd();
+        sdUnlock();
+        errorOut = "package_open_failed";
+        return false;
+    }
+    f.print(payload);
+    f.close();
+    fsWriteEnd();
+    sdUnlock();
+    return true;
+}
+
+static void moduleDeletePackage(AppModuleId id)
+{
+    if (!sdEnsureMounted()) return;
+    if (!sdLock()) return;
+    fsWriteBegin();
+    SD.remove(modulePackagePath(id));
+    fsWriteEnd();
+    sdUnlock();
+}
+
+static void moduleApplyUiVisibility()
+{
+    if (!lvglReady) return;
+    lvglRefreshHomeButtonVisibility();
+    lvglRefreshConfigUi();
+    lvglRefreshStyleHomeItemsUi();
+    lvglRefreshModulesUi();
+}
+
+static void moduleApplyRuntimeState()
+{
+    if (moduleNeedsP2pRuntime()) {
+        if (!p2pReady) {
+            p2pReady = sodium_init() >= 0;
+            if (p2pReady) loadP2pConfig();
+        }
+    } else {
+        if (p2pUdpStarted) {
+            p2pUdp.stop();
+            p2pUdpStarted = false;
+        }
+        if (p2pPeers) {
+            free(p2pPeers);
+            p2pPeers = nullptr;
+        }
+        if (p2pDiscoveredPeers) {
+            free(p2pDiscoveredPeers);
+            p2pDiscoveredPeers = nullptr;
+        }
+        p2pPeerCount = 0;
+        p2pDiscoveredCount = 0;
+        p2pReady = false;
+    }
+
+    if (moduleInstalled[APP_MODULE_RADIO]) {
+        hc12InitIfNeeded();
+        if (radioModuleType == RADIO_MODULE_E220) hc12ReadConfigSelection();
+    }
+
+    if (!moduleInstalled[APP_MODULE_MQTT]) {
+        mqttClient.disconnect();
+    }
+
+    if (!moduleInstalled[APP_MODULE_MEDIA] && (mediaIsPlaying || mediaPaused)) {
+        audioStopPlayback(true);
+    }
+}
+
+static void moduleLoadInstalledState()
+{
+    const bool modsInitialized = uiPrefs.getBool("mods_init", false);
+    if (!modsInitialized) {
+        const bool legacyInstall =
+            uiPrefs.isKey("home_chat") ||
+            uiPrefs.isKey("home_gate") ||
+            uiPrefs.isKey("home_media") ||
+            uiPrefs.isKey("home_info") ||
+            uiPrefs.isKey("home_games") ||
+            uiPrefs.isKey("home_mqtt");
+        for (uint8_t i = 0; i < APP_MODULE_COUNT; ++i) {
+            moduleInstalled[i] = legacyInstall;
+            uiPrefs.putBool(modulePrefKey(static_cast<AppModuleId>(i)), moduleInstalled[i]);
+        }
+        uiPrefs.putBool("mods_init", true);
+        return;
+    }
+
+    for (uint8_t i = 0; i < APP_MODULE_COUNT; ++i) {
+        moduleInstalled[i] = uiPrefs.getBool(modulePrefKey(static_cast<AppModuleId>(i)), false);
+    }
+}
+
+bool moduleRefreshCatalog()
+{
+    moduleClearCatalog();
+    if (!wifiConnectedSafe()) {
+        modulesStatusText = "Connect WiFi to fetch modules from GitHub.";
+        return false;
+    }
+
+    int ghStatus = -1;
+    const String body = httpsGetText(MODULES_MANIFEST_URL, &ghStatus);
+    if (body.isEmpty()) {
+        modulesStatusText = ghStatus > 0 ? String("Module fetch failed: HTTP ") + ghStatus : "Module fetch failed.";
+        return false;
+    }
+
+    JsonDocument parsed;
+    const DeserializationError err = deserializeJson(parsed, body);
+    if (err || !parsed["modules"].is<JsonArrayConst>()) {
+        modulesStatusText = "Module manifest parse failed.";
+        return false;
+    }
+
+    uint8_t availableCount = 0;
+    for (JsonObjectConst moduleObj : parsed["modules"].as<JsonArrayConst>()) {
+        const String id = String(static_cast<const char *>(moduleObj["id"] | ""));
+        const int idx = moduleIndexFromId(id);
+        if (idx < 0) continue;
+        moduleAvailable[idx] = true;
+        moduleRemoteVersion[idx] = String(static_cast<const char *>(moduleObj["version"] | ""));
+        moduleRemoteNotes[idx] = String(static_cast<const char *>(moduleObj["notes"] | ""));
+        moduleRemotePackageUrl[idx] = String(static_cast<const char *>(moduleObj["package_url"] | ""));
+        availableCount++;
+    }
+
+    modulesStatusText = String("GitHub modules fetched: ") + availableCount;
+    return true;
+}
+
+void lvglModuleActionEvent(lv_event_t *e)
+{
+    if (!e) return;
+    const int idx = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
+    if (idx < 0 || idx >= static_cast<int>(APP_MODULE_COUNT)) return;
+
+    const AppModuleId moduleId = static_cast<AppModuleId>(idx);
+    if (moduleInstalled[idx]) {
+        moduleDeletePackage(moduleId);
+        modulePersistInstalledState(moduleId, false);
+        if (!moduleInstalledForScreen(uiScreen)) {
+            lvglOpenScreen(UI_CONFIG_MODULES, LV_SCR_LOAD_ANIM_NONE);
+        }
+        modulesStatusText = String(APP_MODULE_TITLES[idx]) + " uninstalled and stopped.";
+    } else if (moduleAvailable[idx]) {
+        String error;
+        if (moduleDownloadPackage(moduleId, error)) {
+            modulePersistInstalledState(moduleId, true);
+            modulesStatusText = String(APP_MODULE_TITLES[idx]) + " downloaded and installed.";
+        } else {
+            modulesStatusText = String(APP_MODULE_TITLES[idx]) + " install failed: " + error;
+        }
+    } else {
+        modulesStatusText = String(APP_MODULE_TITLES[idx]) + " is not available on GitHub.";
+    }
+
+    moduleApplyRuntimeState();
+    moduleApplyUiVisibility();
+}
+
 void appendUiSettings(JsonDocument &doc)
 {
     uiPrefs.begin("ui", true);
@@ -96,6 +413,7 @@ void loadUiRuntimeConfig()
     startupSoundEnabled = uiPrefs.getBool("boot_snd", true);
     touchVibrationEnabled = uiPrefs.getBool("touch_vib", true);
     p2pDiscoveryEnabled = uiPrefs.getBool("chat_disc", p2pDiscoveryEnabled);
+    moduleLoadInstalledState();
     homeChatVisible = uiPrefs.getBool("home_chat", true);
     homeRadioVisible = uiPrefs.getBool("home_gate", true);
     homeMediaVisible = uiPrefs.getBool("home_media", true);

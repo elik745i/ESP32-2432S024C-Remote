@@ -233,6 +233,8 @@ static constexpr uint8_t VIBRATION_QUEUE_MAX = 4;
 
 static constexpr const char *AP_PASS = "12345678";
 static constexpr const char *FW_VERSION = "0.21.08";
+static constexpr uint8_t MODULE_SLOT_COUNT = 6U;
+static constexpr const char *MODULES_MANIFEST_URL = "https://raw.githubusercontent.com/elik745i/ESP32-2432S024C-Remote/main/modules_manifest.json";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
@@ -241,6 +243,20 @@ static constexpr size_t OTA_VERSION_TEXT_MAX = 32;
 static constexpr size_t OTA_DOWNLOAD_BUF_SIZE = 2048U;
 static constexpr uint8_t OTA_RELEASE_LIST_MAX = 6U;
 static constexpr size_t OTA_RELEASE_NOTES_STORE_MAX = 3072U;
+static constexpr const char *APP_MODULE_IDS[MODULE_SLOT_COUNT] = {
+    "chat", "radio", "media", "info", "games", "mqtt"
+};
+static constexpr const char *APP_MODULE_TITLES[MODULE_SLOT_COUNT] = {
+    "Chat Pack", "Radio Pack", "Media Pack", "Info Pack", "Games Pack", "MQTT Pack"
+};
+static constexpr const char *APP_MODULE_DESCRIPTIONS[MODULE_SLOT_COUNT] = {
+    "Peer chat and contacts",
+    "Radio control and remote tools",
+    "Player and media browser",
+    "System info and diagnostics",
+    "Snake, Tetris, and Checkers",
+    "MQTT config and controls"
+};
 static constexpr unsigned long STA_RETRY_INTERVAL_MS = 5000UL;
 static constexpr bool SERIAL_TERMINAL_TRANSFER_ENABLED = false;
 static constexpr size_t SERIAL_LOG_RING_SIZE = 200;
@@ -401,6 +417,12 @@ struct OtaUploadCtx {
     bool finished = false;
     size_t bytesWritten = 0;
     String error;
+};
+
+struct AppModuleCatalogEntry {
+    const char *id;
+    const char *title;
+    const char *description;
 };
 
 struct OtaReleaseEntry {
@@ -984,6 +1006,7 @@ enum UiScreen : uint8_t {
     UI_CONFIG_STYLE_HOME_ITEMS,
     UI_CONFIG_LANGUAGE,
     UI_CONFIG_OTA,
+    UI_CONFIG_MODULES,
     UI_SCREENSAVER,
     UI_CONFIG_HC12,
     UI_CONFIG_HC12_TERMINAL,
@@ -995,6 +1018,16 @@ enum UiScreen : uint8_t {
     UI_GAME_TETRIS,
     UI_GAME_CHECKERS,
     UI_GAME_SNAKE3D
+};
+
+enum AppModuleId : uint8_t {
+    APP_MODULE_CHAT = 0,
+    APP_MODULE_RADIO,
+    APP_MODULE_MEDIA,
+    APP_MODULE_INFO,
+    APP_MODULE_GAMES,
+    APP_MODULE_MQTT,
+    APP_MODULE_COUNT
 };
 
 enum UiLanguage : uint8_t {
@@ -1171,6 +1204,12 @@ static void lvglRefreshSoundPopupUi();
 static void lvglShowSoundPopup();
 static void lvglHideSoundPopup();
 static void lvglOtaPopupEvent(lv_event_t *e);
+void lvglOpenModulesScreenEvent(lv_event_t *e);
+void lvglModuleActionEvent(lv_event_t *e);
+void lvglRefreshModulesUi();
+bool moduleRefreshCatalog();
+static bool moduleInstalledForScreen(UiScreen screen);
+static bool moduleNeedsP2pRuntime();
 static void lvglShowOtaPostUpdatePopup();
 static void lvglHideOtaPostUpdatePopup();
 static void lvglApplyMsgboxModalStyle(lv_obj_t *msgbox);
@@ -1884,6 +1923,12 @@ bool homeConfigVisible = true;
 bool homePowerVisible = true;
 bool homeAirplaneVisible = true;
 bool homeApVisible = true;
+bool moduleInstalled[APP_MODULE_COUNT] = {};
+bool moduleAvailable[APP_MODULE_COUNT] = {};
+String moduleRemoteVersion[APP_MODULE_COUNT];
+String moduleRemoteNotes[APP_MODULE_COUNT];
+String moduleRemotePackageUrl[APP_MODULE_COUNT];
+String modulesStatusText;
 bool screenLockEnabled = false;
 bool screenLockUnlocked = true;
 char screenLockPin[5] = "";
@@ -2326,13 +2371,17 @@ void setup()
 #endif
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step randomSeed");
     randomSeed(static_cast<unsigned long>(esp_random()));
-    if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step sodium_init");
-    p2pReady = sodium_init() >= 0;
-    if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step loadP2pConfig");
-    if (p2pReady) loadP2pConfig();
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step loadUiRuntimeConfig");
     loadUiRuntimeConfig();
-    if (radioModuleType == RADIO_MODULE_E220) {
+    if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step sodium_init");
+    if (moduleNeedsP2pRuntime()) {
+        p2pReady = sodium_init() >= 0;
+        if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step loadP2pConfig");
+        if (p2pReady) loadP2pConfig();
+    } else {
+        p2pReady = false;
+    }
+    if (moduleInstalled[APP_MODULE_RADIO] && radioModuleType == RADIO_MODULE_E220) {
         pinMode(e220ActiveM0Pin(), OUTPUT);
         pinMode(e220ActiveM1Pin(), OUTPUT);
         digitalWrite(e220ActiveM0Pin(), LOW);
@@ -2340,11 +2389,11 @@ void setup()
         delay(120);
         hc12SerialReopen(e220RuntimeBaud());
         delay(30);
-    }    
-    hc12InitIfNeeded();
-    if (radioModuleType == RADIO_MODULE_E220) {
+    }
+    if (moduleInstalled[APP_MODULE_RADIO]) hc12InitIfNeeded();
+    if (moduleInstalled[APP_MODULE_RADIO] && radioModuleType == RADIO_MODULE_E220) {
         hc12ReadConfigSelection();
-    }    
+    }
     batteryCalibrationLoad();
     batteryTrainingLoad();
     loadGamePrefs();
@@ -2483,16 +2532,16 @@ void loop()
         switch (serviceSlicePhase) {
             case 0:
                 wifiConnectionService();
-                if (!uiPriorityActive || realtimeMessaging) mqttService();
+                if (moduleInstalled[APP_MODULE_MQTT] && (!uiPriorityActive || realtimeMessaging)) mqttService();
                 break;
 
             case 1:
-                if (p2pReady && (!uiPriorityActive || realtimeMessaging)) p2pService();
+                if (moduleNeedsP2pRuntime() && p2pReady && (!uiPriorityActive || realtimeMessaging)) p2pService();
                 break;
 
             case 2:
                 if (!uiPriorityActive || uiScreen == UI_WIFI_LIST) wifiScanService();
-                if (!uiPriorityActive || realtimeMessaging) {
+                if (moduleInstalled[APP_MODULE_CHAT] && (!uiPriorityActive || realtimeMessaging)) {
                     chatPendingService();   // keep for WiFi/MQTT generic outbox maintenance
                 }
                 break;
@@ -2508,8 +2557,8 @@ void loop()
                 break;
 
             case 4:
-                if (!uiPriorityActive) mqttPruneDiscoveredPeers();
-                if (!uiPriorityActive) hc12PruneDiscoveredPeers();
+                if (moduleInstalled[APP_MODULE_MQTT] && !uiPriorityActive) mqttPruneDiscoveredPeers();
+                if (moduleInstalled[APP_MODULE_RADIO] && !uiPriorityActive) hc12PruneDiscoveredPeers();
 
                 if (!uiPriorityActive) refreshMdnsState();
                 if (!uiPriorityActive || uiScreen == UI_CONFIG_OTA) otaCheckService();
@@ -2517,17 +2566,17 @@ void loop()
         }
     }
     otaUpdateService();
-    hc12Service();
-    if ((!uiPriorityActive || uiScreen == UI_CONFIG_HC12) && hc12ConfigApplyPending != HC12_CFG_APPLY_NONE) {
+    if (moduleInstalled[APP_MODULE_RADIO]) hc12Service();
+    if (moduleInstalled[APP_MODULE_RADIO] && (!uiPriorityActive || uiScreen == UI_CONFIG_HC12) && hc12ConfigApplyPending != HC12_CFG_APPLY_NONE) {
         serviceDeferredHc12ConfigApply();
     }
-    radioChatService();
-    if (!uiPriorityActive || realtimeMessaging || chatPendingCount > 0) {
+    if (moduleInstalled[APP_MODULE_RADIO] && moduleInstalled[APP_MODULE_CHAT]) radioChatService();
+    if (moduleInstalled[APP_MODULE_CHAT] && (!uiPriorityActive || realtimeMessaging || chatPendingCount > 0)) {
         chatPendingService();
     }
-    chatPendingOutboxService();
+    if (moduleInstalled[APP_MODULE_CHAT]) chatPendingOutboxService();
     screenshotService(isDown);
-    const bool allowSdAutoRetry = (uiScreen == UI_MEDIA) || !displayAwake;
+    const bool allowSdAutoRetry = (moduleInstalled[APP_MODULE_MEDIA] && uiScreen == UI_MEDIA) || !displayAwake;
     if (!sdMounted && allowSdAutoRetry && !isDown && !fsWriteBusy() &&
         static_cast<unsigned long>(millis() - sdLastAutoRetryMs) >= SD_AUTORETRY_PERIOD_MS) {
         sdLastAutoRetryMs = millis();
@@ -2542,7 +2591,7 @@ void loop()
     }
     bool wasRunning = mediaIsPlaying || mediaPaused;
     // Keep decoder fed continuously; sparse servicing causes audible clicks.
-    audioService();
+    if (moduleInstalled[APP_MODULE_MEDIA] || mediaIsPlaying || mediaPaused) audioService();
     chatMessageBeepService();
     chatMessageVibrationService();
     touchFeedbackBeepService();
@@ -2615,11 +2664,13 @@ void loop()
 
     if (topBarCenterMode == TOP_BAR_CENTER_TIME) syncInternetTimeIfNeeded(false);
 
-    snakeTick();
-    tetrisTick();
-    tetrisAnimationService();
-    checkersTick();
-    snake3dTick();
+    if (moduleInstalled[APP_MODULE_GAMES]) {
+        snakeTick();
+        tetrisTick();
+        tetrisAnimationService();
+        checkersTick();
+        snake3dTick();
+    }
 
     static wl_status_t lastWiFi = WL_DISCONNECTED;
     wl_status_t cur = wifiStatusSafe();
