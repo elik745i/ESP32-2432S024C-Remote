@@ -2774,6 +2774,12 @@ void loop()
 
     if (canEnterLowPowerSleep(isDown)) enterLowPowerSleep();
     cpuLoadPrevActiveUs = micros() - loopStartUs;
-    delay(0);
+
+    // Lower CPU load when idle (no UI interaction and only base/INFO module runtime).
+    if (!uiPriorityActive && !modulesRuntimeActive) {
+        delay(1);
+    } else {
+        delay(0);
+    }
 }
 
