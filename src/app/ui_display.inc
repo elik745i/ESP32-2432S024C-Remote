@@ -2,6 +2,7 @@
 TFT_eSPI tft;
 #elif defined(UI_DISPLAY_SECTION_STATE)
 static lv_color_t *lvglDrawPixels = nullptr;
+static lv_color_t *lvglDrawPixels2 = nullptr;
 static uint16_t lvglBufLinesActive = 0;
 static lv_disp_draw_buf_t lvglDrawBuf;
 static lv_disp_drv_t lvglDispDrv;
@@ -3386,20 +3387,63 @@ static void lvglSingleLinePasswordValueChangedEvent(lv_event_t *e)
     lv_obj_scroll_to_y(ta, 0, LV_ANIM_OFF);
 }
 
+static void lvglConfigureCompactSingleLineTa(lv_obj_t *ta, lv_coord_t height = 34)
+{
+    if (!ta || !lv_obj_is_valid(ta)) return;
+    const lv_coord_t h = max<lv_coord_t>(28, height);
+    const lv_style_selector_t selectors[] = {
+        LV_PART_MAIN,
+        LV_PART_MAIN | LV_STATE_DEFAULT,
+        LV_PART_MAIN | LV_STATE_FOCUSED,
+        LV_PART_MAIN | LV_STATE_EDITED,
+        LV_PART_MAIN | LV_STATE_FOCUS_KEY,
+        LV_PART_MAIN | (LV_STATE_FOCUSED | LV_STATE_EDITED),
+        LV_PART_MAIN | (LV_STATE_FOCUS_KEY | LV_STATE_EDITED),
+    };
+    lv_textarea_set_one_line(ta, true);
+    lv_obj_set_height(ta, h);
+    lv_obj_set_scroll_dir(ta, LV_DIR_HOR);
+    lv_obj_set_scrollbar_mode(ta, LV_SCROLLBAR_MODE_OFF);
+    for (size_t i = 0; i < (sizeof(selectors) / sizeof(selectors[0])); ++i) {
+        const lv_style_selector_t sel = selectors[i];
+        lv_obj_set_style_min_height(ta, h, sel);
+        lv_obj_set_style_max_height(ta, h, sel);
+        lv_obj_set_style_pad_top(ta, 0, sel);
+        lv_obj_set_style_pad_bottom(ta, 0, sel);
+        lv_obj_set_style_text_line_space(ta, 0, sel);
+    }
+    lv_obj_scroll_to_y(ta, 0, LV_ANIM_OFF);
+}
+
 static void lvglApplySingleLinePasswordTaState(lv_obj_t *ta)
 {
     if (!ta || !lv_obj_is_valid(ta)) return;
-    lv_textarea_set_one_line(ta, true);
+    lvglConfigureCompactSingleLineTa(ta, lv_obj_get_height(ta) > 0 ? lv_obj_get_height(ta) : 34);
     lv_textarea_set_password_mode(ta, true);
-    lv_obj_set_scroll_dir(ta, LV_DIR_HOR);
-    lv_obj_set_scrollbar_mode(ta, LV_SCROLLBAR_MODE_OFF);
     lv_obj_scroll_to_y(ta, 0, LV_ANIM_OFF);
 }
 
 static void lvglConfigureSingleLinePasswordTa(lv_obj_t *ta)
 {
     if (!ta || !lv_obj_is_valid(ta)) return;
+    const lv_coord_t h = lv_obj_get_height(ta);
     lvglApplySingleLinePasswordTaState(ta);
+    // Keep geometry stable on focus: some themes adjust textarea metrics for focused state.
+    if (h > 0) {
+        lv_obj_set_height(ta, h);
+        lv_obj_set_style_min_height(ta, h, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_max_height(ta, h, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_min_height(ta, h, LV_PART_MAIN | LV_STATE_FOCUSED);
+        lv_obj_set_style_max_height(ta, h, LV_PART_MAIN | LV_STATE_FOCUSED);
+        lv_obj_set_style_min_height(ta, h, LV_PART_MAIN | LV_STATE_EDITED);
+        lv_obj_set_style_max_height(ta, h, LV_PART_MAIN | LV_STATE_EDITED);
+        lv_obj_set_style_min_height(ta, h, LV_PART_MAIN | LV_STATE_FOCUS_KEY);
+        lv_obj_set_style_max_height(ta, h, LV_PART_MAIN | LV_STATE_FOCUS_KEY);
+        lv_obj_set_style_min_height(ta, h, LV_PART_MAIN | (LV_STATE_FOCUSED | LV_STATE_EDITED));
+        lv_obj_set_style_max_height(ta, h, LV_PART_MAIN | (LV_STATE_FOCUSED | LV_STATE_EDITED));
+        lv_obj_set_style_min_height(ta, h, LV_PART_MAIN | (LV_STATE_FOCUS_KEY | LV_STATE_EDITED));
+        lv_obj_set_style_max_height(ta, h, LV_PART_MAIN | (LV_STATE_FOCUS_KEY | LV_STATE_EDITED));
+    }
     lv_obj_add_event_cb(ta, lvglSingleLinePasswordValueChangedEvent, LV_EVENT_VALUE_CHANGED, nullptr);
 }
 
@@ -4970,7 +5014,12 @@ void lvglScreenshotEvent(lv_event_t *e)
 
 void lvglOpenMqttCfgEvent(lv_event_t *e)
 {
-    (void)e;
+    if (e) {
+        lv_obj_t *btn = lv_event_get_current_target(e);
+        if (btn && lv_obj_is_valid(btn)) {
+            lv_obj_clear_state(btn, LV_STATE_CHECKED | LV_STATE_PRESSED);
+        }
+    }
     lvglEnsureScreenBuilt(UI_CONFIG_MQTT_CONFIG);
     lvglRefreshMqttConfigUi();
     lvglOpenScreen(UI_CONFIG_MQTT_CONFIG, LV_SCR_LOAD_ANIM_MOVE_LEFT);
@@ -5114,6 +5163,11 @@ void lvglInitUi()
 
     if (!lvglDrawPixels) {
         uint16_t lines = static_cast<uint16_t>((verRes + 9U) / 10U);
+        if (boardHasUsablePsram()) {
+            /* 20% buffer on PSRAM-capable boards for smoother regions and animation. */
+            const uint16_t psramLines = static_cast<uint16_t>((verRes + 4U) / 5U);
+            lines = max(lines, psramLines);
+        }
         if (lines < LVGL_BUF_LINES_MIN) lines = LVGL_BUF_LINES_MIN;
         if (lines > LVGL_BUF_LINES_MAX) lines = LVGL_BUF_LINES_MAX;
         while (lines >= 2) {
@@ -5147,6 +5201,7 @@ void lvglInitUi()
     }
 
     if (!lvglDrawPixels || lvglBufLinesActive == 0) {
+
         Serial.println("[LVGL] draw buffer allocation failed");
         tft.fillScreen(TFT_BLACK);
         tft.setTextColor(TFT_RED, TFT_BLACK);
@@ -5154,11 +5209,32 @@ void lvglInitUi()
         return;
     }
 
+    if (!lvglDrawPixels2 && boardHasUsablePsram()) {
+        const size_t secondBufBytes = static_cast<size_t>(horRes) * static_cast<size_t>(lvglBufLinesActive) * sizeof(lv_color_t);
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+        lv_color_t *candidate2 = static_cast<lv_color_t *>(allocPreferPsram(secondBufBytes,
+            MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
+#else
+        lv_color_t *candidate2 = static_cast<lv_color_t *>(malloc(secondBufBytes));
+#endif
+        if (candidate2) {
+            lvglDrawPixels2 = candidate2;
+            if (VERBOSE_SERIAL_DEBUG) {
+                Serial.printf("[LVGL] alloc second buf ok lines=%u ptr=%p psram=%d\n",
+                              static_cast<unsigned int>(lvglBufLinesActive),
+                              static_cast<void *>(candidate2),
+                              boardHasUsablePsram() && esp_ptr_external_ram(candidate2) ? 1 : 0);
+            }
+        } else if (VERBOSE_SERIAL_DEBUG) {
+            Serial.printf("[LVGL] alloc second buf fail lines=%u\n", static_cast<unsigned int>(lvglBufLinesActive));
+        }
+    }
+
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[LVGL] step draw_buf_init");
     lv_disp_draw_buf_init(
         &lvglDrawBuf,
         lvglDrawPixels,
-        nullptr,
+        lvglDrawPixels2,
         static_cast<uint32_t>(horRes * static_cast<uint32_t>(lvglBufLinesActive))
     );
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[LVGL] step disp_drv_init");
@@ -5269,6 +5345,13 @@ void lvglService()
     if (!uiInteractive && lvglNextHandlerDueMs != 0 && static_cast<long>(now - lvglNextHandlerDueMs) < 0) return;
 
     const uint32_t nextHandlerInMs = lv_timer_handler();
+
+    infoFpsFrameCount++;
+    if (static_cast<long>(now - infoFpsLastMs) >= 1000) {
+        infoFpsValue = infoFpsFrameCount;
+        infoFpsFrameCount = 0;
+        infoFpsLastMs = now;
+    }
 
     if (uiInteractive) {
         lvglNextHandlerDueMs = now + 1UL;

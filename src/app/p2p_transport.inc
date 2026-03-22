@@ -562,7 +562,8 @@ void lvglRefreshInfoPanel(bool refreshIndicators)
     }
 
     if (lv_obj_t *cpuValue = lvglInfoCardValueLabel(lvglInfoCpuCard)) {
-        lvglLabelSetTextIfChanged(cpuValue, String(cpuLoadPercent) + "%");
+        lvglLabelSetTextIfChanged(cpuValue, String(cpuLoadPercent) + "%" +
+                                                  " | " + String(infoFpsValue) + " FPS");
     }
     if (lv_obj_t *cpuSub = lvglInfoCardSubLabel(lvglInfoCpuCard)) {
         if (psramTotal > 0) {
@@ -571,12 +572,12 @@ void lvglRefreshInfoPanel(bool refreshIndicators)
                                       String(static_cast<unsigned long>(freeHeap / 1024U)) +
                                       " KB  |  PSRAM " +
                                       String(static_cast<unsigned long>(psramFree / 1024U)) +
-                                      " KB");
+                                      " KB  |  " + String(infoFpsValue) + " FPS");
         } else {
             lvglLabelSetTextIfChanged(cpuSub,
                                       String("Approx. main-loop load  |  SRAM ") +
                                       String(static_cast<unsigned long>(freeHeap / 1024U)) +
-                                      " KB");
+                                      " KB  |  " + String(infoFpsValue) + " FPS");
         }
     }
     if (lv_obj_t *cpuBar = lvglInfoCardBar(lvglInfoCpuCard)) {
@@ -773,7 +774,7 @@ void lvglRefreshWifiList()
         auto addTa = [&](lv_obj_t *parent, const char *ph, const char *value, bool pass) -> lv_obj_t * {
             lv_obj_t *ta = lv_textarea_create(parent ? parent : apCard);
             lv_obj_set_width(ta, lv_pct(100));
-            lv_textarea_set_one_line(ta, true);
+            lvglConfigureCompactSingleLineTa(ta, 34);
             lv_textarea_set_placeholder_text(ta, ph);
             if (pass) lvglConfigureSingleLinePasswordTa(ta);
             lv_textarea_set_text(ta, value ? value : "");
@@ -795,7 +796,7 @@ void lvglRefreshWifiList()
         lvglWifiApPassTa = addTa(pwdRow, "AP password", savedApPass.c_str(), true);
         lv_obj_set_width(lvglWifiApPassTa, lv_pct(100));
         lv_obj_set_flex_grow(lvglWifiApPassTa, 1);
-        lv_obj_set_height(lvglWifiApPassTa, 38);
+        lv_obj_set_height(lvglWifiApPassTa, 34);
 
         lvglWifiApPassShowBtn = lv_btn_create(pwdRow);
         lv_obj_set_size(lvglWifiApPassShowBtn, 34, 34);

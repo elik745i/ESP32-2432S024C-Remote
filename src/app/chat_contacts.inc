@@ -987,10 +987,12 @@ void lvglEnsureScreenBuilt(UiScreen screen)
 
             lvglScreenLockPinTa = lv_textarea_create(wrap);
             lv_obj_set_width(lvglScreenLockPinTa, min<lv_coord_t>(DISPLAY_WIDTH - 44, 150));
-            lv_obj_set_height(lvglScreenLockPinTa, 42);
+            lv_obj_set_height(lvglScreenLockPinTa, 34);
             lvglConfigureSingleLinePasswordTa(lvglScreenLockPinTa);
             lv_textarea_set_max_length(lvglScreenLockPinTa, 4);
+            lv_textarea_set_accepted_chars(lvglScreenLockPinTa, "0123456789");
             lv_textarea_set_placeholder_text(lvglScreenLockPinTa, "0000");
+            lv_obj_set_style_text_align(lvglScreenLockPinTa, LV_TEXT_ALIGN_CENTER, 0);
             lv_obj_add_event_cb(lvglScreenLockPinTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
             lv_obj_add_event_cb(lvglScreenLockPinTa, lvglScreenLockPinChangedEvent, LV_EVENT_VALUE_CHANGED, nullptr);
 
@@ -1578,10 +1580,9 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_clear_flag(nameRow, LV_OBJ_FLAG_SCROLLABLE);
 
             lvglConfigDeviceNameTa = lv_textarea_create(nameRow);
-            lv_obj_set_height(lvglConfigDeviceNameTa, 38);
             lv_obj_set_width(lvglConfigDeviceNameTa, DISPLAY_WIDTH - 110);
             lv_obj_set_flex_grow(lvglConfigDeviceNameTa, 1);
-            lv_textarea_set_one_line(lvglConfigDeviceNameTa, true);
+            lvglConfigureCompactSingleLineTa(lvglConfigDeviceNameTa, 34);
             lv_textarea_set_placeholder_text(lvglConfigDeviceNameTa, "Device name");
             lv_textarea_set_max_length(lvglConfigDeviceNameTa, 24);
             lv_obj_add_event_cb(lvglConfigDeviceNameTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
@@ -1829,6 +1830,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_t *channelCard = makeFieldCard(tr(TXT_CHANNEL), &lvglRemoteChannelLabel);
             lvglRemoteChannelTa = lv_textarea_create(channelCard);
             lv_obj_set_width(lvglRemoteChannelTa, lv_pct(100));
+            lv_obj_set_height(lvglRemoteChannelTa, 38);
             lv_textarea_set_one_line(lvglRemoteChannelTa, true);
             lv_textarea_set_max_length(lvglRemoteChannelTa, 4);
             lv_textarea_set_placeholder_text(lvglRemoteChannelTa, "Channel");
@@ -1853,6 +1855,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_t *keyCard = makeFieldCard(tr(TXT_ENCRYPTION_KEY), &lvglRemoteKeyLabel);
             lvglRemoteKeyTa = lv_textarea_create(keyCard);
             lv_obj_set_width(lvglRemoteKeyTa, lv_pct(100));
+            lv_obj_set_height(lvglRemoteKeyTa, 38);
             lv_textarea_set_one_line(lvglRemoteKeyTa, true);
             lv_textarea_set_max_length(lvglRemoteKeyTa, 24);
             lv_textarea_set_placeholder_text(lvglRemoteKeyTa, "16 hex chars");
@@ -1861,6 +1864,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_t *remoteIdCard = makeFieldCard(tr(TXT_REMOTE_ID), &lvglRemoteIdLabel);
             lvglRemoteIdTa = lv_textarea_create(remoteIdCard);
             lv_obj_set_width(lvglRemoteIdTa, lv_pct(100));
+            lv_obj_set_height(lvglRemoteIdTa, 38);
             lv_textarea_set_one_line(lvglRemoteIdTa, true);
             lv_textarea_set_max_length(lvglRemoteIdTa, 5);
             lv_textarea_set_accepted_chars(lvglRemoteIdTa, "0123456789");
@@ -1870,6 +1874,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_t *counterCard = makeFieldCard(tr(TXT_ROLLING_COUNTER), &lvglRemoteCounterLabel);
             lvglRemoteCounterTa = lv_textarea_create(counterCard);
             lv_obj_set_width(lvglRemoteCounterTa, lv_pct(100));
+            lv_obj_set_height(lvglRemoteCounterTa, 38);
             lv_textarea_set_one_line(lvglRemoteCounterTa, true);
             lv_textarea_set_max_length(lvglRemoteCounterTa, 5);
             lv_textarea_set_accepted_chars(lvglRemoteCounterTa, "0123456789");
@@ -2962,7 +2967,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             auto addTa = [&](const char *ph, bool pass, bool numeric) -> lv_obj_t * {
                 lv_obj_t *ta = lv_textarea_create(formWrap);
                 lv_obj_set_width(ta, lv_pct(100));
-                lv_textarea_set_one_line(ta, true);
+                lvglConfigureCompactSingleLineTa(ta, 34);
                 lv_textarea_set_placeholder_text(ta, ph);
                 if (pass) lvglConfigureSingleLinePasswordTa(ta);
                 if (numeric) lv_textarea_set_accepted_chars(ta, "0123456789");
@@ -2984,6 +2989,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
 
             lvglMqttPassTa = lv_textarea_create(mqttPwdRow);
             lv_obj_set_width(lvglMqttPassTa, lv_pct(100));
+            lv_obj_set_height(lvglMqttPassTa, 34);
             lv_obj_set_flex_grow(lvglMqttPassTa, 1);
             lvglConfigureSingleLinePasswordTa(lvglMqttPassTa);
             lv_textarea_set_placeholder_text(lvglMqttPassTa, "Password");

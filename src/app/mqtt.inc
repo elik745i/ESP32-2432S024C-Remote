@@ -25,7 +25,10 @@ bool mqttDiscoveryPublished = false;
 String mqttLastStatePayload;
 unsigned long mqttLastReconnectMs = 0;
 unsigned long mqttLastStatePublishMs = 0;
-static constexpr unsigned long MQTT_RECONNECT_MS = 5000;
+static unsigned long mqttNextReconnectMs = 0;
+static unsigned long mqttReconnectIntervalMs = 5000UL;
+static constexpr unsigned long MQTT_RECONNECT_MS = 5000UL;
+static constexpr unsigned long MQTT_RECONNECT_MAX_MS = 60000UL;
 static constexpr unsigned long MQTT_DISCOVERY_STALE_MS = 60000UL;
 static constexpr unsigned long MQTT_STATE_PUBLISH_MS = 5000UL;
 bool mqttConnectRequested = false;
@@ -38,6 +41,7 @@ static constexpr uint32_t MQTT_MIN_LARGEST_8BIT_CONNECT = 8192U;
 static constexpr uint32_t MQTT_MIN_FREE_HEAP_PUBLISH = 42000U;
 static constexpr uint32_t MQTT_MIN_LARGEST_8BIT_PUBLISH = 14000U;
 static constexpr unsigned long MQTT_SERVICE_INTERVAL_MS = 15UL;
+static constexpr uint16_t MQTT_SOCKET_CONNECT_TIMEOUT_MS = 40U;
 int mqttButtonCount = 0;
 String mqttButtonNames[MQTT_MAX_BUTTONS];
 bool mqttButtonCritical[MQTT_MAX_BUTTONS];
@@ -175,6 +179,7 @@ void loadMqttConfig()
     if (mqttButtonCount > MQTT_MAX_BUTTONS) mqttButtonCount = MQTT_MAX_BUTTONS;
     for (int i = 0; i < MQTT_MAX_BUTTONS; i++) {
         mqttButtonNames[i] = mqttPrefs.getString(("btn_" + String(i)).c_str(), "");
+        if (mqttButtonNames[i].length() > 20) mqttButtonNames[i].remove(20);
         if (mqttButtonNames[i].isEmpty()) mqttButtonNames[i] = mqttDefaultButtonName(i);
         mqttButtonCritical[i] = mqttPrefs.getBool(("crit_" + String(i)).c_str(), false);
         mqttButtonToggle[i] = mqttPrefs.getBool(("tgl_" + String(i)).c_str(), false);
@@ -678,7 +683,12 @@ void lvglMqttPublishDiscoveryEvent(lv_event_t *e)
 
 void lvglMqttConnectEvent(lv_event_t *e)
 {
-    (void)e;
+    if (e) {
+        lv_obj_t *btn = lv_event_get_current_target(e);
+        if (btn && lv_obj_is_valid(btn)) {
+            lv_obj_clear_state(btn, LV_STATE_CHECKED | LV_STATE_PRESSED);
+        }
+    }
     mqttCfg.enabled = true;
     saveMqttConfig();
     if (lvglMqttEnableSw) {
@@ -712,7 +722,12 @@ void lvglMqttEnableEvent(lv_event_t *e)
 
 void lvglMqttSaveEvent(lv_event_t *e)
 {
-    (void)e;
+    if (e) {
+        lv_obj_t *btn = lv_event_get_current_target(e);
+        if (btn && lv_obj_is_valid(btn)) {
+            lv_obj_clear_state(btn, LV_STATE_CHECKED | LV_STATE_PRESSED);
+        }
+    }
     mqttCfg.enabled = lv_obj_has_state(lvglMqttEnableSw, LV_STATE_CHECKED);
     mqttCfg.broker = lv_textarea_get_text(lvglMqttBrokerTa);
     mqttCfg.username = lv_textarea_get_text(lvglMqttUserTa);
@@ -750,6 +765,7 @@ static void syncMqttButtonConfigFromUi()
         if (nameTa) {
             mqttButtonNames[i] = lv_textarea_get_text(nameTa);
             mqttButtonNames[i].trim();
+            if (mqttButtonNames[i].length() > 20) mqttButtonNames[i].remove(20);
             if (mqttButtonNames[i].isEmpty()) mqttButtonNames[i] = mqttDefaultButtonName(static_cast<int>(i));
         }
         if (critCb) mqttButtonCritical[i] = lv_obj_has_state(critCb, LV_STATE_CHECKED);
@@ -775,7 +791,7 @@ void lvglMqttButtonAddEvent(lv_event_t *e)
         return;
     }
     const int idx = mqttButtonCount++;
-    mqttButtonNames[idx] = String("Button ") + String(idx + 1);
+    mqttButtonNames[idx] = (idx > 0) ? mqttButtonNames[idx - 1] : (String("Button ") + String(idx + 1));
     mqttButtonCritical[idx] = false;
     mqttButtonToggle[idx] = false;
     mqttButtonState[idx] = false;
@@ -927,10 +943,10 @@ void lvglRefreshMqttButtonConfigUi()
         lv_obj_add_event_cb(selCb, lvglMqttButtonFieldChangedEvent, LV_EVENT_VALUE_CHANGED, reinterpret_cast<void *>(static_cast<intptr_t>(i)));
 
         lv_obj_t *nameTa = lv_textarea_create(row);
-        lv_obj_set_height(nameTa, 34);
         lv_obj_set_width(nameTa, DISPLAY_WIDTH - 172);
         lv_obj_set_flex_grow(nameTa, 1);
-        lv_textarea_set_one_line(nameTa, true);
+        lvglConfigureCompactSingleLineTa(nameTa, 34);
+        lv_textarea_set_max_length(nameTa, 20);
         lv_textarea_set_placeholder_text(nameTa, "Button name");
         lv_textarea_set_text(nameTa, mqttButtonNames[i].c_str());
         lv_obj_add_event_cb(nameTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
@@ -1031,8 +1047,9 @@ bool mqttConnectNow()
     }
 
     mqttNetClient.stop();
-    mqttNetClient.setTimeout(250);
-    if (!mqttNetClient.connect(mqttCfg.broker.c_str(), mqttCfg.port, 250)) {
+    // Keep connect attempts short so a bad broker does not block other tasks for long.
+    mqttNetClient.setTimeout(MQTT_SOCKET_CONNECT_TIMEOUT_MS);
+    if (!mqttNetClient.connect(mqttCfg.broker.c_str(), mqttCfg.port, MQTT_SOCKET_CONNECT_TIMEOUT_MS)) {
         mqttStatusLine = "Broker unreachable";
         mqttRefreshStatusLabelIfVisible();
         if (lvglReady) lvglRefreshTopIndicators();
@@ -1231,9 +1248,18 @@ void mqttService()
         return;
     }
     if (!mqttClient.connected()) {
-        if ((mqttConnectRequested || millis() - mqttLastReconnectMs >= MQTT_RECONNECT_MS)) {
+        if (mqttConnectRequested || static_cast<long>(millis() - mqttNextReconnectMs) >= 0) {
+            mqttConnectRequested = false;
             mqttLastReconnectMs = millis();
-            if (mqttConnectNow()) mqttPublishDiscovery();
+            bool connected = mqttConnectNow();
+            if (connected) {
+                mqttPublishDiscovery();
+                mqttReconnectIntervalMs = MQTT_RECONNECT_MS;
+                mqttNextReconnectMs = 0;
+            } else {
+                mqttNextReconnectMs = millis() + mqttReconnectIntervalMs;
+                mqttReconnectIntervalMs = std::min(mqttReconnectIntervalMs * 2, MQTT_RECONNECT_MAX_MS);
+            }
         }
         return;
     }

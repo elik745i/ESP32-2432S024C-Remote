@@ -708,6 +708,7 @@ static bool chatHasLoggedMessageId(const String &peerKey, const String &messageI
 static void chatStoreMessage(const String &peerKey, const String &author, const String &text, bool outgoing, ChatTransport transport, const String &messageId);
 void lvglStatusPush(const String &line);
 static String lvglSymbolText(const char *symbol, const String &text);
+static void lvglConfigureCompactSingleLineTa(lv_obj_t *ta, lv_coord_t height);
 static void lvglRegisterReorderableItem(lv_obj_t *obj, const char *prefKey, const char *itemKey);
 static void lvglApplySavedOrder(lv_obj_t *parent, const char *prefKey);
 static void factoryResetWipeStoredData();
@@ -969,6 +970,9 @@ bool screensaverActive = false;
 uint8_t rgbLedPercent = 100;
 String deviceShortName = DEVICE_SHORT_NAME;
 uint8_t cpuLoadPercent = 0;
+uint16_t infoFpsValue = 0;
+uint16_t infoFpsFrameCount = 0;
+unsigned long infoFpsLastMs = 0;
 bool batteryFilterInitialized = false;
 bool lightFilterInitialized = false;
 float lightPercentFiltered = 0.0f;
@@ -2554,6 +2558,7 @@ void loop()
     static uint8_t serviceSlicePhase = 0;
     const unsigned long bgSliceIntervalMs =
         uiPriorityActive ? BG_SERVICE_INTERVAL_UI_PRIORITY_MS : BG_SERVICE_INTERVAL_MS;
+    const bool deferNetworkWork = uiPriorityActive;
     if (static_cast<unsigned long>(now - lastServiceSliceMs) >= bgSliceIntervalMs) {
         lastServiceSliceMs = now;
         serviceSlicePhase = static_cast<uint8_t>((serviceSlicePhase + 1U) % 5U);
@@ -2562,7 +2567,7 @@ void loop()
 
         if (!modulesRuntimeActive) {
             // Minimal runtime path for smooth UI when no modules are installed.
-            if (serviceSlicePhase == 0) {
+            if (serviceSlicePhase == 0 && !deferNetworkWork) {
                 wifiConnectionService();
             }
             if (!uiPriorityActive || uiScreen == UI_INFO) serviceInfoRefresh();
@@ -2573,8 +2578,10 @@ void loop()
         } else {
             switch (serviceSlicePhase) {
                 case 0:
-                    wifiConnectionService();
-                    if (moduleInstalled[APP_MODULE_MQTT] && (!uiPriorityActive || realtimeMessaging)) mqttService();
+                    if (!deferNetworkWork) {
+                        wifiConnectionService();
+                        if (moduleInstalled[APP_MODULE_MQTT] && (!uiPriorityActive || realtimeMessaging)) mqttService();
+                    }
                     break;
 
                 case 1:

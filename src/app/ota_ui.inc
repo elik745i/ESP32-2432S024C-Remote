@@ -152,11 +152,13 @@ static void screenLockShowSetupModal()
         lv_obj_set_style_text_color(title, lv_color_hex(0xE5ECF3), 0);
 
         lvglScreenLockSetupPinTa = lv_textarea_create(lvglScreenLockModal);
-        lv_obj_set_width(lvglScreenLockSetupPinTa, lv_pct(100));
-        lv_obj_set_height(lvglScreenLockSetupPinTa, 36);
+        lv_obj_set_width(lvglScreenLockSetupPinTa, min<lv_coord_t>(DISPLAY_WIDTH - 44, 150));
+        lv_obj_set_height(lvglScreenLockSetupPinTa, 34);
         lvglConfigureSingleLinePasswordTa(lvglScreenLockSetupPinTa);
         lv_textarea_set_max_length(lvglScreenLockSetupPinTa, 4);
+        lv_textarea_set_accepted_chars(lvglScreenLockSetupPinTa, "0123456789");
         lv_textarea_set_placeholder_text(lvglScreenLockSetupPinTa, "0000");
+        lv_obj_set_style_text_align(lvglScreenLockSetupPinTa, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_add_event_cb(lvglScreenLockSetupPinTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
         lv_obj_add_event_cb(lvglScreenLockSetupPinTa, lvglScreenLockSetupPinChangedEvent, LV_EVENT_VALUE_CHANGED, nullptr);
 
@@ -201,7 +203,14 @@ static void screenLockShowSetupModal()
 
 void lvglScreenLockSetupPinChangedEvent(lv_event_t *e)
 {
-    screenLockSanitizeTextArea(e ? lv_event_get_target(e) : nullptr);
+    lv_obj_t *ta = e ? lv_event_get_target(e) : nullptr;
+    screenLockSanitizeTextArea(ta);
+    if (!lvglScreenLockSetupStatusLabel || !ta) return;
+
+    const size_t len = strlen(lv_textarea_get_text(ta));
+    if (len == 0) lv_label_set_text(lvglScreenLockSetupStatusLabel, "Enter exactly 4 digits.");
+    else if (len < 4) lv_label_set_text(lvglScreenLockSetupStatusLabel, "PIN must be exactly 4 digits.");
+    else lv_label_set_text(lvglScreenLockSetupStatusLabel, "");
 }
 
 void lvglScreenLockPinChangedEvent(lv_event_t *e)
@@ -274,6 +283,11 @@ void lvglScreenLockUnlockEvent(lv_event_t *e)
     }
 
     const String entered = lv_textarea_get_text(lvglScreenLockPinTa);
+    if (entered.length() != 4) {
+        if (lvglScreenLockStatusLabel) lv_label_set_text(lvglScreenLockStatusLabel, "Enter exactly 4 digits.");
+        return;
+    }
+
     if (entered == String(screenLockPin)) {
         screenLockUnlocked = true;
         screenLockFailedTotal = 0;

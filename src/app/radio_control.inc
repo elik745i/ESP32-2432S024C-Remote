@@ -249,6 +249,7 @@ static void loadPersistedRadioControlButtons()
         snprintf(key, sizeof(key), "rc_btn_name_%02d", i);
         radioControlButtons[i].name = uiPrefs.getString(key, "");
         radioControlButtons[i].name.trim();
+        if (radioControlButtons[i].name.length() > 20) radioControlButtons[i].name.remove(20);
         snprintf(key, sizeof(key), "rc_btn_id_%02d", i);
         radioControlButtons[i].destinationId = static_cast<uint16_t>(constrain(uiPrefs.getUInt(key, 0U), 0U, 65535U));
         snprintf(key, sizeof(key), "rc_btn_on_%02d", i);
@@ -287,6 +288,7 @@ static void syncRadioButtonConfigFromUi()
         if (nameTa) {
             radioControlButtons[i].name = lv_textarea_get_text(nameTa);
             radioControlButtons[i].name.trim();
+            if (radioControlButtons[i].name.length() > 20) radioControlButtons[i].name.remove(20);
         }
         if (idTa) {
             const unsigned long idValue = strtoul(lv_textarea_get_text(idTa), nullptr, 10);
@@ -931,8 +933,8 @@ void lvglRefreshRadioButtonConfigUi()
 
         lv_obj_t *nameTa = lv_textarea_create(row);
         lv_obj_set_width(nameTa, 78);
-        lv_textarea_set_one_line(nameTa, true);
-        lv_textarea_set_max_length(nameTa, 24);
+        lvglConfigureCompactSingleLineTa(nameTa, 34);
+        lv_textarea_set_max_length(nameTa, 20);
         lv_textarea_set_placeholder_text(nameTa, "Name");
         lv_textarea_set_text(nameTa, radioControlButtons[i].name.c_str());
         lv_obj_add_event_cb(nameTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
@@ -941,6 +943,7 @@ void lvglRefreshRadioButtonConfigUi()
 
         lv_obj_t *idTa = lv_textarea_create(row);
         lv_obj_set_width(idTa, 46);
+        lv_obj_set_height(idTa, 34);
         lv_textarea_set_one_line(idTa, true);
         lv_textarea_set_max_length(idTa, 5);
         lv_textarea_set_accepted_chars(idTa, "0123456789");
@@ -952,6 +955,7 @@ void lvglRefreshRadioButtonConfigUi()
 
         lv_obj_t *onTa = lv_textarea_create(row);
         lv_obj_set_width(onTa, 34);
+        lv_obj_set_height(onTa, 34);
         lv_textarea_set_one_line(onTa, true);
         lv_textarea_set_max_length(onTa, 2);
         lv_textarea_set_accepted_chars(onTa, "0123456789");
@@ -963,6 +967,7 @@ void lvglRefreshRadioButtonConfigUi()
 
         lv_obj_t *offTa = lv_textarea_create(row);
         lv_obj_set_width(offTa, 34);
+        lv_obj_set_height(offTa, 34);
         lv_textarea_set_one_line(offTa, true);
         lv_textarea_set_max_length(offTa, 2);
         lv_textarea_set_accepted_chars(offTa, "0123456789");
@@ -1012,8 +1017,9 @@ void lvglRadioButtonAddEvent(lv_event_t *e)
         lvglSyncStatusLine();
         return;
     }
-    RadioControlButton &btn = radioControlButtons[radioControlButtonCount++];
-    btn.name = String("Button ") + String(radioControlButtonCount);
+    const int newIdx = radioControlButtonCount++;
+    RadioControlButton &btn = radioControlButtons[newIdx];
+    btn.name = (newIdx > 0) ? radioControlButtons[newIdx - 1].name : (String("Button ") + String(newIdx + 1));
     btn.destinationId = 0U;
     btn.onDataValue = -1;
     btn.offDataValue = -1;
