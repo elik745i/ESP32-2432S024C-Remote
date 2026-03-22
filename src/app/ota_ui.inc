@@ -1121,6 +1121,7 @@ void lvglRefreshOtaUi()
         }
     }
     if (lvglOtaUpdateBtn && lvglOtaUpdateBtnLabel) {
+        lv_obj_clear_state(lvglOtaUpdateBtn, LV_STATE_CHECKED); // ensure no stuck flash state
         const bool busy = otaUiState == OTA_UI_CHECKING || otaUiState == OTA_UI_DOWNLOADING || otaUiState == OTA_UI_FINALIZING;
         if (busy || !OTA_FIRMWARE_FLASH_SUPPORTED) {
             lv_obj_add_flag(lvglOtaUpdateBtn, LV_OBJ_FLAG_HIDDEN);
@@ -1134,6 +1135,7 @@ void lvglRefreshOtaUi()
         }
     }
     if (lvglOtaReflashBtn && lvglOtaReflashBtnLabel) {
+        lv_obj_clear_state(lvglOtaReflashBtn, LV_STATE_CHECKED); // ensure no stuck flash state
         const bool busy = otaUiState == OTA_UI_CHECKING || otaUiState == OTA_UI_DOWNLOADING || otaUiState == OTA_UI_FINALIZING;
         if (busy || !OTA_FIRMWARE_FLASH_SUPPORTED) {
             lv_obj_add_flag(lvglOtaReflashBtn, LV_OBJ_FLAG_HIDDEN);
