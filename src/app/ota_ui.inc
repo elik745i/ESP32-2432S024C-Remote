@@ -8,8 +8,9 @@ void lvglOtaUpdateEvent(lv_event_t *e)
         return;
     }
     String releaseNotes;
+    const String latestVersion = otaNormalizedVersion(String(otaLatestVersion));
     for (uint8_t i = 0; i < otaReleaseEntryCount; ++i) {
-        if (otaReleaseEntries[i].tag.equalsIgnoreCase(String(otaLatestVersion))) {
+        if (otaNormalizedVersion(otaReleaseEntries[i].tag) == latestVersion) {
             releaseNotes = otaReleaseEntries[i].notes;
             break;
         }
