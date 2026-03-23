@@ -223,6 +223,14 @@ Radio notes:
 - Port: `1883`
 - Discovery prefix: `homeassistant`
 
+### Custom Home Assistant Integration
+
+- Folder: [Custom Home Assistant integration](Custom%20Home%20Assistant%20integration)
+- Integration: `MQTT Remote Buttons Remap`
+- Revision: `0.1.0`
+- Purpose: remap ESP32 remote MQTT button actions to existing Home Assistant services and button entities
+- Install and configuration guide: [Custom Home Assistant integration/README.md](Custom%20Home%20Assistant%20integration/README.md)
+
 ## UI and Feature Notes
 
 - Double-tap while awake turns the screen off
@@ -372,6 +380,7 @@ Some boards or USB adapters may require manual bootloader entry:
 - [src/main.cpp](src/main.cpp) - main firmware logic
 - [platformio.ini](platformio.ini) - PlatformIO environments
 - [partitions_3mb_no_ota.csv](partitions_3mb_no_ota.csv) - 4 MB ESP32 partition map
+- [Custom Home Assistant integration](Custom%20Home%20Assistant%20integration) - custom Home Assistant component and setup guide
 - [documents](documents) - schematics, photos, and reference files
 - [3D_Models](3D_Models) - enclosure files
 - [release_assets](release_assets) - staged release binaries and notes

@@ -1,0 +1,40 @@
+{
+  "title": "MQTT Remote Buttons Remap",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Select MQTT remote",
+        "description": "Choose the discovered ESP32 MQTT remote to add. Button mappings are configured after the integration entry is created.",
+        "data": {
+          "device_id": "MQTT remote device"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure mappings",
+        "description": "Update the button mappings for this MQTT remote. Leave any dropdown set to Unmapped if you do not want to use that control."
+      }
+    },
+    "abort": {
+      "no_remote_devices": "No supported ESP32 MQTT remote devices were found.",
+      "already_configured": "This MQTT remote is already configured.",
+      "no_remote_buttons": "This MQTT remote has no discovered MQTT buttons or switches yet.",
+      "reconfigure_successful": "The MQTT remote mappings were updated."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Instructions",
+        "description": "This integration maps MQTT buttons already discovered for the selected ESP32 remote. On the next screen, choose Home Assistant targets only for the buttons you want. Leave everything else as Unmapped. Press-type sources should map to button-like targets. Toggle-type sources should map to stateful targets such as switch, light, fan, or input_boolean.",
+        "data": {}
+      },
+      "map_buttons": {
+        "title": "Update mappings",
+        "description": "Assign Home Assistant targets for the discovered MQTT buttons and switches. Leave any dropdown set to Unmapped if you do not want to use that control."
+      }
+    },
+    "abort": {
+      "no_remote_buttons": "This MQTT remote has no discovered MQTT buttons or switches yet."
+    }
+  }
+}
