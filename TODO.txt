@@ -13,5 +13,9 @@ move MQTT to separate file from main.cpp - DONE
 
 when unit OTA updated, popup comes that unit is updated to blabla firmware, in that popup can we also list update notes, which are in that release, I know they wont fit, there for lets have that popup full screen - DONE
 
-Create integration for Home Assistant to map advertised buttons to  existing homeassistant buttons.
+make package installer version to have base firmware on ESP32 and to install extras in config- modules - DONE
+
+Create integration for Home Assistant to map advertised buttons to  existing homeassistant buttons. - DONE
+
+Fix scrreen brightness based on illumination sensor, illumination even from small light shows 100%
 

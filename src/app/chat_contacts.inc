@@ -433,6 +433,7 @@ inline void lvglLoadScreen(lv_obj_t *target, lv_scr_load_anim_t anim)
 
 static void lvglPrepareScreenLeave(UiScreen screen)
 {
+    if (screen == UI_WIFI_LIST) stopWifiScan(false);
     if (screen == UI_CONFIG_RADIO_RECEIVER_TEST) radioReceiverTestLeaveScreen();
     lv_obj_t *screenObj = lvglScreenForUi(screen);
     if (screenObj && lv_obj_is_valid(screenObj)) {
@@ -937,9 +938,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
                 reinterpret_cast<void *>(static_cast<intptr_t>(UI_CONFIG_MQTT_CONTROLS))
             );
             lvglHomeConfigBtn = lvglCreateMenuButton(homeWrap, tr(TXT_CONFIG), lv_color_hex(0x925A73), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CONFIG)));
-#if defined(BOARD_ESP32S3_3248S035_N16R8)
             lvglHomePowerBtn = lvglCreateMenuButton(homeWrap, tr(TXT_POWER), lv_color_hex(0xA33F3F), lvglPowerButtonEvent, nullptr);
-#endif
             lvglAirplaneBtn = lvglCreateMenuButton(homeWrap, tr(TXT_AIRPLANE_OFF), lv_color_hex(0x8A5A25), lvglAirplaneToggleEvent, nullptr);
             if (lvglAirplaneBtn) {
                 lvglAirplaneBtnLabel = lv_obj_get_child(lvglAirplaneBtn, 0);
@@ -958,9 +957,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglRegisterReorderableItem(lvglHomeGamesBtn, "ord_home", "games");
             lvglRegisterReorderableItem(lvglHomeMqttControlsBtn, "ord_home", "mqtt");
             lvglRegisterReorderableItem(lvglHomeConfigBtn, "ord_home", "config");
-#if defined(BOARD_ESP32S3_3248S035_N16R8)
             lvglRegisterReorderableItem(lvglHomePowerBtn, "ord_home", "power");
-#endif
             lvglRegisterReorderableItem(lvglAirplaneBtn, "ord_home", "air");
             lvglRegisterReorderableItem(lvglApModeBtn, "ord_home", "ap");
             lvglApplySavedOrder(homeWrap, "ord_home");
@@ -3900,15 +3897,10 @@ void lvglPowerButtonEvent(lv_event_t *e)
 {
     (void)e;
     if (lvglClickSuppressed() || lvglReorderDrag.active) return;
-    if (POWER_OFF_SIGNAL_PIN < 0) {
-        lvglStatusPush("Power signal unavailable");
-        return;
-    }
-
     static const char *btns[4];
     btns[0] = tr(TXT_CANCEL);
     btns[1] = tr(TXT_RESTART);
-    btns[2] = tr(TXT_POWER_OFF);
+    btns[2] = POWER_OFF_SIGNAL_PIN >= 0 ? tr(TXT_POWER_OFF) : "";
     btns[3] = "";
 
     lv_obj_t *m = lv_msgbox_create(nullptr,
@@ -4010,7 +4002,8 @@ void lvglApModeEvent(lv_event_t *e)
 void lvglWifiRescanEvent(lv_event_t *e)
 {
     (void)e;
-    refreshWifiScan();
+    if (wifiScanInProgress) stopWifiScan(true);
+    else refreshWifiScan();
     lvglRefreshWifiList();
 }
 

@@ -140,6 +140,7 @@ static bool moduleDownloadPackage(AppModuleId id, String &errorOut)
     HTTPClient http;
     http.setConnectTimeout(7000);
     http.setTimeout(10000);
+    http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
     http.addHeader("Accept", "application/json");
     http.addHeader("User-Agent", deviceShortNameValue());
     if (!http.begin(client, moduleRemotePackageUrl[idx])) {
@@ -297,7 +298,7 @@ bool moduleRefreshCatalog()
     int ghStatus = -1;
     const String body = httpsGetText(MODULES_MANIFEST_URL, &ghStatus);
     if (body.isEmpty()) {
-        modulesStatusText = ghStatus > 0 ? String("Module fetch failed: HTTP ") + ghStatus : "Module fetch failed.";
+        modulesStatusText = ghStatus > 0 ? String("Module fetch failed: HTTP ") + ghStatus : String("Module fetch failed: net ") + ghStatus;
         return false;
     }
 

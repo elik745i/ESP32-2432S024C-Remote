@@ -723,13 +723,16 @@ void lvglRefreshWifiList()
         }
     }
 
-    lv_obj_t *scanBtn = makeBtn(lvglWifiList, lvglSymbolText(LV_SYMBOL_REFRESH, "Scan").c_str(), 108, 30, lv_color_hex(0x2F6D86), lvglWifiRescanEvent);
+    const bool scanRunning = wifiScanInProgress;
+    const String scanBtnText = scanRunning ? lvglSymbolText(LV_SYMBOL_CLOSE, "Stop") : lvglSymbolText(LV_SYMBOL_REFRESH, "Scan");
+    const lv_color_t scanBtnColor = scanRunning ? lv_color_hex(0x8A3A3A) : lv_color_hex(0x2F6D86);
+    lv_obj_t *scanBtn = makeBtn(lvglWifiList, scanBtnText.c_str(), 108, 30, scanBtnColor, lvglWifiRescanEvent);
     if (scanBtn) lvglRegisterReorderableItem(scanBtn, "ord_wifi", "scan");
 
     if (wifiScanInProgress) {
         lvglWifiScanLabel = lv_label_create(lvglWifiList);
         if (lvglWifiScanLabel) {
-            lv_label_set_text(lvglWifiScanLabel, "Searching for access points");
+            lv_label_set_text(lvglWifiScanLabel, "Searching...");
             lv_obj_set_width(lvglWifiScanLabel, lv_pct(100));
             lv_obj_set_style_text_align(lvglWifiScanLabel, LV_TEXT_ALIGN_CENTER, 0);
             lv_obj_set_style_text_color(lvglWifiScanLabel, lv_color_hex(0xC8CED6), 0);
@@ -920,8 +923,7 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
     if (!ta) return;
     if (!lvglKb) {
         lvglKb = lv_keyboard_create(lv_layer_top());
-        lv_obj_set_size(lvglKb, lv_pct(100), 120);
-        lv_obj_align(lvglKb, LV_ALIGN_BOTTOM_MID, 0, 0);
+        lvglPlaceKeyboardBottom(120);
         lv_obj_add_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_event_cb(
             lvglKb,
@@ -1063,6 +1065,9 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
     } else {
         lvglKeyboardApplyTextMode();
     }
+    const bool compactDisplay = (DISPLAY_WIDTH <= 240) || (DISPLAY_HEIGHT <= 320);
+    const bool compactWifiPwd = compactDisplay && lvglWifiPwdTa && ta == lvglWifiPwdTa;
+    lvglPlaceKeyboardBottom(compactWifiPwd ? 96 : 120);
     lv_obj_clear_flag(lvglKb, LV_OBJ_FLAG_HIDDEN);
     lvglKeyboardRefreshLayout();
 }

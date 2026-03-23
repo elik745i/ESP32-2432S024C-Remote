@@ -3240,6 +3240,7 @@ static bool lvglKeyboardLocalizedLayoutAvailable(UiLanguage lang)
 static lv_obj_t *lvglKeyboardFindScrollableAncestor(lv_obj_t *obj)
 {
     for (lv_obj_t *cur = obj; cur && lv_obj_is_valid(cur); cur = lv_obj_get_parent(cur)) {
+        if (cur == lv_layer_top() || cur == lv_layer_sys()) continue;
         if (!lv_obj_has_flag(cur, LV_OBJ_FLAG_SCROLLABLE)) continue;
         if ((lv_obj_get_scroll_dir(cur) & LV_DIR_VER) == 0) continue;
         return cur;
@@ -3263,6 +3264,22 @@ static void lvglKeyboardReleasePaddedContainer()
     }
     lvglKeyboardPaddedContainer = nullptr;
     lvglKeyboardPaddedContainerPrevBottom = 0;
+}
+
+static void lvglPlaceKeyboardBottom(lv_coord_t height)
+{
+    if (!lvglKb || !lv_obj_is_valid(lvglKb)) return;
+    lv_obj_t *topLayer = lv_layer_top();
+    if (topLayer && lv_obj_get_parent(lvglKb) != topLayer) {
+        lv_obj_set_parent(lvglKb, topLayer);
+    }
+    lv_obj_clear_flag(lvglKb, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_clear_flag(lvglKb, LV_OBJ_FLAG_FLOATING);
+    lv_obj_set_style_translate_x(lvglKb, 0, 0);
+    lv_obj_set_style_translate_y(lvglKb, 0, 0);
+    lv_obj_set_size(lvglKb, lv_pct(100), height);
+    lv_obj_align(lvglKb, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_move_foreground(lvglKb);
 }
 
 static const char *const LVGL_KB_MAP_RU_LOWER[] = {
@@ -3503,9 +3520,22 @@ void lvglKeyboardRefreshLayout()
         return;
     }
 
+    if (lvglKb && lv_obj_is_valid(lvglKb)) {
+        const bool compactDisplay = (DISPLAY_WIDTH <= 240) || (DISPLAY_HEIGHT <= 320);
+        const bool compactWifiPwd = compactDisplay && lvglWifiPwdTa && lvglKeyboardFocusedTa == lvglWifiPwdTa;
+        lvglPlaceKeyboardBottom(compactWifiPwd ? 96 : 120);
+    }
+
     if (lvglKeyboardFocusedTa == lvglChatInputTa) {
         lvglSetChatKeyboardVisible(true);
         lvglKeyboardEnsureFocusedVisible(false);
+        lvglRefreshWifiPasswordDialogLayout();
+        return;
+    }
+
+    if (lvglWifiPwdTa && lvglKeyboardFocusedTa == lvglWifiPwdTa) {
+        lvglKeyboardReleasePaddedContainer();
+        lvglSetConfigKeyboardVisible(false);
         lvglRefreshWifiPasswordDialogLayout();
         return;
     }
@@ -4742,6 +4772,8 @@ void lvglWifiPwdConnectEvent(lv_event_t *e)
     const char *pass = lv_textarea_get_text(lvglWifiPwdTa);
     if (lvglWifiPwdStatusLabel) lv_label_set_text(lvglWifiPwdStatusLabel, "Saving and connecting...");
     lvglWifiPwdConnectPending = true;
+    lvglHideKeyboard();
+    if (lvglWifiPwdModal) lv_obj_add_flag(lvglWifiPwdModal, LV_OBJ_FLAG_HIDDEN);
     startWifiConnect(lvglWifiPendingSsid, pass ? String(pass) : String(""));
     uiStatusLine = "Connecting to: " + lvglWifiPendingSsid;
     lvglSyncStatusLine();
@@ -4772,17 +4804,22 @@ static void lvglRefreshWifiPasswordDialogLayout()
     if (!lvglWifiPwdModal || !lv_obj_is_valid(lvglWifiPwdModal)) return;
 
     const bool compactLayout = (DISPLAY_WIDTH <= 240) || (DISPLAY_HEIGHT <= 320);
-    const lv_coord_t modalW = compactLayout ? min<lv_coord_t>(DISPLAY_WIDTH - 16, 212) : static_cast<lv_coord_t>(DISPLAY_WIDTH - 24);
-    const lv_coord_t inputH = 26;
-    const lv_coord_t iconBtn = 26;
-    const lv_coord_t actionBtnW = compactLayout ? 74 : 84;
-    const lv_coord_t actionBtnH = compactLayout ? 28 : 30;
-    const lv_coord_t actionGap = compactLayout ? 6 : 8;
-    const lv_coord_t modalPad = compactLayout ? 8 : 10;
+    const lv_coord_t modalW = compactLayout ? static_cast<lv_coord_t>(DISPLAY_WIDTH - 10) : static_cast<lv_coord_t>(DISPLAY_WIDTH - 24);
+    const lv_coord_t inputH = compactLayout ? 24 : 26;
+    const lv_coord_t iconBtn = compactLayout ? 24 : 26;
+    const lv_coord_t actionBtnW = compactLayout ? 68 : 84;
+    const lv_coord_t actionBtnH = compactLayout ? 26 : 30;
+    const lv_coord_t actionGap = compactLayout ? 4 : 8;
+    const lv_coord_t modalPad = compactLayout ? 6 : 10;
 
     lv_obj_set_width(lvglWifiPwdModal, modalW);
     lv_obj_set_style_pad_all(lvglWifiPwdModal, modalPad, 0);
     lv_obj_set_style_pad_row(lvglWifiPwdModal, compactLayout ? 6 : 8, 0);
+
+    if (lvglWifiPwdSsidLabel && lv_obj_is_valid(lvglWifiPwdSsidLabel)) {
+        lv_obj_set_width(lvglWifiPwdSsidLabel, lv_pct(100));
+        lv_label_set_long_mode(lvglWifiPwdSsidLabel, compactLayout ? LV_LABEL_LONG_DOT : LV_LABEL_LONG_WRAP);
+    }
 
     if (lvglWifiPwdInputRow && lv_obj_is_valid(lvglWifiPwdInputRow)) {
         lv_obj_set_style_pad_column(lvglWifiPwdInputRow, compactLayout ? 4 : 6, 0);
@@ -4810,14 +4847,16 @@ static void lvglRefreshWifiPasswordDialogLayout()
 
     lv_obj_update_layout(lvglWifiPwdModal);
 
+    if (lvglKeyboardVisible()) {
+        const lv_coord_t keyboardH = (lvglKb && lv_obj_is_valid(lvglKb)) ? lv_obj_get_height(lvglKb) : 120;
+        lv_obj_set_align(lvglWifiPwdModal, LV_ALIGN_BOTTOM_MID);
+        lv_obj_set_y(lvglWifiPwdModal, -keyboardH - 4);
+        return;
+    }
+
     const lv_coord_t modalH = lv_obj_get_height(lvglWifiPwdModal);
     const lv_coord_t topInset = UI_TOP_BAR_H + (compactLayout ? 4 : 10);
     lv_coord_t targetY = compactLayout ? (UI_TOP_BAR_H + 8) : 60;
-
-    if (lvglKeyboardVisible()) {
-        const lv_coord_t keyboardTop = DISPLAY_HEIGHT - 120;
-        targetY = min<lv_coord_t>(targetY, keyboardTop - modalH - 6);
-    }
 
     targetY = max<lv_coord_t>(topInset, targetY);
     targetY = min<lv_coord_t>(targetY, DISPLAY_HEIGHT - modalH - 6);
@@ -5383,9 +5422,13 @@ void lvglService()
     if (wifiScanInProgress && lvglWifiScanLabel && (now - wifiScanAnimLastMs) >= 320UL) {
         wifiScanAnimLastMs = now;
         wifiScanAnimPhase = static_cast<uint8_t>((wifiScanAnimPhase + 1U) & 0x03U);
-        char msg[48];
-        snprintf(msg, sizeof(msg), "Searching for access points%.*s", wifiScanAnimPhase, "...");
-        lv_label_set_text(lvglWifiScanLabel, msg);
+        static const char *const kWifiScanFrames[] = {
+            "Searching",
+            "Searching.",
+            "Searching..",
+            "Searching..."
+        };
+        lv_label_set_text(lvglWifiScanLabel, kWifiScanFrames[wifiScanAnimPhase]);
     }
 
     unsigned long delta = now - lvglLastTickMs;

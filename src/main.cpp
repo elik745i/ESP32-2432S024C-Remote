@@ -21,6 +21,7 @@
 #include <esp_ota_ops.h>
 #include <esp_bt.h>
 #include <esp_bt_main.h>
+#include <esp_wifi.h>
 #include <esp_sleep.h>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
@@ -478,6 +479,7 @@ WiFiUDP p2pUdp;
 void loadMediaEntries();
 void refreshWifiScan();
 void wifiScanService();
+void stopWifiScan(bool refreshUi);
 void startWifiConnect(const String &ssid, const String &pass);
 void saveStaCreds(const String &ssid, const String &pass);
 void clearStaCreds();
@@ -927,6 +929,8 @@ void audio_info(const char *info)
 bool bootWifiInitPending = true;
 bool wifiRuntimeManaged = true;
 bool wifiScanInProgress = false;
+unsigned long wifiScanStartedMs = 0;
+bool wifiScanFallbackUsed = false;
 unsigned long wifiScanAnimLastMs = 0;
 uint8_t wifiScanAnimPhase = 0;
 unsigned long bootDeferredStartMs = 0;
@@ -2291,9 +2295,10 @@ String httpsGetText(const String &url, int *statusOut)
     HTTPClient http;
     http.setConnectTimeout(6000);
     http.setTimeout(8000);
+    http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
     if (!http.begin(client, url)) return "";
 
-    http.addHeader("Accept", "application/vnd.github+json");
+    http.addHeader("Accept", url.indexOf("raw.githubusercontent.com") >= 0 ? "application/json" : "application/vnd.github+json");
     http.addHeader("User-Agent", deviceShortNameValue());
 
     const int code = http.GET();
@@ -2570,6 +2575,9 @@ void loop()
             // Minimal runtime path for smooth UI when no modules are installed.
             if (serviceSlicePhase == 0 && !deferNetworkWork) {
                 wifiConnectionService();
+            }
+            if (!uiPriorityActive || uiScreen == UI_WIFI_LIST) {
+                wifiScanService();
             }
             if (!uiPriorityActive || uiScreen == UI_INFO) serviceInfoRefresh();
             if (!uiPriorityActive) {

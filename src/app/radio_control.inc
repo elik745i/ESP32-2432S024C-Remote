@@ -706,7 +706,8 @@ static bool gateSendLegacyPacket(uint16_t destinationId, int16_t payload, String
         delay(60);
     }
 
-    const uint32_t rollingValue = static_cast<uint32_t>(rollingCounter) * 100000UL + static_cast<uint32_t>(remoteDeviceId);
+    const uint16_t txRollingCounter = static_cast<uint16_t>(rollingCounter - 1U);
+    const uint32_t rollingValue = static_cast<uint32_t>(txRollingCounter) * 100000UL + static_cast<uint32_t>(remoteDeviceId);
     const uint32_t encryptedPacketId = gateKeeLoqEncrypt(rollingValue, keyHigh, keyLow);
     GateLegacyPacket packet = {
         remoteDeviceId,
@@ -742,9 +743,9 @@ static bool gateSendLegacyPacket(uint16_t destinationId, int16_t payload, String
     delay(220);
     Serial.printf("[RCTL] packet sent checksum=%02X nextRolling=%u\n",
                   checksum,
-                  static_cast<unsigned int>(rollingCounter > 0U ? (rollingCounter - 1U) : 0U));
+                  static_cast<unsigned int>(txRollingCounter));
 
-    gateRollingCount--;
+    gateRollingCount = txRollingCounter;
     gatePersistRollingCount();
 
     if (radioModuleType == RADIO_MODULE_HC12) {
@@ -1243,7 +1244,7 @@ static void loadPersistedRemoteControlSettings()
     remoteE220FixedTransmission = uiPrefs.getBool("re220_fix", false);
     remoteControlKeyHex = uiPrefs.getString("rctl_key", "");
     remoteControlDeviceId = static_cast<uint16_t>(constrain(uiPrefs.getUInt("rctl_id", 0U), 0U, 65535U));
-    gateRollingCount = static_cast<uint16_t>(constrain(uiPrefs.getUInt("gate_cnt", GATE_COUNT_INITIAL), 1U, 65535U));
+    gateRollingCount = static_cast<uint16_t>(constrain(uiPrefs.getUInt("gate_cnt", GATE_COUNT_INITIAL), 0U, 65535U));
     remoteControlKeyHex.trim();
     if (remoteControlKeyHex.isEmpty()) remoteControlStatusText = "Enter a rolling-code key to enable remote sending";
     else if (remoteControlDeviceId == 0U) remoteControlStatusText = "Enter a remote ID to enable remote sending";

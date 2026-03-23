@@ -1,24 +1,46 @@
 {
-    "version": "2.0.0",
-    "tasks": [
-        {
-            "label": "PlatformIO: Build",
-            "type": "process",
-            "command": "${env:USERPROFILE}\\.platformio\\penv\\Scripts\\platformio.exe",
-            "args": ["run"],
-            "problemMatcher": ["$platformio"],
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            }
-        },
-        {
-            "label": "PlatformIO: Upload",
-            "type": "process",
-            "command": "${env:USERPROFILE}\\.platformio\\penv\\Scripts\\platformio.exe",
-            "args": ["run", "--target", "upload"],
-            "problemMatcher": ["$platformio"],
-            "group": "none"
-        }
-    ]
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "PlatformIO: Build",
+			"type": "process",
+			"command": "${env:USERPROFILE}\\.platformio\\penv\\Scripts\\platformio.exe",
+			"args": [
+				"run"
+			],
+			"problemMatcher": [
+				"$platformio"
+			],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			}
+		},
+		{
+			"label": "PlatformIO: Upload",
+			"type": "process",
+			"command": "${env:USERPROFILE}\\.platformio\\penv\\Scripts\\platformio.exe",
+			"args": [
+				"run",
+				"--target",
+				"upload"
+			],
+			"problemMatcher": [
+				"$platformio"
+			],
+			"group": "none"
+		},
+		{
+			"label": "Build esp32-2432s024c release",
+			"type": "shell",
+			"command": "${env:USERPROFILE}\\.platformio\\penv\\Scripts\\platformio.exe",
+			"args": [
+				"run",
+				"-e",
+				"esp32-2432s024c"
+			],
+			"isBackground": false,
+			"group": "build"
+		}
+	]
 }
