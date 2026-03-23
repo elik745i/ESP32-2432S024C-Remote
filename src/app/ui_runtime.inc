@@ -31,6 +31,225 @@ static void moduleClearCatalog()
     }
 }
 
+bool moduleCatalogCheckInProgress()
+{
+    return moduleCatalogTaskHandle != nullptr;
+}
+
+static String moduleBundledPackageUrl(uint8_t idx)
+{
+    if (idx >= APP_MODULE_COUNT) return "";
+    return String("https://raw.githubusercontent.com/elik745i/ESP32-2432S024C-Remote/main/module_packages/") + APP_MODULE_IDS[idx] + ".json";
+}
+
+static const char *moduleBundledCatalogVersion(uint8_t idx)
+{
+    switch (idx) {
+        case APP_MODULE_CHAT:
+        case APP_MODULE_RADIO:
+        case APP_MODULE_MEDIA:
+        case APP_MODULE_INFO:
+        case APP_MODULE_GAMES:
+        case APP_MODULE_MQTT:
+        case APP_MODULE_SCREENSAVER:
+        case APP_MODULE_WEBSERVER:
+            return "0.21.10";
+        default:
+            return "";
+    }
+}
+
+static const char *moduleBundledCatalogNotes(uint8_t idx)
+{
+    switch (idx) {
+        case APP_MODULE_CHAT: return "Enables chat peers, contacts, and messaging UI.";
+        case APP_MODULE_RADIO: return "Enables radio control, radio config, and remote tools.";
+        case APP_MODULE_MEDIA: return "Enables media browser and player.";
+        case APP_MODULE_INFO: return "Enables info and diagnostics screens.";
+        case APP_MODULE_GAMES: return "Enables Snake, Tetris, and Checkers.";
+        case APP_MODULE_MQTT: return "Enables MQTT config and control screens.";
+        case APP_MODULE_SCREENSAVER: return "Enables screensaver menu and options.";
+        case APP_MODULE_WEBSERVER: return "Enables HTTP web server for remote API and WiFi status.";
+        default: return "";
+    }
+}
+
+static const char *moduleBundledPackageJson(AppModuleId id)
+{
+    switch (id) {
+        case APP_MODULE_CHAT:
+            return R"JSON({
+  "id": "chat",
+  "title": "Chat Pack",
+  "version": "0.21.08",
+  "screens": ["chat", "chat_peers"],
+  "home_buttons": ["chat"],
+  "services": ["p2p", "chat_outbox"],
+  "notes": "Installs peer chat, chat contacts, and messaging runtime."
+})JSON";
+        case APP_MODULE_RADIO:
+            return R"JSON({
+  "id": "radio",
+  "title": "Radio Pack",
+  "version": "0.21.08",
+  "screens": ["radio_control", "remote_control", "radio_config", "radio_terminal", "radio_info"],
+  "home_buttons": ["radio"],
+  "services": ["hc12", "radio_runtime"],
+  "notes": "Installs radio control, remote control, and HC12/E220 runtime."
+})JSON";
+        case APP_MODULE_MEDIA:
+            return R"JSON({
+  "id": "media",
+  "title": "Media Pack",
+  "version": "0.21.08",
+  "screens": ["media"],
+  "home_buttons": ["media"],
+  "services": ["audio"],
+  "notes": "Installs the media browser and playback runtime."
+})JSON";
+        case APP_MODULE_INFO:
+            return R"JSON({
+  "id": "info",
+  "title": "Info Pack",
+  "version": "0.21.08",
+  "screens": ["info"],
+  "home_buttons": ["info"],
+  "services": ["info_refresh"],
+  "notes": "Installs system info and diagnostics views."
+})JSON";
+        case APP_MODULE_GAMES:
+            return R"JSON({
+  "id": "games",
+  "title": "Games Pack",
+  "version": "0.21.08",
+  "screens": ["games", "snake", "tetris", "checkers", "snake3d"],
+  "home_buttons": ["games"],
+  "services": ["game_ticks"],
+  "notes": "Installs Snake, Tetris, Checkers, and Snake 3D."
+})JSON";
+        case APP_MODULE_MQTT:
+            return R"JSON({
+  "id": "mqtt",
+  "title": "MQTT Pack",
+  "version": "0.21.08",
+  "screens": ["mqtt_config", "mqtt_controls", "mqtt_buttons"],
+  "home_buttons": ["mqtt"],
+  "services": ["mqtt"],
+  "notes": "Installs MQTT configuration and control runtime."
+})JSON";
+        case APP_MODULE_SCREENSAVER:
+            return R"JSON({
+  "id": "screensaver",
+  "title": "Screensaver Pack",
+  "version": "0.21.08",
+  "screens": ["screensaver"],
+  "services": ["screensaver"],
+  "notes": "Installs the screensaver feature and display style controls."
+})JSON";
+        case APP_MODULE_WEBSERVER:
+            return R"JSON({
+  "id": "webserver",
+  "title": "WebServer Pack",
+  "version": "0.21.08",
+  "screens": ["wifi"],
+  "home_buttons": [],
+  "services": ["webserver"],
+  "notes": "Enables HTTP web server and remote WiFi control features."
+})JSON";
+        default:
+            return nullptr;
+    }
+}
+
+static bool moduleCatalogUseBundledSnapshot(bool availableOut[APP_MODULE_COUNT],
+                                            String versionOut[APP_MODULE_COUNT],
+                                            String notesOut[APP_MODULE_COUNT],
+                                            String packageUrlOut[APP_MODULE_COUNT],
+                                            String &statusOut)
+{
+    uint8_t availableCount = 0;
+    for (uint8_t i = 0; i < APP_MODULE_COUNT; ++i) {
+        availableOut[i] = true;
+        versionOut[i] = moduleBundledCatalogVersion(i);
+        notesOut[i] = moduleBundledCatalogNotes(i);
+        packageUrlOut[i] = moduleBundledPackageUrl(i);
+        availableCount++;
+    }
+    statusOut = String("GitHub unavailable, using bundled module catalog: ") + availableCount;
+    return true;
+}
+
+static bool moduleCatalogFetchSnapshot(uint32_t requestToken,
+                                       bool enforceToken,
+                                       bool availableOut[APP_MODULE_COUNT],
+                                       String versionOut[APP_MODULE_COUNT],
+                                       String notesOut[APP_MODULE_COUNT],
+                                       String packageUrlOut[APP_MODULE_COUNT],
+                                       String &statusOut)
+{
+    for (uint8_t i = 0; i < APP_MODULE_COUNT; ++i) {
+        availableOut[i] = false;
+        versionOut[i] = "";
+        notesOut[i] = "";
+        packageUrlOut[i] = "";
+    }
+
+    if (enforceToken && (moduleCatalogCancelRequested || requestToken != moduleCatalogRequestToken)) {
+        statusOut = "";
+        return false;
+    }
+
+    if (!wifiConnectedSafe()) {
+        statusOut = "Connect WiFi to fetch modules from GitHub.";
+        return false;
+    }
+
+    int ghStatus = -1;
+    const String body = httpsGetText(MODULES_MANIFEST_URL, &ghStatus);
+    if (enforceToken && (moduleCatalogCancelRequested || requestToken != moduleCatalogRequestToken)) {
+        statusOut = "";
+        return false;
+    }
+    if (body.isEmpty()) {
+        return moduleCatalogUseBundledSnapshot(availableOut, versionOut, notesOut, packageUrlOut, statusOut);
+    }
+
+    JsonDocument parsed;
+    const DeserializationError err = deserializeJson(parsed, body);
+    if (err || !parsed["modules"].is<JsonArrayConst>()) {
+        return moduleCatalogUseBundledSnapshot(availableOut, versionOut, notesOut, packageUrlOut, statusOut);
+    }
+
+    uint8_t availableCount = 0;
+    for (JsonObjectConst moduleObj : parsed["modules"].as<JsonArrayConst>()) {
+        const String id = String(static_cast<const char *>(moduleObj["id"] | ""));
+        const int idx = moduleIndexFromId(id);
+        if (idx < 0) continue;
+        availableOut[idx] = true;
+        versionOut[idx] = String(static_cast<const char *>(moduleObj["version"] | ""));
+        notesOut[idx] = String(static_cast<const char *>(moduleObj["notes"] | ""));
+        packageUrlOut[idx] = String(static_cast<const char *>(moduleObj["package_url"] | ""));
+        availableCount++;
+    }
+
+    statusOut = String("GitHub modules fetched: ") + availableCount;
+    return true;
+}
+
+static void moduleCatalogApplySnapshot(const bool availableIn[APP_MODULE_COUNT],
+                                       const String versionIn[APP_MODULE_COUNT],
+                                       const String notesIn[APP_MODULE_COUNT],
+                                       const String packageUrlIn[APP_MODULE_COUNT])
+{
+    moduleClearCatalog();
+    for (uint8_t i = 0; i < APP_MODULE_COUNT; ++i) {
+        moduleAvailable[i] = availableIn[i];
+        moduleRemoteVersion[i] = versionIn[i];
+        moduleRemoteNotes[i] = notesIn[i];
+        moduleRemotePackageUrl[i] = packageUrlIn[i];
+    }
+}
+
 static String modulePackagePath(AppModuleId id)
 {
     return String("/modules/") + modulePrefKey(id) + ".json";
@@ -114,16 +333,8 @@ static bool moduleDownloadPackage(AppModuleId id, String &errorOut)
         errorOut = "invalid_module";
         return false;
     }
-    if (!wifiConnectedSafe()) {
-        errorOut = "wifi_required";
-        return false;
-    }
     if (!sdEnsureMounted(true)) {
         errorOut = "sd_unavailable";
-        return false;
-    }
-    if (moduleRemotePackageUrl[idx].isEmpty()) {
-        errorOut = "package_url_missing";
         return false;
     }
     if (!sdLock()) {
@@ -135,32 +346,43 @@ static bool moduleDownloadPackage(AppModuleId id, String &errorOut)
     ensureFolderExists(modulePackagePath(id));
     SD.remove(modulePackagePath(id));
 
-    WiFiClientSecure client;
-    client.setInsecure();
-    HTTPClient http;
-    http.setConnectTimeout(7000);
-    http.setTimeout(10000);
-    http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
-    http.addHeader("Accept", "application/json");
-    http.addHeader("User-Agent", deviceShortNameValue());
-    if (!http.begin(client, moduleRemotePackageUrl[idx])) {
-        fsWriteEnd();
-        sdUnlock();
-        errorOut = "http_begin_failed";
-        return false;
+    String payload;
+    bool usedBundledPackage = false;
+
+    if (wifiConnectedSafe() && !moduleRemotePackageUrl[idx].isEmpty()) {
+        WiFiClientSecure client;
+        client.setInsecure();
+        client.setHandshakeTimeout(12);
+        HTTPClient http;
+        http.setConnectTimeout(7000);
+        http.setTimeout(10000);
+        http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+        http.addHeader("Accept", "application/json");
+        http.addHeader("User-Agent", deviceShortNameValue());
+        if (http.begin(client, moduleRemotePackageUrl[idx])) {
+            const int code = http.GET();
+            if (code >= 200 && code < 300) {
+                payload = http.getString();
+            } else {
+                errorOut = String("http_") + code;
+            }
+            http.end();
+        } else {
+            errorOut = "http_begin_failed";
+        }
     }
 
-    const int code = http.GET();
-    if (code < 200 || code >= 300) {
-        http.end();
-        fsWriteEnd();
-        sdUnlock();
-        errorOut = String("http_") + code;
-        return false;
+    if (payload.isEmpty()) {
+        const char *bundled = moduleBundledPackageJson(id);
+        if (!bundled || !*bundled) {
+            fsWriteEnd();
+            sdUnlock();
+            if (errorOut.isEmpty()) errorOut = "package_unavailable";
+            return false;
+        }
+        payload = bundled;
+        usedBundledPackage = true;
     }
-
-    String payload = http.getString();
-    http.end();
     if (payload.isEmpty()) {
         fsWriteEnd();
         sdUnlock();
@@ -179,6 +401,7 @@ static bool moduleDownloadPackage(AppModuleId id, String &errorOut)
     f.close();
     fsWriteEnd();
     sdUnlock();
+    if (usedBundledPackage) errorOut = "bundled_fallback";
     return true;
 }
 
@@ -289,40 +512,94 @@ static void moduleLoadInstalledState()
 
 bool moduleRefreshCatalog()
 {
-    moduleClearCatalog();
+    bool available[APP_MODULE_COUNT] = {};
+    String version[APP_MODULE_COUNT];
+    String notes[APP_MODULE_COUNT];
+    String packageUrl[APP_MODULE_COUNT];
+    String status;
+    const bool ok = moduleCatalogFetchSnapshot(moduleCatalogRequestToken, false, available, version, notes, packageUrl, status);
+    modulesStatusText = status;
+    if (ok) moduleCatalogApplySnapshot(available, version, notes, packageUrl);
+    return ok;
+}
+
+static void moduleCatalogTask(void *param)
+{
+    const uint32_t requestToken = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(param));
+    bool available[APP_MODULE_COUNT] = {};
+    String version[APP_MODULE_COUNT];
+    String notes[APP_MODULE_COUNT];
+    String packageUrl[APP_MODULE_COUNT];
+    String status;
+    const bool ok = moduleCatalogFetchSnapshot(requestToken, true, available, version, notes, packageUrl, status);
+
+    const bool canceled = moduleCatalogCancelRequested || requestToken != moduleCatalogRequestToken;
+    if (!canceled) {
+        if (ok) moduleCatalogApplySnapshot(available, version, notes, packageUrl);
+        modulesStatusText = status;
+        moduleCatalogUiRefreshPending = true;
+    }
+
+    moduleCatalogTaskHandle = nullptr;
+    vTaskDelete(nullptr);
+}
+
+void moduleStartCatalogRefresh()
+{
+    if (moduleCatalogTaskHandle) {
+        if (moduleCatalogCancelRequested) moduleCatalogRestartPending = true;
+        if (lvglReady && uiScreen == UI_CONFIG_MODULES) lvglRefreshModulesUi();
+        return;
+    }
+
+    moduleCatalogCancelRequested = false;
+    moduleCatalogUiRefreshPending = false;
+    moduleCatalogRestartPending = false;
+    ++moduleCatalogRequestToken;
+    modulesStatusText = MODULES_STATUS_CHECKING;
+
     if (!wifiConnectedSafe()) {
         modulesStatusText = "Connect WiFi to fetch modules from GitHub.";
-        return false;
+        if (lvglReady && uiScreen == UI_CONFIG_MODULES) lvglRefreshModulesUi();
+        return;
     }
 
-    int ghStatus = -1;
-    const String body = httpsGetText(MODULES_MANIFEST_URL, &ghStatus);
-    if (body.isEmpty()) {
-        modulesStatusText = ghStatus > 0 ? String("Module fetch failed: HTTP ") + ghStatus : String("Module fetch failed: net ") + ghStatus;
-        return false;
+    if (xTaskCreatePinnedToCore(moduleCatalogTask,
+                                "mods_catalog",
+                                8192,
+                                reinterpret_cast<void *>(static_cast<uintptr_t>(moduleCatalogRequestToken)),
+                                1,
+                                &moduleCatalogTaskHandle,
+                                ARDUINO_RUNNING_CORE) != pdPASS) {
+        moduleCatalogTaskHandle = nullptr;
+        modulesStatusText = "Module check start failed.";
     }
 
-    JsonDocument parsed;
-    const DeserializationError err = deserializeJson(parsed, body);
-    if (err || !parsed["modules"].is<JsonArrayConst>()) {
-        modulesStatusText = "Module manifest parse failed.";
-        return false;
-    }
+    if (lvglReady && uiScreen == UI_CONFIG_MODULES) lvglRefreshModulesUi();
+}
 
-    uint8_t availableCount = 0;
-    for (JsonObjectConst moduleObj : parsed["modules"].as<JsonArrayConst>()) {
-        const String id = String(static_cast<const char *>(moduleObj["id"] | ""));
-        const int idx = moduleIndexFromId(id);
-        if (idx < 0) continue;
-        moduleAvailable[idx] = true;
-        moduleRemoteVersion[idx] = String(static_cast<const char *>(moduleObj["version"] | ""));
-        moduleRemoteNotes[idx] = String(static_cast<const char *>(moduleObj["notes"] | ""));
-        moduleRemotePackageUrl[idx] = String(static_cast<const char *>(moduleObj["package_url"] | ""));
-        availableCount++;
+void moduleStopCatalogRefresh(bool preserveStatus)
+{
+    if (!moduleCatalogTaskHandle) return;
+    moduleCatalogCancelRequested = true;
+    moduleCatalogRestartPending = false;
+    ++moduleCatalogRequestToken;
+    if (preserveStatus && modulesStatusText == MODULES_STATUS_CHECKING) {
+        modulesStatusText = "Check stopped.";
+        moduleCatalogUiRefreshPending = true;
     }
+}
 
-    modulesStatusText = String("GitHub modules fetched: ") + availableCount;
-    return true;
+void moduleCatalogService()
+{
+    if (!moduleCatalogTaskHandle && moduleCatalogRestartPending) {
+        moduleCatalogRestartPending = false;
+        moduleStartCatalogRefresh();
+        return;
+    }
+    if (!moduleCatalogUiRefreshPending) return;
+    moduleCatalogUiRefreshPending = false;
+    if (lvglReady && uiScreen == UI_CONFIG_MODULES) lvglRefreshModulesUi();
 }
 
 void lvglModuleActionEvent(lv_event_t *e)
@@ -343,7 +620,7 @@ void lvglModuleActionEvent(lv_event_t *e)
         String error;
         if (moduleDownloadPackage(moduleId, error)) {
             modulePersistInstalledState(moduleId, true);
-            modulesStatusText = String(APP_MODULE_TITLES[idx]) + " downloaded and installed.";
+            modulesStatusText = String(APP_MODULE_TITLES[idx]) + (error == "bundled_fallback" ? " installed from bundled package." : " downloaded and installed.");
         } else {
             modulesStatusText = String(APP_MODULE_TITLES[idx]) + " install failed: " + error;
         }

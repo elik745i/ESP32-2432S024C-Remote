@@ -434,6 +434,7 @@ inline void lvglLoadScreen(lv_obj_t *target, lv_scr_load_anim_t anim)
 static void lvglPrepareScreenLeave(UiScreen screen)
 {
     if (screen == UI_WIFI_LIST) stopWifiScan(false);
+    if (screen == UI_CONFIG_MODULES) moduleStopCatalogRefresh(false);
     if (screen == UI_CONFIG_RADIO_RECEIVER_TEST) radioReceiverTestLeaveScreen();
     lv_obj_t *screenObj = lvglScreenForUi(screen);
     if (screenObj && lv_obj_is_valid(screenObj)) {
@@ -3633,8 +3634,7 @@ void lvglOpenScreen(UiScreen screen, lv_scr_load_anim_t anim)
     } else if (screen == UI_CONFIG_OTA) {
         lvglRefreshOtaUi();
     } else if (screen == UI_CONFIG_MODULES) {
-        moduleRefreshCatalog();
-        lvglRefreshModulesUi();
+        moduleStartCatalogRefresh();
     } else if (screen == UI_CONFIG_HC12) {
         hc12ReadConfigSelection();
         lvglRefreshHc12ConfigUi();

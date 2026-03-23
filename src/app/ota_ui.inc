@@ -1044,6 +1044,7 @@ void lvglRefreshConfigUi()
 
 void lvglRefreshModulesUi()
 {
+    const bool busy = moduleCatalogCheckInProgress();
     if (lvglModulesStatusLabel) {
         const String text = modulesStatusText.isEmpty() ? String("Available modules are fetched from GitHub when this screen opens.") : modulesStatusText;
         lvglLabelSetTextIfChanged(lvglModulesStatusLabel, text);
@@ -1075,11 +1076,13 @@ void lvglRefreshModulesUi()
         if (!lvglModulesActionBtns[i] || !lvglModulesActionLabels[i]) continue;
 
         if (moduleInstalled[i]) {
-            lv_obj_clear_state(lvglModulesActionBtns[i], LV_STATE_DISABLED);
+            if (busy) lv_obj_add_state(lvglModulesActionBtns[i], LV_STATE_DISABLED);
+            else lv_obj_clear_state(lvglModulesActionBtns[i], LV_STATE_DISABLED);
             lvglLabelSetTextIfChanged(lvglModulesActionLabels[i], "Uninstall");
             lvglRegisterStyledButton(lvglModulesActionBtns[i], lv_color_hex(0xA33F3F), false);
         } else if (moduleAvailable[i]) {
-            lv_obj_clear_state(lvglModulesActionBtns[i], LV_STATE_DISABLED);
+            if (busy) lv_obj_add_state(lvglModulesActionBtns[i], LV_STATE_DISABLED);
+            else lv_obj_clear_state(lvglModulesActionBtns[i], LV_STATE_DISABLED);
             lvglLabelSetTextIfChanged(lvglModulesActionLabels[i], "Install");
             lvglRegisterStyledButton(lvglModulesActionBtns[i], lv_color_hex(0x3A8F4B), false);
         } else {

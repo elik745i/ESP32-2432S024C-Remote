@@ -328,6 +328,7 @@ static constexpr uint8_t UI_DEFERRED_SCREENSHOT_PENDING = 0x01;
 static constexpr uint8_t UI_DEFERRED_SCREENSHOT_BUSY = 0x02;
 static constexpr uint8_t UI_DEFERRED_HC12_SETTLE_PENDING = 0x04;
 static constexpr uint8_t UI_DEFERRED_HC12_TARGET_ASSERTED = 0x08;
+static constexpr const char *MODULES_STATUS_CHECKING = "Checking...";
 
 static constexpr uint16_t CHAT_NOTIFY_FADE_IN_MS = 12;
 static constexpr uint16_t CHAT_NOTIFY_FADE_OUT_MS = 12;
@@ -1229,6 +1230,10 @@ void lvglOpenModulesScreenEvent(lv_event_t *e);
 void lvglModuleActionEvent(lv_event_t *e);
 void lvglRefreshModulesUi();
 bool moduleRefreshCatalog();
+void moduleStartCatalogRefresh();
+void moduleStopCatalogRefresh(bool preserveStatus = true);
+void moduleCatalogService();
+bool moduleCatalogCheckInProgress();
 static bool moduleInstalledForScreen(UiScreen screen);
 static bool moduleNeedsP2pRuntime();
 static void lvglShowOtaPostUpdatePopup();
@@ -1950,6 +1955,10 @@ String moduleRemoteVersion[APP_MODULE_COUNT];
 String moduleRemoteNotes[APP_MODULE_COUNT];
 String moduleRemotePackageUrl[APP_MODULE_COUNT];
 String modulesStatusText;
+volatile bool moduleCatalogCancelRequested = false;
+volatile bool moduleCatalogUiRefreshPending = false;
+volatile bool moduleCatalogRestartPending = false;
+uint32_t moduleCatalogRequestToken = 0;
 bool screenLockEnabled = false;
 bool screenLockUnlocked = true;
 char screenLockPin[5] = "";
@@ -1987,6 +1996,7 @@ String otaLatestBinUrl;
 OtaReleaseEntry otaReleaseEntries[OTA_RELEASE_LIST_MAX];
 uint8_t otaReleaseEntryCount = 0;
 int8_t otaSelectedReleaseIndex = -1;
+TaskHandle_t moduleCatalogTaskHandle = nullptr;
 TaskHandle_t otaCheckTaskHandle = nullptr;
 TaskHandle_t otaUpdateTaskHandle = nullptr;
 bool p2pUdpStarted = false;
@@ -2291,6 +2301,7 @@ String httpsGetText(const String &url, int *statusOut)
 
     WiFiClientSecure client;
     client.setInsecure();
+    client.setHandshakeTimeout(12);
 
     HTTPClient http;
     http.setConnectTimeout(6000);
@@ -2624,6 +2635,7 @@ void loop()
             }
         }
     }
+    moduleCatalogService();
     otaUpdateService();
     if (modulesRuntimeActive) {
         if (moduleInstalled[APP_MODULE_RADIO]) hc12Service();
