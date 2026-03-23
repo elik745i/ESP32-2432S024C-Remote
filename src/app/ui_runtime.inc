@@ -53,7 +53,7 @@ static const char *moduleBundledCatalogVersion(uint8_t idx)
         case APP_MODULE_MQTT:
         case APP_MODULE_SCREENSAVER:
         case APP_MODULE_WEBSERVER:
-            return "0.21.10";
+            return "0.21.11";
         default:
             return "";
     }
@@ -81,7 +81,7 @@ static const char *moduleBundledPackageJson(AppModuleId id)
             return R"JSON({
   "id": "chat",
   "title": "Chat Pack",
-  "version": "0.21.08",
+    "version": "0.21.11",
   "screens": ["chat", "chat_peers"],
   "home_buttons": ["chat"],
   "services": ["p2p", "chat_outbox"],
@@ -91,7 +91,7 @@ static const char *moduleBundledPackageJson(AppModuleId id)
             return R"JSON({
   "id": "radio",
   "title": "Radio Pack",
-  "version": "0.21.08",
+    "version": "0.21.11",
   "screens": ["radio_control", "remote_control", "radio_config", "radio_terminal", "radio_info"],
   "home_buttons": ["radio"],
   "services": ["hc12", "radio_runtime"],
@@ -101,7 +101,7 @@ static const char *moduleBundledPackageJson(AppModuleId id)
             return R"JSON({
   "id": "media",
   "title": "Media Pack",
-  "version": "0.21.08",
+    "version": "0.21.11",
   "screens": ["media"],
   "home_buttons": ["media"],
   "services": ["audio"],
@@ -111,7 +111,7 @@ static const char *moduleBundledPackageJson(AppModuleId id)
             return R"JSON({
   "id": "info",
   "title": "Info Pack",
-  "version": "0.21.08",
+    "version": "0.21.11",
   "screens": ["info"],
   "home_buttons": ["info"],
   "services": ["info_refresh"],
@@ -121,7 +121,7 @@ static const char *moduleBundledPackageJson(AppModuleId id)
             return R"JSON({
   "id": "games",
   "title": "Games Pack",
-  "version": "0.21.08",
+    "version": "0.21.11",
   "screens": ["games", "snake", "tetris", "checkers", "snake3d"],
   "home_buttons": ["games"],
   "services": ["game_ticks"],
@@ -131,7 +131,7 @@ static const char *moduleBundledPackageJson(AppModuleId id)
             return R"JSON({
   "id": "mqtt",
   "title": "MQTT Pack",
-  "version": "0.21.08",
+    "version": "0.21.11",
   "screens": ["mqtt_config", "mqtt_controls", "mqtt_buttons"],
   "home_buttons": ["mqtt"],
   "services": ["mqtt"],
@@ -141,7 +141,7 @@ static const char *moduleBundledPackageJson(AppModuleId id)
             return R"JSON({
   "id": "screensaver",
   "title": "Screensaver Pack",
-  "version": "0.21.08",
+    "version": "0.21.11",
   "screens": ["screensaver"],
   "services": ["screensaver"],
   "notes": "Installs the screensaver feature and display style controls."
@@ -150,7 +150,7 @@ static const char *moduleBundledPackageJson(AppModuleId id)
             return R"JSON({
   "id": "webserver",
   "title": "WebServer Pack",
-  "version": "0.21.08",
+    "version": "0.21.11",
   "screens": ["wifi"],
   "home_buttons": [],
   "services": ["webserver"],

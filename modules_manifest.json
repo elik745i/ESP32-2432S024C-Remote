@@ -3,49 +3,49 @@
   "modules": [
     {
       "id": "chat",
-      "version": "0.21.10",
+      "version": "0.21.11",
       "notes": "Enables chat peers, contacts, and messaging UI.",
       "package_url": "https://raw.githubusercontent.com/elik745i/ESP32-2432S024C-Remote/main/module_packages/chat.json"
     },
     {
       "id": "radio",
-      "version": "0.21.10",
+      "version": "0.21.11",
       "notes": "Enables radio control, radio config, and remote tools.",
       "package_url": "https://raw.githubusercontent.com/elik745i/ESP32-2432S024C-Remote/main/module_packages/radio.json"
     },
     {
       "id": "media",
-      "version": "0.21.10",
+      "version": "0.21.11",
       "notes": "Enables media browser and player.",
       "package_url": "https://raw.githubusercontent.com/elik745i/ESP32-2432S024C-Remote/main/module_packages/media.json"
     },
     {
       "id": "info",
-      "version": "0.21.10",
+      "version": "0.21.11",
       "notes": "Enables info and diagnostics screens.",
       "package_url": "https://raw.githubusercontent.com/elik745i/ESP32-2432S024C-Remote/main/module_packages/info.json"
     },
     {
       "id": "games",
-      "version": "0.21.10",
+      "version": "0.21.11",
       "notes": "Enables Snake, Tetris, and Checkers.",
       "package_url": "https://raw.githubusercontent.com/elik745i/ESP32-2432S024C-Remote/main/module_packages/games.json"
     },
     {
       "id": "mqtt",
-      "version": "0.21.10",
+      "version": "0.21.11",
       "notes": "Enables MQTT config and control screens.",
       "package_url": "https://raw.githubusercontent.com/elik745i/ESP32-2432S024C-Remote/main/module_packages/mqtt.json"
     },
     {
       "id": "screensaver",
-      "version": "0.21.10",
+      "version": "0.21.11",
       "notes": "Enables screensaver menu and options.",
       "package_url": "https://raw.githubusercontent.com/elik745i/ESP32-2432S024C-Remote/main/module_packages/screensaver.json"
     },
     {
       "id": "webserver",
-      "version": "0.21.10",
+      "version": "0.21.11",
       "notes": "Enables HTTP web server for remote API and WiFi status.",
       "package_url": "https://raw.githubusercontent.com/elik745i/ESP32-2432S024C-Remote/main/module_packages/webserver.json"
     }
