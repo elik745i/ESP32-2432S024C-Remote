@@ -3387,31 +3387,60 @@ static void lvglSingleLinePasswordValueChangedEvent(lv_event_t *e)
     lv_obj_scroll_to_y(ta, 0, LV_ANIM_OFF);
 }
 
+static void lvglCompactPasswordGeometryEvent(lv_event_t *e)
+{
+    lv_obj_t *ta = e ? lv_event_get_target(e) : nullptr;
+    if (!ta || !lv_obj_is_valid(ta)) return;
+    lvglConfigureCompactSingleLineTa(ta, lv_obj_get_height(ta) > 0 ? lv_obj_get_height(ta) : 34);
+}
+
+static void lvglCompactSingleLineTaContent(lv_obj_t *ta, lv_coord_t height)
+{
+    if (!ta || !lv_obj_is_valid(ta)) return;
+    lv_obj_t *label = lv_obj_get_child(ta, 0);
+    if (!label || !lv_obj_is_valid(label)) return;
+    lv_obj_set_style_text_font(label, LV_FONT_DEFAULT, 0);
+    lv_obj_set_style_pad_left(label, 0, 0);
+    lv_obj_set_style_pad_right(label, 0, 0);
+    lv_obj_set_style_pad_top(label, 0, 0);
+    lv_obj_set_style_pad_bottom(label, 0, 0);
+    lv_obj_set_style_text_line_space(label, 0, 0);
+    lv_obj_set_style_min_height(label, 0, 0);
+    lv_obj_set_style_max_height(label, height, 0);
+}
+
 static void lvglConfigureCompactSingleLineTa(lv_obj_t *ta, lv_coord_t height = 34)
 {
     if (!ta || !lv_obj_is_valid(ta)) return;
     const lv_coord_t h = max<lv_coord_t>(28, height);
     const lv_style_selector_t selectors[] = {
         LV_PART_MAIN,
+        LV_PART_MAIN | LV_STATE_ANY,
         LV_PART_MAIN | LV_STATE_DEFAULT,
         LV_PART_MAIN | LV_STATE_FOCUSED,
         LV_PART_MAIN | LV_STATE_EDITED,
         LV_PART_MAIN | LV_STATE_FOCUS_KEY,
+        LV_PART_MAIN | LV_STATE_DISABLED,
         LV_PART_MAIN | (LV_STATE_FOCUSED | LV_STATE_EDITED),
+        LV_PART_MAIN | (LV_STATE_FOCUSED | LV_STATE_DISABLED),
         LV_PART_MAIN | (LV_STATE_FOCUS_KEY | LV_STATE_EDITED),
     };
     lv_textarea_set_one_line(ta, true);
     lv_obj_set_height(ta, h);
+    lv_obj_set_style_text_font(ta, LV_FONT_DEFAULT, LV_PART_MAIN | LV_STATE_ANY);
     lv_obj_set_scroll_dir(ta, LV_DIR_HOR);
     lv_obj_set_scrollbar_mode(ta, LV_SCROLLBAR_MODE_OFF);
     for (size_t i = 0; i < (sizeof(selectors) / sizeof(selectors[0])); ++i) {
         const lv_style_selector_t sel = selectors[i];
         lv_obj_set_style_min_height(ta, h, sel);
         lv_obj_set_style_max_height(ta, h, sel);
+        lv_obj_set_style_pad_left(ta, 6, sel);
+        lv_obj_set_style_pad_right(ta, 6, sel);
         lv_obj_set_style_pad_top(ta, 0, sel);
         lv_obj_set_style_pad_bottom(ta, 0, sel);
         lv_obj_set_style_text_line_space(ta, 0, sel);
     }
+    lvglCompactSingleLineTaContent(ta, h);
     lv_obj_scroll_to_y(ta, 0, LV_ANIM_OFF);
 }
 
@@ -3431,6 +3460,8 @@ static void lvglConfigureSingleLinePasswordTa(lv_obj_t *ta)
     // Keep geometry stable on focus: some themes adjust textarea metrics for focused state.
     if (h > 0) {
         lv_obj_set_height(ta, h);
+        lv_obj_set_style_min_height(ta, h, LV_PART_MAIN | LV_STATE_ANY);
+        lv_obj_set_style_max_height(ta, h, LV_PART_MAIN | LV_STATE_ANY);
         lv_obj_set_style_min_height(ta, h, LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_max_height(ta, h, LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_min_height(ta, h, LV_PART_MAIN | LV_STATE_FOCUSED);
@@ -3439,12 +3470,18 @@ static void lvglConfigureSingleLinePasswordTa(lv_obj_t *ta)
         lv_obj_set_style_max_height(ta, h, LV_PART_MAIN | LV_STATE_EDITED);
         lv_obj_set_style_min_height(ta, h, LV_PART_MAIN | LV_STATE_FOCUS_KEY);
         lv_obj_set_style_max_height(ta, h, LV_PART_MAIN | LV_STATE_FOCUS_KEY);
+        lv_obj_set_style_min_height(ta, h, LV_PART_MAIN | LV_STATE_DISABLED);
+        lv_obj_set_style_max_height(ta, h, LV_PART_MAIN | LV_STATE_DISABLED);
         lv_obj_set_style_min_height(ta, h, LV_PART_MAIN | (LV_STATE_FOCUSED | LV_STATE_EDITED));
         lv_obj_set_style_max_height(ta, h, LV_PART_MAIN | (LV_STATE_FOCUSED | LV_STATE_EDITED));
+        lv_obj_set_style_min_height(ta, h, LV_PART_MAIN | (LV_STATE_FOCUSED | LV_STATE_DISABLED));
+        lv_obj_set_style_max_height(ta, h, LV_PART_MAIN | (LV_STATE_FOCUSED | LV_STATE_DISABLED));
         lv_obj_set_style_min_height(ta, h, LV_PART_MAIN | (LV_STATE_FOCUS_KEY | LV_STATE_EDITED));
         lv_obj_set_style_max_height(ta, h, LV_PART_MAIN | (LV_STATE_FOCUS_KEY | LV_STATE_EDITED));
     }
     lv_obj_add_event_cb(ta, lvglSingleLinePasswordValueChangedEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+    lv_obj_add_event_cb(ta, lvglCompactPasswordGeometryEvent, LV_EVENT_FOCUSED, nullptr);
+    lv_obj_add_event_cb(ta, lvglCompactPasswordGeometryEvent, LV_EVENT_DEFOCUSED, nullptr);
 }
 
 void lvglKeyboardRefreshLayout()
@@ -4704,6 +4741,7 @@ void lvglWifiApShowToggleEvent(lv_event_t *e)
     if (!btn || !lvglWifiApPassTa) return;
     const bool makeVisible = lv_textarea_get_password_mode(lvglWifiApPassTa);
     lv_textarea_set_password_mode(lvglWifiApPassTa, makeVisible ? false : true);
+    lvglConfigureCompactSingleLineTa(lvglWifiApPassTa, lv_obj_get_height(lvglWifiApPassTa) > 0 ? lv_obj_get_height(lvglWifiApPassTa) : 34);
     if (lvglWifiApPassShowBtnLabel) lv_label_set_text(lvglWifiApPassShowBtnLabel, makeVisible ? LV_SYMBOL_EYE_OPEN : LV_SYMBOL_EYE_CLOSE);
 }
 
@@ -4713,6 +4751,7 @@ void lvglWifiPwdShowToggleEvent(lv_event_t *e)
     if (!btn || !lvglWifiPwdTa) return;
     const bool makeVisible = lv_textarea_get_password_mode(lvglWifiPwdTa);
     lv_textarea_set_password_mode(lvglWifiPwdTa, makeVisible ? false : true);
+    lvglConfigureCompactSingleLineTa(lvglWifiPwdTa, lv_obj_get_height(lvglWifiPwdTa) > 0 ? lv_obj_get_height(lvglWifiPwdTa) : 34);
     if (lvglWifiPwdShowBtnLabel) lv_label_set_text(lvglWifiPwdShowBtnLabel, makeVisible ? LV_SYMBOL_EYE_OPEN : LV_SYMBOL_EYE_CLOSE);
 }
 
@@ -4722,8 +4761,8 @@ static void lvglRefreshWifiPasswordDialogLayout()
 
     const bool compactLayout = (DISPLAY_WIDTH <= 240) || (DISPLAY_HEIGHT <= 320);
     const lv_coord_t modalW = compactLayout ? min<lv_coord_t>(DISPLAY_WIDTH - 16, 212) : static_cast<lv_coord_t>(DISPLAY_WIDTH - 24);
-    const lv_coord_t inputH = compactLayout ? 30 : 34;
-    const lv_coord_t iconBtn = compactLayout ? 30 : 34;
+    const lv_coord_t inputH = 26;
+    const lv_coord_t iconBtn = 26;
     const lv_coord_t actionBtnW = compactLayout ? 74 : 84;
     const lv_coord_t actionBtnH = compactLayout ? 28 : 30;
     const lv_coord_t actionGap = compactLayout ? 6 : 8;
@@ -4740,6 +4779,7 @@ static void lvglRefreshWifiPasswordDialogLayout()
     if (lvglWifiPwdTa && lv_obj_is_valid(lvglWifiPwdTa)) {
         const lv_coord_t inputW = max<lv_coord_t>(96, modalW - (modalPad * 2) - iconBtn - (compactLayout ? 4 : 6));
         lv_obj_set_size(lvglWifiPwdTa, inputW, inputH);
+        lvglConfigureCompactSingleLineTa(lvglWifiPwdTa, inputH);
     }
 
     if (lvglWifiPwdShowBtn && lv_obj_is_valid(lvglWifiPwdShowBtn)) {
@@ -4780,6 +4820,7 @@ void lvglMqttPassShowToggleEvent(lv_event_t *e)
     if (!btn || !lvglMqttPassTa) return;
     const bool makeVisible = lv_textarea_get_password_mode(lvglMqttPassTa);
     lv_textarea_set_password_mode(lvglMqttPassTa, makeVisible ? false : true);
+    lvglConfigureCompactSingleLineTa(lvglMqttPassTa, lv_obj_get_height(lvglMqttPassTa) > 0 ? lv_obj_get_height(lvglMqttPassTa) : 34);
     if (lvglMqttPassShowBtnLabel) lv_label_set_text(lvglMqttPassShowBtnLabel, makeVisible ? LV_SYMBOL_EYE_OPEN : LV_SYMBOL_EYE_CLOSE);
 }
 
@@ -4821,14 +4862,14 @@ void lvglOpenWifiPasswordDialog(const String &ssid)
 
         lvglWifiPwdTa = lv_textarea_create(lvglWifiPwdInputRow);
         lv_obj_set_width(lvglWifiPwdTa, 160);
-        lv_obj_set_height(lvglWifiPwdTa, 34);
+        lv_obj_set_height(lvglWifiPwdTa, 26);
         lv_textarea_set_max_length(lvglWifiPwdTa, 16);
         lvglConfigureSingleLinePasswordTa(lvglWifiPwdTa);
         lv_textarea_set_placeholder_text(lvglWifiPwdTa, "Password");
         lv_obj_add_event_cb(lvglWifiPwdTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
 
         lvglWifiPwdShowBtn = lv_btn_create(lvglWifiPwdInputRow);
-        lv_obj_set_size(lvglWifiPwdShowBtn, 34, 34);
+        lv_obj_set_size(lvglWifiPwdShowBtn, 26, 26);
         lv_obj_set_style_radius(lvglWifiPwdShowBtn, 8, 0);
         lv_obj_set_style_border_width(lvglWifiPwdShowBtn, 0, 0);
         lv_obj_add_event_cb(lvglWifiPwdShowBtn, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);

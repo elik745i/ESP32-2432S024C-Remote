@@ -771,10 +771,11 @@ void lvglRefreshWifiList()
         lv_label_set_text_fmt(hint, "Current AP: %s", savedApSsid.c_str());
         lv_obj_set_style_text_color(hint, lv_color_hex(0xB7C4D1), 0);
 
-        auto addTa = [&](lv_obj_t *parent, const char *ph, const char *value, bool pass) -> lv_obj_t * {
+        auto addTa = [&](lv_obj_t *parent, const char *ph, const char *value, bool pass, lv_coord_t height = 34) -> lv_obj_t * {
             lv_obj_t *ta = lv_textarea_create(parent ? parent : apCard);
             lv_obj_set_width(ta, lv_pct(100));
-            lvglConfigureCompactSingleLineTa(ta, 34);
+            lv_obj_set_height(ta, height);
+            lvglConfigureCompactSingleLineTa(ta, height);
             lv_textarea_set_placeholder_text(ta, ph);
             if (pass) lvglConfigureSingleLinePasswordTa(ta);
             lv_textarea_set_text(ta, value ? value : "");
@@ -793,13 +794,14 @@ void lvglRefreshWifiList()
         lv_obj_set_flex_flow(pwdRow, LV_FLEX_FLOW_ROW);
         lv_obj_clear_flag(pwdRow, LV_OBJ_FLAG_SCROLLABLE);
 
-        lvglWifiApPassTa = addTa(pwdRow, "AP password", savedApPass.c_str(), true);
+        lvglWifiApPassTa = addTa(pwdRow, "AP password", savedApPass.c_str(), true, 26);
         lv_obj_set_width(lvglWifiApPassTa, lv_pct(100));
         lv_obj_set_flex_grow(lvglWifiApPassTa, 1);
-        lv_obj_set_height(lvglWifiApPassTa, 34);
+        lv_obj_set_height(lvglWifiApPassTa, 26);
+        lvglConfigureCompactSingleLineTa(lvglWifiApPassTa, 26);
 
         lvglWifiApPassShowBtn = lv_btn_create(pwdRow);
-        lv_obj_set_size(lvglWifiApPassShowBtn, 34, 34);
+        lv_obj_set_size(lvglWifiApPassShowBtn, 26, 26);
         lv_obj_set_style_radius(lvglWifiApPassShowBtn, 8, 0);
         lv_obj_set_style_border_width(lvglWifiApPassShowBtn, 0, 0);
         lv_obj_add_event_cb(lvglWifiApPassShowBtn, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);

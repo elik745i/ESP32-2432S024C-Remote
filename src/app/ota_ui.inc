@@ -120,6 +120,19 @@ static String screenLockBlockMessage()
     return String(buf);
 }
 
+static void screenLockApplySetupPinTaStyle()
+{
+    if (!lvglScreenLockSetupPinTa || !lv_obj_is_valid(lvglScreenLockSetupPinTa)) return;
+    const lv_coord_t pinW = min<lv_coord_t>(DISPLAY_WIDTH - 56, 124);
+    const lv_coord_t pinH = 28;
+    lv_obj_set_width(lvglScreenLockSetupPinTa, pinW);
+    lv_obj_set_height(lvglScreenLockSetupPinTa, pinH);
+    lv_obj_set_style_text_font(lvglScreenLockSetupPinTa, LV_FONT_DEFAULT, LV_PART_MAIN | LV_STATE_ANY);
+    lv_obj_set_style_text_align(lvglScreenLockSetupPinTa, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_ANY);
+    lvglConfigureCompactSingleLineTa(lvglScreenLockSetupPinTa, pinH);
+    lv_textarea_set_one_line(lvglScreenLockSetupPinTa, true);
+}
+
 static void screenLockHideSetupModal(bool restoreToggle)
 {
     if (lvglKb && lv_keyboard_get_textarea(lvglKb) == lvglScreenLockSetupPinTa) lvglHideKeyboard();
@@ -152,15 +165,17 @@ static void screenLockShowSetupModal()
         lv_obj_set_style_text_color(title, lv_color_hex(0xE5ECF3), 0);
 
         lvglScreenLockSetupPinTa = lv_textarea_create(lvglScreenLockModal);
-        lv_obj_set_width(lvglScreenLockSetupPinTa, min<lv_coord_t>(DISPLAY_WIDTH - 44, 150));
-        lv_obj_set_height(lvglScreenLockSetupPinTa, 34);
+        lv_obj_set_width(lvglScreenLockSetupPinTa, min<lv_coord_t>(DISPLAY_WIDTH - 56, 124));
+        lv_obj_set_height(lvglScreenLockSetupPinTa, 28);
         lvglConfigureSingleLinePasswordTa(lvglScreenLockSetupPinTa);
         lv_textarea_set_max_length(lvglScreenLockSetupPinTa, 4);
         lv_textarea_set_accepted_chars(lvglScreenLockSetupPinTa, "0123456789");
         lv_textarea_set_placeholder_text(lvglScreenLockSetupPinTa, "0000");
-        lv_obj_set_style_text_align(lvglScreenLockSetupPinTa, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_font(lvglScreenLockSetupPinTa, LV_FONT_DEFAULT, LV_PART_MAIN | LV_STATE_ANY);
+        lv_obj_set_style_text_align(lvglScreenLockSetupPinTa, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_ANY);
         lv_obj_add_event_cb(lvglScreenLockSetupPinTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
         lv_obj_add_event_cb(lvglScreenLockSetupPinTa, lvglScreenLockSetupPinChangedEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+        screenLockApplySetupPinTaStyle();
 
         lvglScreenLockSetupStatusLabel = lv_label_create(lvglScreenLockModal);
         lv_obj_set_width(lvglScreenLockSetupStatusLabel, lv_pct(100));
@@ -197,6 +212,7 @@ static void screenLockShowSetupModal()
     }
 
     if (lvglScreenLockSetupPinTa) lv_textarea_set_text(lvglScreenLockSetupPinTa, "");
+    screenLockApplySetupPinTaStyle();
     if (lvglScreenLockSetupStatusLabel) lv_label_set_text(lvglScreenLockSetupStatusLabel, "");
     lv_obj_clear_flag(lvglScreenLockModal, LV_OBJ_FLAG_HIDDEN);
 }
@@ -320,6 +336,7 @@ void lvglRefreshLockScreenUi()
         lv_textarea_set_password_mode(lvglScreenLockPinTa, true);
         if (blocked) lv_obj_add_state(lvglScreenLockPinTa, LV_STATE_DISABLED);
         else lv_obj_clear_state(lvglScreenLockPinTa, LV_STATE_DISABLED);
+        lvglConfigureCompactSingleLineTa(lvglScreenLockPinTa, lv_obj_get_height(lvglScreenLockPinTa) > 0 ? lv_obj_get_height(lvglScreenLockPinTa) : 34);
     }
     if (lvglScreenLockUnlockBtn && lvglScreenLockUnlockBtnLabel) {
         lvglLabelSetTextIfChanged(lvglScreenLockUnlockBtnLabel, "Unlock");

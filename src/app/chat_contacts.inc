@@ -987,7 +987,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
 
             lvglScreenLockPinTa = lv_textarea_create(wrap);
             lv_obj_set_width(lvglScreenLockPinTa, min<lv_coord_t>(DISPLAY_WIDTH - 44, 150));
-            lv_obj_set_height(lvglScreenLockPinTa, 34);
+            lv_obj_set_height(lvglScreenLockPinTa, 30);
             lvglConfigureSingleLinePasswordTa(lvglScreenLockPinTa);
             lv_textarea_set_max_length(lvglScreenLockPinTa, 4);
             lv_textarea_set_accepted_chars(lvglScreenLockPinTa, "0123456789");
@@ -2989,14 +2989,14 @@ void lvglEnsureScreenBuilt(UiScreen screen)
 
             lvglMqttPassTa = lv_textarea_create(mqttPwdRow);
             lv_obj_set_width(lvglMqttPassTa, lv_pct(100));
-            lv_obj_set_height(lvglMqttPassTa, 34);
+            lv_obj_set_height(lvglMqttPassTa, 28);
             lv_obj_set_flex_grow(lvglMqttPassTa, 1);
             lvglConfigureSingleLinePasswordTa(lvglMqttPassTa);
             lv_textarea_set_placeholder_text(lvglMqttPassTa, "Password");
             lv_obj_add_event_cb(lvglMqttPassTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
 
             lvglMqttPassShowBtn = lv_btn_create(mqttPwdRow);
-            lv_obj_set_size(lvglMqttPassShowBtn, 34, 34);
+            lv_obj_set_size(lvglMqttPassShowBtn, 28, 28);
             lv_obj_set_style_radius(lvglMqttPassShowBtn, 8, 0);
             lv_obj_set_style_border_width(lvglMqttPassShowBtn, 0, 0);
             lv_obj_add_event_cb(lvglMqttPassShowBtn, lvglClickFilterEvent, LV_EVENT_CLICKED, nullptr);
