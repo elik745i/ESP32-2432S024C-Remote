@@ -5,7 +5,6 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_DEVICE_ID
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.selector import SelectOptionDict, SelectSelector, SelectSelectorConfig
@@ -31,8 +30,15 @@ def _build_mapping_schema(hass, sources, existing_map: dict[str, str]) -> vol.Sc
     fields: dict[Any, Any] = {}
     for source in sources:
         choices = [("", "Unmapped")] + list_target_entities(hass, source.mode)
-        fields[vol.Required(_source_field_key(source), default=existing_map.get(source.entity_id, ""))] = _select(choices)
+        fields[vol.Optional(_source_field_key(source), default=existing_map.get(source.entity_id, ""))] = _select(choices)
     return vol.Schema(fields)
+
+
+def _resolve_entry_from_context(hass, context):
+    entry_id = context.get("entry_id") or context.get("config_entry_id")
+    if not entry_id:
+        return None
+    return hass.config_entries.async_get_entry(entry_id)
 
 
 class MqttRemoteButtonsRemapConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -104,7 +110,9 @@ class MqttRemoteButtonsRemapConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
         return MqttRemoteButtonsRemapOptionsFlow(config_entry)
 
     async def async_step_reconfigure(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        entry = self._get_reconfigure_entry()
+        entry = _resolve_entry_from_context(self.hass, self.context)
+        if entry is None:
+            return self.async_abort(reason="entry_not_found")
         device_id = entry.data.get(CONF_DEVICE_ID)
         sources = list_remote_sources(self.hass, device_id)
         if not sources:
@@ -136,10 +144,7 @@ class MqttRemoteButtonsRemapOptionsFlow(config_entries.OptionsFlow):
         self._sources = []
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        if user_input is not None:
-            return await self.async_step_map_buttons()
-
-        return self.async_show_form(step_id="init", data_schema=vol.Schema({}))
+        return await self.async_step_map_buttons(user_input)
 
     async def async_step_map_buttons(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         device_id = self.config_entry.data.get(CONF_DEVICE_ID)

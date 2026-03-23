@@ -45,8 +45,8 @@ The last two forms are produced by toggle-type MQTT buttons configured in the de
 6. Select the ESP32 remote device from the dropdown.
 7. The integration entry is created right away.
 8. Open the added integration entry and open its options.
-9. The first options screen shows built-in instructions.
-10. Continue to the mapping screen and assign only the buttons you want.
+9. The options screen shows the mapping dropdowns together with built-in instructions.
+10. Assign only the buttons you want.
 11. Leave the rest as `Unmapped`.
 
 Final target path in Home Assistant:
@@ -56,6 +56,8 @@ config/
   custom_components/
     mqtt_remote_buttons_remap/
       __init__.py
+      brand/
+        icon.png
       config_flow.py
       const.py
       helpers.py
@@ -65,7 +67,7 @@ config/
 
 ## UI Behavior
 
-After the integration entry is created, its options flow first shows an instructions screen and then shows one dropdown per advertised MQTT control.
+After the integration entry is created, its options screen shows built-in instructions together with one dropdown per advertised MQTT control.
 
 - Source `button` entities from the ESP32 remote are treated as press actions.
 - Source `switch` entities from the ESP32 remote are treated as on/off state actions.
