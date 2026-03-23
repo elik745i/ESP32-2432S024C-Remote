@@ -1,12 +1,16 @@
 {
   "domain": "mqtt_remote_buttons_remap",
   "name": "MQTT Remote Buttons Remap",
-  "version": "0.1.0",
+  "codeowners": [
+    "@elik745i"
+  ],
+  "config_flow": true,
   "dependencies": [
     "mqtt"
   ],
-  "codeowners": [],
+  "documentation": "https://github.com/elik745i/ESP32-2432S024C-Remote/blob/main/Custom%20Home%20Assistant%20integration/README.md",
   "integration_type": "hub",
+  "issue_tracker": "https://github.com/elik745i/ESP32-2432S024C-Remote/issues",
   "iot_class": "local_push",
-  "config_flow": true
+  "version": "0.1.0"
 }

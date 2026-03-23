@@ -4,12 +4,14 @@ import logging
 from typing import Any
 
 from homeassistant.components import mqtt
+from homeassistant.helpers import config_validation as cv
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 
 from .const import CONF_ACTION_MAP, CONF_HWID, CONF_TOPIC, DOMAIN, EVENT_BUTTON_ACTION
 
 _LOGGER = logging.getLogger(__name__)
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:

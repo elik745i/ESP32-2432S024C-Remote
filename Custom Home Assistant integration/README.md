@@ -37,6 +37,20 @@ The last two forms are produced by toggle-type MQTT buttons configured in the de
 
 ## Installation
 
+### HACS
+
+This package now includes the manifest fields and `hacs.json` metadata HACS expects for a custom integration.
+
+Important limitation:
+
+- HACS validates against the root of the GitHub repository.
+- This integration currently lives inside a larger firmware repository, so that repository is not a valid HACS integration repository as-is.
+- To install through HACS, publish this folder as its own GitHub repository, or mirror just this folder into a dedicated repository.
+
+If this folder is published as its own repository, add it in HACS as a custom repository of type `Integration`.
+
+### Manual
+
 1. Copy the folder `custom_components/mqtt_remote_buttons_remap` into your Home Assistant config directory under `custom_components/`.
 2. Restart Home Assistant.
 3. Make sure the built-in MQTT integration is already configured and connected to the same broker as the ESP32 remote.
@@ -123,3 +137,4 @@ You can use that event in automations if you want to build logic outside the dir
 - The remote firmware publishes to a shared action topic per device, not one topic per button.
 - The integration derives the list of available source buttons from the MQTT entities already discovered in Home Assistant for that selected device.
 - If a button or switch is renamed on the ESP32 and rediscovered by Home Assistant, reopen the integration options and review the mappings.
+- HACS metadata for this integration is stored in `hacs.json` in this folder, ready for a dedicated integration repository.
