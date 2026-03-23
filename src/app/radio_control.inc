@@ -214,6 +214,7 @@ static bool remoteProgramActiveE220(int targetChannel,
                                     int targetPowerIndex,
                                     bool targetFixedTransmission,
                                     String &statusOut);
+static bool remoteApplySelectedProfile(String &statusOut);
 
 static void savePersistedRadioControlButtons()
 {
@@ -371,10 +372,50 @@ static void radioReceiverTestAppend(const String &line)
     }
 }
 
+static String radioReceiverTestProfileSummary()
+{
+    if (remoteControlUsesHc12()) {
+        const int baudIndex = constrain(remoteHc12BaudIndex,
+                                        0,
+                                        static_cast<int>(sizeof(HC12_SUPPORTED_BAUDS) / sizeof(HC12_SUPPORTED_BAUDS[0])) - 1);
+        const int modeIndex = constrain(remoteHc12ModeIndex,
+                                        0,
+                                        static_cast<int>(sizeof(HC12_MODE_LABELS) / sizeof(HC12_MODE_LABELS[0])) - 1);
+        return String("Listening on HC-12 CH")
+               + String(constrain(remoteHc12Channel, HC12_MIN_CHANNEL, HC12_MAX_CHANNEL))
+               + " @ "
+               + String(HC12_SUPPORTED_BAUDS[baudIndex])
+               + " baud / FU"
+               + String(modeIndex + 1)
+               + " / P"
+               + String(constrain(remoteHc12PowerLevel, 1, 8));
+    }
+
+    const int baudIndex = constrain(remoteE220BaudIndex,
+                                    0,
+                                    static_cast<int>(sizeof(E220_UART_BAUD_VALUES) / sizeof(E220_UART_BAUD_VALUES[0])) - 1);
+    const int airRateIndex = constrain(remoteE220AirRateIndex,
+                                       0,
+                                       static_cast<int>(sizeof(E220_AIR_RATE_LABELS) / sizeof(E220_AIR_RATE_LABELS[0])) - 1);
+    const int powerIndex = constrain(remoteE220PowerIndex,
+                                     0,
+                                     static_cast<int>(sizeof(E220_POWER_DBM) / sizeof(E220_POWER_DBM[0])) - 1);
+    return String("Listening on E220 CH")
+           + String(constrain(remoteE220Channel, E220_MIN_CHANNEL, E220_MAX_CHANNEL))
+           + " @ "
+           + String(E220_UART_BAUD_VALUES[baudIndex])
+           + " baud / "
+           + String(E220_AIR_RATE_LABELS[airRateIndex])
+           + " air / "
+           + String(E220_POWER_DBM[powerIndex])
+           + " dBm / "
+           + (remoteE220FixedTransmission ? "fixed" : "transparent");
+}
+
 void lvglRefreshRadioReceiverTestUi()
 {
     if (lvglRadioReceiverTestStatusLabel && lv_obj_is_valid(lvglRadioReceiverTestStatusLabel)) {
-        const String status = radioReceiverTestActive ? "Listening on HC-12 CH100 @ 2400 baud" : "Receiver test inactive";
+        const String status = radioReceiverTestActive ? radioReceiverTestProfileSummary() : "Receiver test inactive";
         lv_label_set_text(lvglRadioReceiverTestStatusLabel, status.c_str());
     }
     if (lvglRadioReceiverTestTa && lv_obj_is_valid(lvglRadioReceiverTestTa)) {
@@ -391,14 +432,14 @@ void radioReceiverTestEnterScreen()
     radioReceiverTestRestoreSnapshot = captureRadioRuntimeSnapshot();
     radioReceiverTestRestoreValid = true;
     String status;
-    const bool ok = remoteProgramActiveHc12(hc12CurrentBaudIndex, 100, 1, 2, 8, status);
+    const bool ok = remoteApplySelectedProfile(status);
     radioReceiverTestActive = ok;
     hc12RestartWithCurrentPins("");
     if (ok) {
-        radioReceiverTestAppend("[RXTEST] HC-12 configured for CH100 / 2400 / FU3 / P8\n");
+        radioReceiverTestAppend(String("[RXTEST] ") + radioReceiverTestProfileSummary() + "\n");
         while (Serial1.available() > 0) Serial1.read();
     } else {
-        radioReceiverTestAppend(String("[RXTEST] HC-12 configure failed: ") + status + "\n");
+        radioReceiverTestAppend(String("[RXTEST] Receiver configure failed: ") + status + "\n");
     }
     lvglRefreshRadioReceiverTestUi();
 }

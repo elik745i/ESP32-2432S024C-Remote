@@ -42,6 +42,11 @@ static String moduleBundledPackageUrl(uint8_t idx)
     return String("https://raw.githubusercontent.com/elik745i/ESP32-2432S024C-Remote/main/module_packages/") + APP_MODULE_IDS[idx] + ".json";
 }
 
+static void moduleCatalogApplySnapshot(const bool availableIn[APP_MODULE_COUNT],
+                                       const String versionIn[APP_MODULE_COUNT],
+                                       const String notesIn[APP_MODULE_COUNT],
+                                       const String packageUrlIn[APP_MODULE_COUNT]);
+
 static const char *moduleBundledCatalogVersion(uint8_t idx)
 {
     switch (idx) {
@@ -53,7 +58,7 @@ static const char *moduleBundledCatalogVersion(uint8_t idx)
         case APP_MODULE_MQTT:
         case APP_MODULE_SCREENSAVER:
         case APP_MODULE_WEBSERVER:
-            return "0.21.11";
+            return "0.21.12";
         default:
             return "";
     }
@@ -81,7 +86,7 @@ static const char *moduleBundledPackageJson(AppModuleId id)
             return R"JSON({
   "id": "chat",
   "title": "Chat Pack",
-    "version": "0.21.11",
+    "version": "0.21.12",
   "screens": ["chat", "chat_peers"],
   "home_buttons": ["chat"],
   "services": ["p2p", "chat_outbox"],
@@ -91,7 +96,7 @@ static const char *moduleBundledPackageJson(AppModuleId id)
             return R"JSON({
   "id": "radio",
   "title": "Radio Pack",
-    "version": "0.21.11",
+    "version": "0.21.12",
   "screens": ["radio_control", "remote_control", "radio_config", "radio_terminal", "radio_info"],
   "home_buttons": ["radio"],
   "services": ["hc12", "radio_runtime"],
@@ -101,7 +106,7 @@ static const char *moduleBundledPackageJson(AppModuleId id)
             return R"JSON({
   "id": "media",
   "title": "Media Pack",
-    "version": "0.21.11",
+    "version": "0.21.12",
   "screens": ["media"],
   "home_buttons": ["media"],
   "services": ["audio"],
@@ -111,7 +116,7 @@ static const char *moduleBundledPackageJson(AppModuleId id)
             return R"JSON({
   "id": "info",
   "title": "Info Pack",
-    "version": "0.21.11",
+    "version": "0.21.12",
   "screens": ["info"],
   "home_buttons": ["info"],
   "services": ["info_refresh"],
@@ -121,7 +126,7 @@ static const char *moduleBundledPackageJson(AppModuleId id)
             return R"JSON({
   "id": "games",
   "title": "Games Pack",
-    "version": "0.21.11",
+    "version": "0.21.12",
   "screens": ["games", "snake", "tetris", "checkers", "snake3d"],
   "home_buttons": ["games"],
   "services": ["game_ticks"],
@@ -131,7 +136,7 @@ static const char *moduleBundledPackageJson(AppModuleId id)
             return R"JSON({
   "id": "mqtt",
   "title": "MQTT Pack",
-    "version": "0.21.11",
+    "version": "0.21.12",
   "screens": ["mqtt_config", "mqtt_controls", "mqtt_buttons"],
   "home_buttons": ["mqtt"],
   "services": ["mqtt"],
@@ -141,7 +146,7 @@ static const char *moduleBundledPackageJson(AppModuleId id)
             return R"JSON({
   "id": "screensaver",
   "title": "Screensaver Pack",
-    "version": "0.21.11",
+    "version": "0.21.12",
   "screens": ["screensaver"],
   "services": ["screensaver"],
   "notes": "Installs the screensaver feature and display style controls."
@@ -150,7 +155,7 @@ static const char *moduleBundledPackageJson(AppModuleId id)
             return R"JSON({
   "id": "webserver",
   "title": "WebServer Pack",
-    "version": "0.21.11",
+    "version": "0.21.12",
   "screens": ["wifi"],
   "home_buttons": [],
   "services": ["webserver"],
@@ -177,6 +182,18 @@ static bool moduleCatalogUseBundledSnapshot(bool availableOut[APP_MODULE_COUNT],
     }
     statusOut = String("GitHub unavailable, using bundled module catalog: ") + availableCount;
     return true;
+}
+
+static void moduleApplyBundledCatalogSnapshot(const String &statusText)
+{
+    bool available[APP_MODULE_COUNT] = {};
+    String version[APP_MODULE_COUNT];
+    String notes[APP_MODULE_COUNT];
+    String packageUrl[APP_MODULE_COUNT];
+    String bundledStatus;
+    moduleCatalogUseBundledSnapshot(available, version, notes, packageUrl, bundledStatus);
+    moduleCatalogApplySnapshot(available, version, notes, packageUrl);
+    modulesStatusText = statusText.isEmpty() ? bundledStatus : statusText;
 }
 
 static bool moduleCatalogFetchSnapshot(uint32_t requestToken,
@@ -556,10 +573,10 @@ void moduleStartCatalogRefresh()
     moduleCatalogUiRefreshPending = false;
     moduleCatalogRestartPending = false;
     ++moduleCatalogRequestToken;
-    modulesStatusText = MODULES_STATUS_CHECKING;
+    moduleApplyBundledCatalogSnapshot("Checking GitHub module catalog. Bundled packages are ready to install.");
 
     if (!wifiConnectedSafe()) {
-        modulesStatusText = "Connect WiFi to fetch modules from GitHub.";
+        modulesStatusText = "WiFi offline. Using bundled module catalog.";
         if (lvglReady && uiScreen == UI_CONFIG_MODULES) lvglRefreshModulesUi();
         return;
     }
@@ -616,7 +633,7 @@ void lvglModuleActionEvent(lv_event_t *e)
             lvglOpenScreen(UI_CONFIG_MODULES, LV_SCR_LOAD_ANIM_NONE);
         }
         modulesStatusText = String(APP_MODULE_TITLES[idx]) + " uninstalled and stopped.";
-    } else if (moduleAvailable[idx]) {
+    } else if (moduleAvailable[idx] || (moduleBundledPackageJson(moduleId) != nullptr)) {
         String error;
         if (moduleDownloadPackage(moduleId, error)) {
             modulePersistInstalledState(moduleId, true);

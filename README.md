@@ -2,7 +2,7 @@
 
 Firmware for Sunton-style ESP32 touch display boards with an LVGL UI, Wi-Fi/AP tools, SD recovery/file access, MQTT controls, encrypted chat, and optional radio modules.
 
-Current firmware version: **`0.21.11`**
+Current firmware version: **`0.21.12`**
 
 ![ESP32 Remote Render](3D_Models/render1.jpeg)
 
@@ -290,16 +290,16 @@ pio run -e esp32-s3-3248s035-n16r8 -t upload
 
 Do not flash only `firmware.bin` on `ESP32-2432S024C`. That board needs the full release image set written at the correct offsets or it can boot to a blank screen.
 
-For the latest verified release (`v0.21.11`), download these four files from:
+For the latest verified release (`v0.21.12`), download these four files from:
 
-- `https://github.com/elik745i/ESP32-2432S024C-Remote/releases/tag/v0.21.11`
+- `https://github.com/elik745i/ESP32-2432S024C-Remote/releases/tag/v0.21.12`
 
 For `ESP32-2432S024C`, use:
 
-- `esp32-2432s024c-v0.21.11_bootloader.bin` at `0x1000`
-- `esp32-2432s024c-v0.21.11_partitions.bin` at `0x8000`
-- `esp32-2432s024c-v0.21.11_boot_app0.bin` at `0xE000`
-- `esp32-2432s024c-v0.21.11.bin` at `0x10000`
+- `esp32-2432s024c-v0.21.12_bootloader.bin` at `0x1000`
+- `esp32-2432s024c-v0.21.12_partitions.bin` at `0x8000`
+- `esp32-2432s024c-v0.21.12_boot_app0.bin` at `0xE000`
+- `esp32-2432s024c-v0.21.12.bin` at `0x10000`
 
 Using Espressif `Flash Download Tool` on Windows:
 
@@ -317,10 +317,10 @@ If you use `esptool.py`, the equivalent command is:
 
 ```powershell
 esptool.py --chip esp32 --port COMx --baud 460800 write_flash -z `
-  0x1000 esp32-2432s024c-v0.21.11_bootloader.bin `
-  0x8000 esp32-2432s024c-v0.21.11_partitions.bin `
-  0xE000 esp32-2432s024c-v0.21.11_boot_app0.bin `
-  0x10000 esp32-2432s024c-v0.21.11.bin
+  0x1000 esp32-2432s024c-v0.21.12_bootloader.bin `
+  0x8000 esp32-2432s024c-v0.21.12_partitions.bin `
+  0xE000 esp32-2432s024c-v0.21.12_boot_app0.bin `
+  0x10000 esp32-2432s024c-v0.21.12.bin
 ```
 
 `ESP32-3248S035` uses the same `ESP32` flash layout as `ESP32-2432S024C`:
@@ -388,6 +388,13 @@ Home Assistant integration repository: https://github.com/elik745i/MQTT-Remote-B
 ## Releases
 
 GitHub Releases contain published firmware binaries for each supported target.
+
+## v0.21.12
+
+- Added `Deep Sleep` under `Config -> Screen` for the non-S3 ESP32 boards, with the same timeout workflow as `Power Off`, RGB shutdown before sleep, and best-effort HC-12 sleep handling.
+- Made `Radio Control -> Button Config` horizontally scrollable on `ESP32-2432S024C` and added an on-screen sideways swipe hint so the right-side toggle and confirmation controls stay reachable.
+- Normalized persisted remote-control keys, made bundled module packs install immediately even while the GitHub catalog is still refreshing, and keep module action buttons usable during catalog refresh.
+- Updated `Receiver Test` so it configures the receiver from the saved `Config -> Remote Control` profile across boards and shows the active HC-12 or E220 settings in the UI.
 
 ## v0.21.11
 
