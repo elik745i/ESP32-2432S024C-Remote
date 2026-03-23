@@ -3240,9 +3240,20 @@ static bool lvglKeyboardLocalizedLayoutAvailable(UiLanguage lang)
 static lv_obj_t *lvglKeyboardFindScrollableAncestor(lv_obj_t *obj)
 {
     for (lv_obj_t *cur = obj; cur && lv_obj_is_valid(cur); cur = lv_obj_get_parent(cur)) {
-        if (lv_obj_has_flag(cur, LV_OBJ_FLAG_SCROLLABLE)) return cur;
+        if (!lv_obj_has_flag(cur, LV_OBJ_FLAG_SCROLLABLE)) continue;
+        if ((lv_obj_get_scroll_dir(cur) & LV_DIR_VER) == 0) continue;
+        return cur;
     }
     return nullptr;
+}
+
+static bool lvglObjHasAncestor(lv_obj_t *obj, lv_obj_t *ancestor)
+{
+    if (!obj || !ancestor || !lv_obj_is_valid(obj) || !lv_obj_is_valid(ancestor)) return false;
+    for (lv_obj_t *cur = obj; cur && lv_obj_is_valid(cur); cur = lv_obj_get_parent(cur)) {
+        if (cur == ancestor) return true;
+    }
+    return false;
 }
 
 static void lvglKeyboardReleasePaddedContainer()
@@ -3505,6 +3516,7 @@ void lvglKeyboardRefreshLayout()
         (lvglKeyboardFocusedTa == lvglRemoteKeyTa) ||
         (lvglKeyboardFocusedTa == lvglRemoteIdTa) ||
         (lvglKeyboardFocusedTa == lvglRemoteCounterTa) ||
+        lvglObjHasAncestor(lvglKeyboardFocusedTa, lvglMqttButtonConfigList) ||
         (hc12CmdTaObj() && lvglKeyboardFocusedTa == hc12CmdTaObj());
     lvglSetConfigKeyboardVisible(configManagedTarget);
 

@@ -232,7 +232,7 @@ static constexpr uint8_t VIBRATION_QUEUE_MAX = 4;
 #endif
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.21.09";
+static constexpr const char *FW_VERSION = "0.21.10";
 static constexpr uint8_t MODULE_SLOT_COUNT = 8U;
 static constexpr const char *MODULES_MANIFEST_URL = "https://raw.githubusercontent.com/elik745i/ESP32-2432S024C-Remote/main/modules_manifest.json";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
@@ -736,6 +736,7 @@ static void lvglApplyPersistentToggleButtonStyle(lv_obj_t *btn,
                                                  lv_color_t onBodyCol,
                                                  bool compact);
 static void lvglRegisterStyledButton(lv_obj_t *btn, lv_color_t baseColor, bool compact);
+static void lvglRegisterPersistentStateButton(lv_obj_t *btn, lv_color_t offBodyCol, bool enabled, bool compact);
 static String topBarCenterText();
 static bool internetTimeValid();
 static void syncInternetTimeIfNeeded(bool force = false);

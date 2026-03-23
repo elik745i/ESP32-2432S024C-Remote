@@ -800,6 +800,19 @@ void lvglMqttButtonAddEvent(lv_event_t *e)
     saveMqttConfig();
     lvglRefreshMqttButtonConfigUi();
     lvglRefreshMqttControlsUi();
+
+    if (lvglMqttButtonConfigList && lv_obj_is_valid(lvglMqttButtonConfigList)) {
+        lv_obj_t *row = lv_obj_get_child(lvglMqttButtonConfigList, mqttButtonCount - 1);
+        if (row && lv_obj_is_valid(row)) {
+            lv_obj_t *nameTa = lv_obj_get_child(row, 1);
+            if (nameTa && lv_obj_is_valid(nameTa)) {
+                lvglMqttBtnNameTa = nameTa;
+                lv_obj_scroll_to_view_recursive(nameTa, LV_ANIM_ON);
+                lv_obj_add_state(nameTa, LV_STATE_FOCUSED);
+                lv_group_focus_obj(nameTa);
+            }
+        }
+    }
 }
 
 void lvglMqttButtonSelectModeEvent(lv_event_t *e)
@@ -998,19 +1011,22 @@ void lvglRefreshMqttControlsUi()
 
     for (int i = 0; i < mqttButtonCount; i++) {
         String name = mqttButtonNames[i];
-        if (mqttButtonToggle[i]) name += mqttButtonState[i] ? " [ON]" : " [OFF]";
         String lbl = lvglSymbolText(mqttButtonToggle[i] ? LV_SYMBOL_POWER : LV_SYMBOL_LIST, name);
         if (mqttButtonCritical[i]) lbl += " (!)";
+        const lv_color_t offColor = mqttButtonToggle[i]
+                                        ? lv_color_hex(0x4C6174)
+                                        : (mqttButtonCritical[i] ? lv_color_hex(0x9A5A2E) : lv_color_hex(0x2D6D8E));
         lv_obj_t *btn = lvglCreateMenuButton(
             lvglMqttCtrlList,
             lbl.c_str(),
-            mqttButtonToggle[i]
-                ? (mqttButtonState[i] ? lv_color_hex(0x2F7A45) : lv_color_hex(0x4C6174))
-                : (mqttButtonCritical[i] ? lv_color_hex(0x9A5A2E) : lv_color_hex(0x2D6D8E)),
+            mqttButtonToggle[i] ? offColor : offColor,
             lvglMqttControlPressEvent,
             reinterpret_cast<void *>(static_cast<intptr_t>(i))
         );
         if (btn) {
+            if (mqttButtonToggle[i]) {
+                lvglRegisterPersistentStateButton(btn, offColor, mqttButtonState[i], true);
+            }
             char key[16];
             snprintf(key, sizeof(key), "btn_%02d", i);
             lvglRegisterReorderableItem(btn, "ord_mctl", key);

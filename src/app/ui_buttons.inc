@@ -5,6 +5,7 @@ struct LvglStyledButtonEntry {
 };
 
 static constexpr uint8_t LVGL_STYLED_BUTTON_FLAG_COMPACT = 0x01;
+static constexpr uint8_t LVGL_STYLED_BUTTON_FLAG_PERSISTENT_ON = 0x02;
 static constexpr size_t LVGL_STYLED_BUTTON_CAPACITY = 256;
 static LvglStyledButtonEntry *lvglStyledButtons = nullptr;
 static constexpr size_t LVGL_REORDER_ITEM_CAPACITY = 192;
@@ -918,6 +919,29 @@ static void lvglRegisterStyledButton(lv_obj_t *btn, lv_color_t baseColor, bool c
     lvglApplyMomentaryButtonStyle(btn, lv_obj_get_child(btn, 0), baseColor, compact);
 }
 
+static void lvglRegisterPersistentStateButton(lv_obj_t *btn, lv_color_t offBodyCol, bool enabled, bool compact)
+{
+    if (!btn) return;
+    if (!lvglEnsureUiRegistryStorage()) return;
+    LvglStyledButtonEntry *entry = lvglFindStyledButtonEntry(btn);
+    if (!entry) {
+        for (size_t i = 0; i < LVGL_STYLED_BUTTON_CAPACITY; ++i) {
+            if (!lvglStyledButtons[i].obj || !lv_obj_is_valid(lvglStyledButtons[i].obj)) {
+                entry = &lvglStyledButtons[i];
+                entry->obj = btn;
+                lv_obj_add_event_cb(btn, lvglAirplaneButtonDrawEvent, LV_EVENT_DRAW_MAIN, nullptr);
+                lv_obj_add_event_cb(btn, lvglStyledButtonDeleteEvent, LV_EVENT_DELETE, nullptr);
+                break;
+            }
+        }
+    }
+    if (!entry) return;
+    entry->baseColor = offBodyCol;
+    entry->flags = (compact ? LVGL_STYLED_BUTTON_FLAG_COMPACT : 0) |
+                   (enabled ? LVGL_STYLED_BUTTON_FLAG_PERSISTENT_ON : 0);
+    lvglApplyPersistentToggleButtonStyle(btn, lv_obj_get_child(btn, 0), enabled, offBodyCol, offBodyCol, compact);
+}
+
 lv_obj_t *lvglCreateMenuButton(lv_obj_t *parent, const char *txt, lv_color_t color, lv_event_cb_t cb, void *user)
 {
     if (!parent) return nullptr;
@@ -1126,8 +1150,10 @@ static void lvglAirplaneButtonDrawEvent(lv_event_t *e)
     } else {
         const LvglStyledButtonEntry *entry = lvglFindStyledButtonEntryConst(obj);
         if (!entry) return;
-        bodyCol = entry->baseColor;
         compact = (entry->flags & LVGL_STYLED_BUTTON_FLAG_COMPACT) != 0;
+        const bool enabled = (entry->flags & LVGL_STYLED_BUTTON_FLAG_PERSISTENT_ON) != 0;
+        bodyCol = enabled ? lvglActiveToggleGreen(compact) : entry->baseColor;
+        sunken = enabled || sunken;
     }
 
     lv_area_t a;
@@ -1198,7 +1224,12 @@ void lvglRefreshAllButtonStyles()
             continue;
         }
         const bool compact = (entry.flags & LVGL_STYLED_BUTTON_FLAG_COMPACT) != 0;
-        lvglApplyMomentaryButtonStyle(entry.obj, lv_obj_get_child(entry.obj, 0), entry.baseColor, compact);
+        const bool enabled = (entry.flags & LVGL_STYLED_BUTTON_FLAG_PERSISTENT_ON) != 0;
+        if (enabled) {
+            lvglApplyPersistentToggleButtonStyle(entry.obj, lv_obj_get_child(entry.obj, 0), true, entry.baseColor, entry.baseColor, compact);
+        } else {
+            lvglApplyMomentaryButtonStyle(entry.obj, lv_obj_get_child(entry.obj, 0), entry.baseColor, compact);
+        }
     }
     lvglApplyAirplaneButtonStyle();
     lvglApplyApModeButtonStyle();
