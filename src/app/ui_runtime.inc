@@ -789,6 +789,7 @@ void loadUiRuntimeConfig()
     screensaverMode = static_cast<ScreensaverMode>(constrain(uiPrefs.getUChar("scrsvr_type", static_cast<uint8_t>(SCREENSAVER_MODE_EYES)), static_cast<uint8_t>(SCREENSAVER_MODE_EYES), static_cast<uint8_t>(SCREENSAVER_MODE_COUNT - 1)));
     displayIdleTimeoutMs = clampIdleTimeoutMs(uiPrefs.getULong("disp_idle", LCD_IDLE_TIMEOUT_MS_DEFAULT));
     powerOffIdleTimeoutMs = POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS[powerOffTimeoutOptionIndex(uiPrefs.getULong("pwr_idle", 0UL))];
+    deepSleepIdleTimeoutMs = POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS[deepSleepTimeoutOptionIndex(uiPrefs.getULong("deep_idle", 0UL))];
     applyDisplayIdleTimeoutPowerOffCap(true);
     copyTextToBuf(otaPendingPopupVersion, sizeof(otaPendingPopupVersion), uiPrefs.getString("ota_popup", ""));
     otaPendingPopupNotes = uiPrefs.getString("ota_popup_notes", "");

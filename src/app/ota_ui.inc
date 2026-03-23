@@ -440,6 +440,12 @@ void lvglRefreshStyleUi()
             lv_dropdown_set_selected(lvglStylePowerOffDropdown, selected);
         }
     }
+    if (lvglStyleDeepSleepDropdown) {
+        const uint16_t selected = static_cast<uint16_t>(deepSleepTimeoutOptionIndex(deepSleepIdleTimeoutMs));
+        if (lv_dropdown_get_selected(lvglStyleDeepSleepDropdown) != selected) {
+            lv_dropdown_set_selected(lvglStyleDeepSleepDropdown, selected);
+        }
+    }
     if (lvglStyleTimezoneDd) {
         lv_dropdown_set_options(lvglStyleTimezoneDd, buildGmtOffsetDropdownOptions().c_str());
         const uint16_t selected = static_cast<uint16_t>(topBarTimezoneGmtOffset - TOP_BAR_GMT_MIN);

@@ -286,3 +286,22 @@ void lvglStylePowerOffEvent(lv_event_t *e)
     lvglNextHandlerDueMs = 0;
 }
 
+void lvglStyleDeepSleepEvent(lv_event_t *e)
+{
+    (void)e;
+    if (lvglStyleUiSyncing || !lvglStyleDeepSleepDropdown) return;
+    const uint16_t selected = lv_dropdown_get_selected(lvglStyleDeepSleepDropdown);
+    if (selected >= (sizeof(POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS) / sizeof(POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS[0]))) return;
+    deepSleepIdleTimeoutMs = POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS[selected];
+    uiPrefs.begin("ui", false);
+    uiPrefs.putULong("deep_idle", deepSleepIdleTimeoutMs);
+    uiPrefs.end();
+    const bool timeoutChanged = applyDisplayIdleTimeoutPowerOffCap(true);
+    lvglRefreshStyleUi();
+    if (timeoutChanged) {
+        if (lvglStyleTimeoutSlider) lv_obj_invalidate(lvglStyleTimeoutSlider);
+        if (lvglStyleTimeoutValueLabel) lv_obj_invalidate(lvglStyleTimeoutValueLabel);
+    }
+    lvglNextHandlerDueMs = 0;
+}
+

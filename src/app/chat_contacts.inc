@@ -301,6 +301,7 @@ void lvglStyleTopCenterNameEvent(lv_event_t *e);
 void lvglStyleTopCenterTimeEvent(lv_event_t *e);
 void lvglStyleTimeoutEvent(lv_event_t *e);
 void lvglStylePowerOffEvent(lv_event_t *e);
+void lvglStyleDeepSleepEvent(lv_event_t *e);
 void lvglRefreshStyleUi();
 void lvglRefreshStyleHomeItemsUi();
 void lvglRefreshLanguageUi();
@@ -1438,10 +1439,19 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_style_pad_row(wrap, 10, 0);
             lv_obj_set_flex_flow(wrap, LV_FLEX_FLOW_COLUMN);
             lv_obj_set_scrollbar_mode(wrap, LV_SCROLLBAR_MODE_OFF);
+#if defined(BOARD_ESP32_2432S024C)
+            static constexpr lv_coord_t RADIO_BUTTON_CONFIG_WIDE_W = 312;
+            lv_obj_set_scroll_dir(wrap, LV_DIR_HOR | LV_DIR_VER);
+#else
             lv_obj_clear_flag(wrap, LV_OBJ_FLAG_SCROLLABLE);
+#endif
 
             lv_obj_t *topRow = lv_obj_create(wrap);
+#if defined(BOARD_ESP32_2432S024C)
+            lv_obj_set_size(topRow, RADIO_BUTTON_CONFIG_WIDE_W, LV_SIZE_CONTENT);
+#else
             lv_obj_set_size(topRow, lv_pct(100), LV_SIZE_CONTENT);
+#endif
             lv_obj_set_style_bg_opa(topRow, LV_OPA_TRANSP, 0);
             lv_obj_set_style_border_width(topRow, 0, 0);
             lv_obj_set_style_pad_all(topRow, 0, 0);
@@ -1454,7 +1464,11 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglRadioButtonDelBtn = makeSmallBtn(topRow, "Del", 54, 30, lv_color_hex(0x8A3A3A), lvglRadioButtonDeletePromptEvent, nullptr);
 
             lv_obj_t *headerRow = lv_obj_create(wrap);
+#if defined(BOARD_ESP32_2432S024C)
+            lv_obj_set_size(headerRow, RADIO_BUTTON_CONFIG_WIDE_W, LV_SIZE_CONTENT);
+#else
             lv_obj_set_size(headerRow, lv_pct(100), LV_SIZE_CONTENT);
+#endif
             lv_obj_set_style_bg_opa(headerRow, LV_OPA_TRANSP, 0);
             lv_obj_set_style_border_width(headerRow, 0, 0);
             lv_obj_set_style_pad_all(headerRow, 0, 0);
@@ -1477,17 +1491,37 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             makeHeaderLabel("OFF", 34);
             makeHeaderLabel("Conf", 44);
 
+#if defined(BOARD_ESP32_2432S024C)
+            lv_obj_t *scrollHint = lv_label_create(wrap);
+            lv_obj_set_width(scrollHint, RADIO_BUTTON_CONFIG_WIDE_W);
+            lv_label_set_text(scrollHint, "Swipe sideways to see all columns");
+            lv_obj_set_style_text_color(scrollHint, lv_color_hex(0x8FA5B8), 0);
+            lv_obj_set_style_text_align(scrollHint, LV_TEXT_ALIGN_LEFT, 0);
+#endif
+
             lvglRadioButtonConfigList = lv_obj_create(wrap);
+#if defined(BOARD_ESP32_2432S024C)
+            lv_obj_set_size(lvglRadioButtonConfigList, RADIO_BUTTON_CONFIG_WIDE_W, UI_CONTENT_H - 144);
+#else
             lv_obj_set_size(lvglRadioButtonConfigList, lv_pct(100), UI_CONTENT_H - 126);
+#endif
             lv_obj_set_style_bg_opa(lvglRadioButtonConfigList, LV_OPA_TRANSP, 0);
             lv_obj_set_style_border_width(lvglRadioButtonConfigList, 0, 0);
             lv_obj_set_style_pad_all(lvglRadioButtonConfigList, 0, 0);
             lv_obj_set_style_pad_row(lvglRadioButtonConfigList, 8, 0);
             lv_obj_set_flex_flow(lvglRadioButtonConfigList, LV_FLEX_FLOW_COLUMN);
+#if defined(BOARD_ESP32_2432S024C)
+            lv_obj_set_scroll_dir(lvglRadioButtonConfigList, LV_DIR_ALL);
+#else
             lv_obj_set_scroll_dir(lvglRadioButtonConfigList, LV_DIR_VER);
+#endif
             lv_obj_set_scrollbar_mode(lvglRadioButtonConfigList, LV_SCROLLBAR_MODE_OFF);
 
+#if defined(BOARD_ESP32_2432S024C)
+            lvglRadioReceiverTestBtn = makeSmallBtn(wrap, "Receiver Test", RADIO_BUTTON_CONFIG_WIDE_W, 32, lv_color_hex(0x7A5C2E), lvglOpenRadioReceiverTestScreenEvent, nullptr);
+#else
             lvglRadioReceiverTestBtn = makeSmallBtn(wrap, "Receiver Test", DISPLAY_WIDTH - 20, 32, lv_color_hex(0x7A5C2E), lvglOpenRadioReceiverTestScreenEvent, nullptr);
+#endif
 
             lvglRefreshRadioButtonConfigUi();
             break;
@@ -2325,6 +2359,34 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_add_event_cb(lvglStylePowerOffDropdown, lvglGestureBlockEvent, LV_EVENT_PRESSED, nullptr);
             lv_obj_add_event_cb(lvglStylePowerOffDropdown, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
             lv_obj_add_event_cb(lvglStylePowerOffDropdown, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
+            if (POWER_OFF_SIGNAL_PIN < 0) lv_obj_add_flag(powerWrap, LV_OBJ_FLAG_HIDDEN);
+
+            lv_obj_t *deepSleepWrap = lv_obj_create(timeWrap);
+            lv_obj_set_size(deepSleepWrap, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(deepSleepWrap, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(deepSleepWrap, 0, 0);
+            lv_obj_set_style_pad_all(deepSleepWrap, 0, 0);
+            lv_obj_set_style_pad_row(deepSleepWrap, 6, 0);
+            lv_obj_set_flex_flow(deepSleepWrap, LV_FLEX_FLOW_COLUMN);
+            lv_obj_clear_flag(deepSleepWrap, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *deepSleepHdr = lv_label_create(deepSleepWrap);
+            lv_label_set_text(deepSleepHdr, tr(TXT_DEEP_SLEEP));
+            lv_obj_set_style_text_color(deepSleepHdr, lv_color_hex(0xE5ECF3), 0);
+
+            lvglStyleDeepSleepDropdown = lv_dropdown_create(deepSleepWrap);
+            lv_obj_set_width(lvglStyleDeepSleepDropdown, lv_pct(100));
+            lv_dropdown_set_options(lvglStyleDeepSleepDropdown, buildDeepSleepTimeoutDropdownOptions().c_str());
+            lv_obj_set_style_bg_color(lvglStyleDeepSleepDropdown, lv_color_hex(0x111922), 0);
+            lv_obj_set_style_text_color(lvglStyleDeepSleepDropdown, lv_color_hex(0xE5ECF3), 0);
+            lv_obj_set_style_border_color(lvglStyleDeepSleepDropdown, lv_color_hex(0x2F4658), 0);
+            lv_obj_set_style_border_width(lvglStyleDeepSleepDropdown, 1, 0);
+            lv_obj_set_style_radius(lvglStyleDeepSleepDropdown, 8, 0);
+            lv_obj_add_event_cb(lvglStyleDeepSleepDropdown, lvglStyleDeepSleepEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+            lv_obj_add_event_cb(lvglStyleDeepSleepDropdown, lvglGestureBlockEvent, LV_EVENT_PRESSED, nullptr);
+            lv_obj_add_event_cb(lvglStyleDeepSleepDropdown, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
+            lv_obj_add_event_cb(lvglStyleDeepSleepDropdown, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
+            if (POWER_OFF_SIGNAL_PIN >= 0) lv_obj_add_flag(deepSleepWrap, LV_OBJ_FLAG_HIDDEN);
 
             lv_obj_t *hint = lv_label_create(timeWrap);
             lv_obj_set_width(hint, lv_pct(100));

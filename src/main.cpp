@@ -169,6 +169,7 @@ static constexpr unsigned long WIFI_CONNECT_BARS_ANIM_PERIOD_MS = 240;
 static constexpr unsigned long LIGHT_SLEEP_AFTER_IDLE_MS = 20000;
 static constexpr bool LIGHT_SLEEP_TIMER_FALLBACK = false;
 static constexpr uint64_t LIGHT_SLEEP_TIMER_US = 5000000ULL;
+static constexpr unsigned long DEEP_SLEEP_WAKE_TIMER_US = 0ULL;
 static constexpr unsigned long SCREENSAVER_POSE_MIN_MS = 1400UL;
 static constexpr unsigned long SCREENSAVER_POSE_MAX_MS = 3200UL;
 static constexpr unsigned long SCREENSAVER_BLINK_MS = 160UL;
@@ -579,6 +580,7 @@ String normalizeSdRoutePath(const String &rawPath, bool allowEmptyRoot = false);
 bool sdShouldHideSystemEntry(const String &name);
 String makeUniquePath(const String &path);
 String recycleMetaPathFor(const String &recyclePath);
+void saveBatterySnapshot(float rawV, bool charging, uint32_t uptimeMs);
 bool hasPrimaryWebUi();
 String apLandingContinueUrl();
 void sendWifiSetupPage(AsyncWebServerRequest *request);
@@ -971,6 +973,7 @@ bool displayAwake = true;
 uint8_t displayBrightnessPercent = 100;
 unsigned long displayIdleTimeoutMs = LCD_IDLE_TIMEOUT_MS_DEFAULT;
 unsigned long powerOffIdleTimeoutMs = 0;
+unsigned long deepSleepIdleTimeoutMs = 0;
 bool screensaverEnabled = false;
 bool screensaverActive = false;
 uint8_t rgbLedPercent = 100;
@@ -1148,6 +1151,7 @@ enum UiTextId : uint8_t {
     TXT_SHOW_DEVICE_NAME,
     TXT_SHOW_TIME,
     TXT_SCREEN_TIMEOFF,
+    TXT_DEEP_SLEEP,
     TXT_STYLE_HINT,
     TXT_SELECT,
     TXT_SELECTED,
@@ -1407,7 +1411,20 @@ static String buildPowerOffTimeoutDropdownOptions()
     return String("2 min\n5 min\n15 min\n30 min\nNever");
 }
 
+static String buildDeepSleepTimeoutDropdownOptions()
+{
+    return buildPowerOffTimeoutDropdownOptions();
+}
+
 static int powerOffTimeoutOptionIndex(unsigned long ms)
+{
+    for (int i = 0; i < static_cast<int>(sizeof(POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS) / sizeof(POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS[0])); ++i) {
+        if (POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS[i] == ms) return i;
+    }
+    return static_cast<int>(sizeof(POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS) / sizeof(POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS[0])) - 1;
+}
+
+static int deepSleepTimeoutOptionIndex(unsigned long ms)
 {
     for (int i = 0; i < static_cast<int>(sizeof(POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS) / sizeof(POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS[0])); ++i) {
         if (POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS[i] == ms) return i;
@@ -1418,8 +1435,15 @@ static int powerOffTimeoutOptionIndex(unsigned long ms)
 static bool applyDisplayIdleTimeoutPowerOffCap(bool persist)
 {
     unsigned long cappedTimeoutMs = displayIdleTimeoutMs;
-    if (powerOffIdleTimeoutMs >= 120000UL) {
-        const unsigned long minimumTimeoutMs = clampIdleTimeoutMs(powerOffIdleTimeoutMs - 60000UL);
+    unsigned long terminalIdleTimeoutMs = 0;
+    if (powerOffIdleTimeoutMs >= 120000UL) terminalIdleTimeoutMs = powerOffIdleTimeoutMs;
+    if (POWER_OFF_SIGNAL_PIN < 0 && deepSleepIdleTimeoutMs >= 120000UL) {
+        if (terminalIdleTimeoutMs == 0 || deepSleepIdleTimeoutMs < terminalIdleTimeoutMs) {
+            terminalIdleTimeoutMs = deepSleepIdleTimeoutMs;
+        }
+    }
+    if (terminalIdleTimeoutMs >= 120000UL) {
+        const unsigned long minimumTimeoutMs = clampIdleTimeoutMs(terminalIdleTimeoutMs - 60000UL);
         if (displayIdleTimeoutMs < minimumTimeoutMs) cappedTimeoutMs = minimumTimeoutMs;
     }
     if (displayIdleTimeoutMs == cappedTimeoutMs) return false;
@@ -2718,6 +2742,19 @@ void loop()
         if (lvglReady) lvglSyncStatusLine();
         powerOffSignalPulse();
         lastUserActivityMs = millis();
+    } else if (deepSleepIdleTimeoutMs > 0 &&
+               POWER_OFF_SIGNAL_PIN < 0 &&
+               !isDown &&
+               !batteryCharging &&
+               !mediaIsPlaying &&
+               !mediaPaused &&
+               !wifiConnectedSafe() &&
+               !fsWriteBusy() &&
+               !bootStaConnectInProgress &&
+               (millis() - lastUserActivityMs >= deepSleepIdleTimeoutMs)) {
+        uiStatusLine = "Idle deep sleep";
+        if (lvglReady) lvglSyncStatusLine();
+        enterDeepSleep();
     } else if (!displayAwake && (millis() - lastUserActivityMs >= displayIdleTimeoutMs)) {
         // Keep state as-is while sleeping.
     } else if (!screensaverActive && displayAwake && (millis() - lastUserActivityMs >= displayIdleTimeoutMs)) {

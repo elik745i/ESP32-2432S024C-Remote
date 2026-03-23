@@ -222,6 +222,7 @@ static lv_obj_t *lvglStyleTopCenterTimeBtnLabel = nullptr;
 static lv_obj_t *lvglStyleTimeoutSlider = nullptr;
 static lv_obj_t *lvglStyleTimeoutValueLabel = nullptr;
 static lv_obj_t *lvglStylePowerOffDropdown = nullptr;
+static lv_obj_t *lvglStyleDeepSleepDropdown = nullptr;
 static bool lvglStyleUiSyncing = false;
 static lv_obj_t *lvglStyleHomeChatSw = nullptr;
 static lv_obj_t *lvglStyleHomeRadioSw = nullptr;
@@ -3778,6 +3779,16 @@ static void hc12ExitAtMode()
     while (Serial1.available() > 0) Serial1.read();
 
     uiDeferredFlags &= static_cast<uint8_t>(~(UI_DEFERRED_HC12_SETTLE_PENDING | UI_DEFERRED_HC12_TARGET_ASSERTED));
+}
+
+static bool hc12TryEnterSleepMode()
+{
+    if (!moduleInstalled[APP_MODULE_RADIO] || radioModuleType != RADIO_MODULE_HC12) return false;
+    hc12EnterAtMode();
+    const String response = hc12QueryCommand("AT+SLEEP", 220UL, 48UL);
+    const bool accepted = response.startsWith("OK");
+    hc12ExitAtMode();
+    return accepted;
 }
 
 static int e220FindBaudIndexFromCode(int code)

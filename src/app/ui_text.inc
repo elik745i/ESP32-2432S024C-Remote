@@ -92,7 +92,8 @@ static const char *tr(UiTextId id)
                 case TXT_SHOW_DEVICE_NAME: return "Показать имя устройства";
                 case TXT_SHOW_TIME: return "Показать время";
                 case TXT_SCREEN_TIMEOFF: return "Таймаут экрана";
-                case TXT_STYLE_HINT: return "Таймаут экрана управляет сном и заставкой. Выключение может отключить питание после простоя для экономии батареи.";
+                case TXT_DEEP_SLEEP: return "Глубокий сон";
+                case TXT_STYLE_HINT: return "Таймаут экрана управляет сном и заставкой. Выключение может отключить питание после простоя для экономии батареи, а глубокий сон может усыпить ESP32 на платах без пина отключения.";
                 case TXT_SELECT: return "Выбрать";
                 case TXT_SELECTED: return "Выбрано";
                 case TXT_STORED_CALIBRATION: return "Сохраненная калибровка";
@@ -200,7 +201,8 @@ static const char *tr(UiTextId id)
                 case TXT_SHOW_DEVICE_NAME: return "显示设备名";
                 case TXT_SHOW_TIME: return "显示时间";
                 case TXT_SCREEN_TIMEOFF: return "屏幕超时";
-                case TXT_STYLE_HINT: return "屏幕超时控制睡眠和屏保。关机可在更长时间无操作后关闭硬件电源以节省电池。";
+                case TXT_DEEP_SLEEP: return "深度睡眠";
+                case TXT_STYLE_HINT: return "屏幕超时控制睡眠和屏保。关机可在更长时间无操作后关闭硬件电源以节省电池，深度睡眠则可在没有关机引脚的板子上让 ESP32 休眠。";
                 case TXT_SELECT: return "选择";
                 case TXT_SELECTED: return "已选择";
                 case TXT_STORED_CALIBRATION: return "已保存校准";
@@ -308,7 +310,8 @@ static const char *tr(UiTextId id)
                 case TXT_SHOW_DEVICE_NAME: return "Afficher nom appareil";
                 case TXT_SHOW_TIME: return "Afficher heure";
                 case TXT_SCREEN_TIMEOFF: return "Extinction ecran";
-                case TXT_STYLE_HINT: return "Le delai ecran gere le sommeil et l'economiseur. L'arret peut couper l'alimentation apres une longue inactivite pour economiser la batterie.";
+                case TXT_DEEP_SLEEP: return "Sommeil profond";
+                case TXT_STYLE_HINT: return "Le delai ecran gere le sommeil et l'economiseur. L'arret peut couper l'alimentation apres une longue inactivite pour economiser la batterie, et le sommeil profond peut endormir l'ESP32 sur les cartes sans broche d'arret.";
                 case TXT_SELECT: return "Choisir";
                 case TXT_SELECTED: return "Choisi";
                 case TXT_STORED_CALIBRATION: return "Calibration enregistree";
@@ -416,7 +419,8 @@ static const char *tr(UiTextId id)
                 case TXT_SHOW_DEVICE_NAME: return "Cihaz adini goster";
                 case TXT_SHOW_TIME: return "Saati goster";
                 case TXT_SCREEN_TIMEOFF: return "Ekran zaman asimi";
-                case TXT_STYLE_HINT: return "Ekran zaman asimi uyku ve ekran koruyucuyu yonetir. Kapatma, pili korumak icin uzun hareketsizlikten sonra donanimi kapatabilir.";
+                case TXT_DEEP_SLEEP: return "Derin uyku";
+                case TXT_STYLE_HINT: return "Ekran zaman asimi uyku ve ekran koruyucuyu yonetir. Kapatma, pili korumak icin uzun hareketsizlikten sonra donanimi kapatabilir; derin uyku ise kapatma pini olmayan kartlarda ESP32'yi uyutabilir.";
                 case TXT_SELECT: return "Sec";
                 case TXT_SELECTED: return "Secildi";
                 case TXT_STORED_CALIBRATION: return "Kayitli kalibrasyon";
@@ -520,7 +524,8 @@ static const char *tr(UiTextId id)
                 case TXT_SHOW_DEVICE_NAME: return "Mostra nome dispositivo";
                 case TXT_SHOW_TIME: return "Mostra ora";
                 case TXT_SCREEN_TIMEOFF: return "Timeout schermo";
-                case TXT_STYLE_HINT: return "Il timeout schermo controlla standby e salvaschermo. Spegnimento puo inviare un arresto hardware dopo lunga inattivita per risparmiare batteria.";
+                case TXT_DEEP_SLEEP: return "Deep sleep";
+                case TXT_STYLE_HINT: return "Il timeout schermo controlla standby e salvaschermo. Spegnimento puo inviare un arresto hardware dopo lunga inattivita per risparmiare batteria, e il deep sleep puo sospendere l'ESP32 sulle schede senza pin di spegnimento.";
                 case TXT_SELECT: return "Seleziona";
                 case TXT_SELECTED: return "Selezionato";
                 case TXT_STORED_CALIBRATION: return "Calibrazione salvata";
@@ -628,7 +633,8 @@ static const char *tr(UiTextId id)
                 case TXT_SHOW_DEVICE_NAME: return "Geratename anzeigen";
                 case TXT_SHOW_TIME: return "Uhrzeit anzeigen";
                 case TXT_SCREEN_TIMEOFF: return "Bildschirm Timeout";
-                case TXT_STYLE_HINT: return "Bildschirm Timeout steuert Schlaf und Bildschirmschoner. Ausschalten kann nach langer Inaktivitat die Hardware abschalten, um Batterie zu sparen.";
+                case TXT_DEEP_SLEEP: return "Deep Sleep";
+                case TXT_STYLE_HINT: return "Bildschirm Timeout steuert Schlaf und Bildschirmschoner. Ausschalten kann nach langer Inaktivitat die Hardware abschalten, um Batterie zu sparen, und Deep Sleep kann den ESP32 auf Boards ohne Abschalt-Pin schlafen legen.";
                 case TXT_SELECT: return "Wahlen";
                 case TXT_SELECTED: return "Gewahlt";
                 case TXT_STORED_CALIBRATION: return "Gespeicherte Kalibrierung";
@@ -736,7 +742,8 @@ static const char *tr(UiTextId id)
                 case TXT_SHOW_DEVICE_NAME: return "デバイス名を表示";
                 case TXT_SHOW_TIME: return "時刻を表示";
                 case TXT_SCREEN_TIMEOFF: return "画面タイムアウト";
-                case TXT_STYLE_HINT: return "画面タイムアウトはスリープとスクリーンセーバーを制御します。電源オフは長時間未操作後にハードウェア電源を切って節電できます。";
+                case TXT_DEEP_SLEEP: return "ディープスリープ";
+                case TXT_STYLE_HINT: return "画面タイムアウトはスリープとスクリーンセーバーを制御します。電源オフは長時間未操作後にハードウェア電源を切って節電でき、ディープスリープは電源断ピンのない基板で ESP32 を休止できます。";
                 case TXT_SELECT: return "選択";
                 case TXT_SELECTED: return "選択済み";
                 case TXT_STORED_CALIBRATION: return "保存済み校正";
@@ -844,7 +851,8 @@ static const char *tr(UiTextId id)
                 case TXT_SHOW_DEVICE_NAME: return "장치 이름 표시";
                 case TXT_SHOW_TIME: return "시간 표시";
                 case TXT_SCREEN_TIMEOFF: return "화면 시간 초과";
-                case TXT_STYLE_HINT: return "화면 시간 초과는 절전과 화면 보호기를 제어합니다. 전원 끄기는 오래 비활성 상태일 때 하드웨어 전원을 꺼 배터리를 절약할 수 있습니다.";
+                case TXT_DEEP_SLEEP: return "딥 슬립";
+                case TXT_STYLE_HINT: return "화면 시간 초과는 절전과 화면 보호기를 제어합니다. 전원 끄기는 오래 비활성 상태일 때 하드웨어 전원을 꺼 배터리를 절약할 수 있고, 딥 슬립은 종료 핀이 없는 보드에서 ESP32를 재울 수 있습니다.";
                 case TXT_SELECT: return "선택";
                 case TXT_SELECTED: return "선택됨";
                 case TXT_STORED_CALIBRATION: return "저장된 보정";
@@ -953,7 +961,8 @@ static const char *tr(UiTextId id)
                 case TXT_SHOW_DEVICE_NAME: return "Show Device Name";
                 case TXT_SHOW_TIME: return "Show Time";
                 case TXT_SCREEN_TIMEOFF: return "Screen Timeoff";
-                case TXT_STYLE_HINT: return "Screen Timeoff controls sleep/screensaver. Power Off can send a hardware shutdown signal after longer inactivity to save battery.";
+                case TXT_DEEP_SLEEP: return "Deep Sleep";
+                case TXT_STYLE_HINT: return "Screen Timeoff controls sleep/screensaver. Power Off can send a hardware shutdown signal after longer inactivity to save battery, and Deep Sleep can suspend the ESP32 on boards without a shutdown pin.";
                 case TXT_SELECT: return "Select";
                 case TXT_SELECTED: return "Selected";
                 case TXT_STORED_CALIBRATION: return "Stored Calibration";

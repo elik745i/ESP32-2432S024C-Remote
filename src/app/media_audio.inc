@@ -5,6 +5,8 @@ void mediaNormalizeDir(String &dir)
     while (dir.length() > 1 && dir.endsWith("/")) dir.remove(dir.length() - 1);
 }
 
+void saveBatterySnapshot(float rawV, bool charging, uint32_t uptimeMs);
+
 String mediaDisplayNameFromPath(const String &path)
 {
     const int slash = path.lastIndexOf('/');
@@ -1082,6 +1084,24 @@ void enterLowPowerSleep()
     // Optional safety wake in case touch IRQ is not wired on this board revision.
     if (LIGHT_SLEEP_TIMER_FALLBACK || !TOUCH_USE_IRQ) esp_sleep_enable_timer_wakeup(LIGHT_SLEEP_TIMER_US);
     esp_light_sleep_start();
+}
+
+void enterDeepSleep()
+{
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+    return;
+#else
+    saveBatterySnapshot(batteryRawVoltage, batteryCharging, millis());
+    rgbApplyNow(false, false, false);
+    hc12TryEnterSleepMode();
+    if (TOUCH_USE_IRQ) {
+        esp_sleep_enable_ext0_wakeup(static_cast<gpio_num_t>(TOUCH_IRQ), 0);
+    } else if (DEEP_SLEEP_WAKE_TIMER_US > 0ULL) {
+        esp_sleep_enable_timer_wakeup(DEEP_SLEEP_WAKE_TIMER_US);
+    }
+    delay(20);
+    esp_deep_sleep_start();
+#endif
 }
 
 static bool normalizeSavedApCreds()

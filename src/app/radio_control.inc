@@ -1242,10 +1242,13 @@ static void loadPersistedRemoteControlSettings()
     remoteE220AirRateIndex = constrain(uiPrefs.getInt("re220_rate", 2), 0, static_cast<int>(sizeof(E220_AIR_RATE_OPTIONS) / sizeof(E220_AIR_RATE_OPTIONS[0])) - 1);
     remoteE220PowerIndex = constrain(uiPrefs.getInt("re220_pwr", 0), 0, 3);
     remoteE220FixedTransmission = uiPrefs.getBool("re220_fix", false);
-    remoteControlKeyHex = uiPrefs.getString("rctl_key", "");
+    const String persistedKeyRaw = uiPrefs.getString("rctl_key", "");
+    remoteControlKeyHex = remoteHexOnly(persistedKeyRaw);
     remoteControlDeviceId = static_cast<uint16_t>(constrain(uiPrefs.getUInt("rctl_id", 0U), 0U, 65535U));
     gateRollingCount = static_cast<uint16_t>(constrain(uiPrefs.getUInt("gate_cnt", GATE_COUNT_INITIAL), 0U, 65535U));
-    remoteControlKeyHex.trim();
+    if (remoteControlKeyHex != persistedKeyRaw) {
+        uiPrefs.putString("rctl_key", remoteControlKeyHex);
+    }
     if (remoteControlKeyHex.isEmpty()) remoteControlStatusText = "Enter a rolling-code key to enable remote sending";
     else if (remoteControlDeviceId == 0U) remoteControlStatusText = "Enter a remote ID to enable remote sending";
     else if (gateRollingCount == 0U) remoteControlStatusText = "Enter a rolling counter to enable remote sending";
@@ -1254,6 +1257,7 @@ static void loadPersistedRemoteControlSettings()
 
 static void savePersistedRemoteControlSettings()
 {
+    remoteControlKeyHex = remoteHexOnly(remoteControlKeyHex);
     uiPrefs.begin("ui", false);
     uiPrefs.putUChar("rctl_mod", static_cast<uint8_t>(remoteControlModuleType));
     uiPrefs.putInt("rhc12_ch", remoteHc12Channel);
