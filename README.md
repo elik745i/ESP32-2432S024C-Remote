@@ -246,7 +246,6 @@ Radio notes:
 ## SD Layout
 
 - `/web` for static web UI assets
-- `/Screenshots` for screenshots
 - `/Conversations` for chat history
 
 Recovery/file APIs can browse and manage rooted SD paths.

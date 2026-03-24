@@ -1028,7 +1028,7 @@ void loadMediaEntries()
 void displaySetAwake(bool awake)
 {
     displayAwake = awake;
-    displayBacklightSet(awake ? displayBacklightLevelFromPercent(displayBrightnessPercent) : TFT_BL_LEVEL_OFF);
+    displayApplyBacklightPolicy(true);
     if (awake) {
         wakeTouchConfirmCount = 0;
         rgbRefreshByMediaState();

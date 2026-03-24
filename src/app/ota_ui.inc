@@ -61,6 +61,11 @@ static bool screenLockIsConfigured()
     return screenLockEnabled && strlen(screenLockPin) == 4;
 }
 
+static bool configLockIsConfigured()
+{
+    return configLockEnabled && strlen(configLockPin) == 4;
+}
+
 static bool screenLockShouldGateUi()
 {
     return screenLockIsConfigured() && !screenLockUnlocked;
@@ -73,7 +78,7 @@ static bool screenLockIsBlocked()
 
 static bool screenLockNumericTarget(lv_obj_t *ta)
 {
-    return ta && (ta == lvglScreenLockSetupPinTa || ta == lvglScreenLockPinTa);
+    return ta && (ta == lvglProtectedPinTa || ta == lvglScreenLockPinTa);
 }
 
 static void screenLockSanitizeTextArea(lv_obj_t *ta)
@@ -107,6 +112,14 @@ static void screenLockPersistConfig()
     uiPrefs.end();
 }
 
+static void configLockPersistConfig()
+{
+    uiPrefs.begin("ui", false);
+    uiPrefs.putBool("cfg_lock", configLockEnabled);
+    uiPrefs.putString("cfg_pin", configLockPin);
+    uiPrefs.end();
+}
+
 static String screenLockBlockMessage()
 {
     const unsigned long now = millis();
@@ -120,69 +133,139 @@ static String screenLockBlockMessage()
     return String(buf);
 }
 
-static void screenLockApplySetupPinTaStyle()
+enum ProtectedPinAction : uint8_t {
+    PROTECTED_PIN_ACTION_NONE = 0,
+    PROTECTED_PIN_ACTION_SCREEN_LOCK_SETUP,
+    PROTECTED_PIN_ACTION_SCREEN_LOCK_DISABLE,
+    PROTECTED_PIN_ACTION_CONFIG_LOCK_SETUP,
+    PROTECTED_PIN_ACTION_CONFIG_LOCK_DISABLE,
+    PROTECTED_PIN_ACTION_CONFIG_LOCK_OPEN
+};
+
+static ProtectedPinAction protectedPinAction = PROTECTED_PIN_ACTION_NONE;
+
+static bool protectedPinActionNeedsCurrentPin()
 {
-    if (!lvglScreenLockSetupPinTa || !lv_obj_is_valid(lvglScreenLockSetupPinTa)) return;
+    return protectedPinAction == PROTECTED_PIN_ACTION_SCREEN_LOCK_DISABLE ||
+           protectedPinAction == PROTECTED_PIN_ACTION_CONFIG_LOCK_DISABLE ||
+           protectedPinAction == PROTECTED_PIN_ACTION_CONFIG_LOCK_OPEN;
+}
+
+static void protectedPinSyncToggleStates()
+{
+    if (lvglStyleScreenLockSw) {
+        if (screenLockEnabled) lv_obj_add_state(lvglStyleScreenLockSw, LV_STATE_CHECKED);
+        else lv_obj_clear_state(lvglStyleScreenLockSw, LV_STATE_CHECKED);
+    }
+    if (lvglStyleConfigLockSw) {
+        if (configLockEnabled) lv_obj_add_state(lvglStyleConfigLockSw, LV_STATE_CHECKED);
+        else lv_obj_clear_state(lvglStyleConfigLockSw, LV_STATE_CHECKED);
+    }
+}
+
+static void protectedPinApplyTaStyle()
+{
+    if (!lvglProtectedPinTa || !lv_obj_is_valid(lvglProtectedPinTa)) return;
     const lv_coord_t pinW = min<lv_coord_t>(DISPLAY_WIDTH - 56, 124);
     const lv_coord_t pinH = 28;
-    lv_obj_set_width(lvglScreenLockSetupPinTa, pinW);
-    lv_obj_set_height(lvglScreenLockSetupPinTa, pinH);
-    lv_obj_set_style_text_font(lvglScreenLockSetupPinTa, LV_FONT_DEFAULT, LV_PART_MAIN | LV_STATE_ANY);
-    lv_obj_set_style_text_align(lvglScreenLockSetupPinTa, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_ANY);
-    lvglConfigureCompactSingleLineTa(lvglScreenLockSetupPinTa, pinH);
-    lv_textarea_set_one_line(lvglScreenLockSetupPinTa, true);
+    lv_obj_set_width(lvglProtectedPinTa, pinW);
+    lv_obj_set_height(lvglProtectedPinTa, pinH);
+    lv_obj_set_style_text_font(lvglProtectedPinTa, LV_FONT_DEFAULT, LV_PART_MAIN | LV_STATE_ANY);
+    lv_obj_set_style_text_align(lvglProtectedPinTa, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_ANY);
+    lvglConfigureCompactSingleLineTa(lvglProtectedPinTa, pinH);
+    lv_textarea_set_one_line(lvglProtectedPinTa, true);
 }
 
-static void screenLockHideSetupModal(bool restoreToggle)
+static String protectedPinTitleText()
 {
-    if (lvglKb && lv_keyboard_get_textarea(lvglKb) == lvglScreenLockSetupPinTa) lvglHideKeyboard();
-    if (lvglScreenLockModal) lv_obj_add_flag(lvglScreenLockModal, LV_OBJ_FLAG_HIDDEN);
-    if (restoreToggle && lvglStyleScreenLockSw) lv_obj_clear_state(lvglStyleScreenLockSw, LV_STATE_CHECKED);
-    if (lvglScreenLockSetupPinTa) lv_textarea_set_text(lvglScreenLockSetupPinTa, "");
-    if (lvglScreenLockSetupStatusLabel) lv_label_set_text(lvglScreenLockSetupStatusLabel, "");
+    switch (protectedPinAction) {
+        case PROTECTED_PIN_ACTION_SCREEN_LOCK_SETUP: return "Set Screen Lock PIN";
+        case PROTECTED_PIN_ACTION_SCREEN_LOCK_DISABLE: return "Disable Screen Lock";
+        case PROTECTED_PIN_ACTION_CONFIG_LOCK_SETUP: return "Set Config PIN";
+        case PROTECTED_PIN_ACTION_CONFIG_LOCK_DISABLE: return "Disable Config Password";
+        case PROTECTED_PIN_ACTION_CONFIG_LOCK_OPEN: return "Enter Config PIN";
+        default: return "PIN";
+    }
 }
 
-static void screenLockShowSetupModal()
+static String protectedPinPromptText()
+{
+    if (protectedPinActionNeedsCurrentPin()) return "Enter current 4-digit PIN.";
+    return "Enter exactly 4 digits.";
+}
+
+static const char *protectedPinSubmitText()
+{
+    switch (protectedPinAction) {
+        case PROTECTED_PIN_ACTION_SCREEN_LOCK_SETUP:
+        case PROTECTED_PIN_ACTION_CONFIG_LOCK_SETUP:
+            return tr(TXT_SAVE);
+        case PROTECTED_PIN_ACTION_SCREEN_LOCK_DISABLE:
+        case PROTECTED_PIN_ACTION_CONFIG_LOCK_DISABLE:
+            return "Disable";
+        case PROTECTED_PIN_ACTION_CONFIG_LOCK_OPEN:
+            return "Open";
+        default:
+            return "OK";
+    }
+}
+
+static void protectedPinHideModal(bool syncToggles)
+{
+    if (lvglKb && lv_keyboard_get_textarea(lvglKb) == lvglProtectedPinTa) lvglHideKeyboard();
+    if (lvglProtectedPinModal) lv_obj_add_flag(lvglProtectedPinModal, LV_OBJ_FLAG_HIDDEN);
+    if (lvglProtectedPinTa) lv_textarea_set_text(lvglProtectedPinTa, "");
+    if (lvglProtectedPinStatusLabel) lv_label_set_text(lvglProtectedPinStatusLabel, "");
+    if (syncToggles) protectedPinSyncToggleStates();
+    protectedPinAction = PROTECTED_PIN_ACTION_NONE;
+}
+
+static void protectedPinCancelEvent(lv_event_t *e)
+{
+    (void)e;
+    protectedPinHideModal(true);
+}
+
+static void protectedPinShowModal(ProtectedPinAction action)
 {
     if (!lvglReady) return;
-    if (!lvglScreenLockModal) {
-        lvglScreenLockModal = lv_obj_create(lv_layer_top());
-        if (!lvglScreenLockModal) return;
-        lv_obj_set_size(lvglScreenLockModal, min<lv_coord_t>(DISPLAY_WIDTH - 20, 220), LV_SIZE_CONTENT);
-        lv_obj_set_align(lvglScreenLockModal, LV_ALIGN_TOP_MID);
-        lv_obj_set_y(lvglScreenLockModal, UI_CONTENT_TOP_Y + 6);
-        lv_obj_set_style_bg_color(lvglScreenLockModal, lv_color_hex(0x16212C), 0);
-        lv_obj_set_style_border_color(lvglScreenLockModal, lv_color_hex(0x5A6B7C), 0);
-        lv_obj_set_style_border_width(lvglScreenLockModal, 1, 0);
-        lv_obj_set_style_radius(lvglScreenLockModal, 12, 0);
-        lv_obj_set_style_pad_all(lvglScreenLockModal, 10, 0);
-        lv_obj_set_style_pad_row(lvglScreenLockModal, 8, 0);
-        lv_obj_set_flex_flow(lvglScreenLockModal, LV_FLEX_FLOW_COLUMN);
-        lv_obj_clear_flag(lvglScreenLockModal, LV_OBJ_FLAG_SCROLLABLE);
+    if (!lvglProtectedPinModal) {
+        lvglProtectedPinModal = lv_obj_create(lv_layer_top());
+        if (!lvglProtectedPinModal) return;
+        lv_obj_set_size(lvglProtectedPinModal, min<lv_coord_t>(DISPLAY_WIDTH - 20, 220), LV_SIZE_CONTENT);
+        lv_obj_set_align(lvglProtectedPinModal, LV_ALIGN_TOP_MID);
+        lv_obj_set_y(lvglProtectedPinModal, UI_CONTENT_TOP_Y + 6);
+        lv_obj_set_style_bg_color(lvglProtectedPinModal, lv_color_hex(0x16212C), 0);
+        lv_obj_set_style_border_color(lvglProtectedPinModal, lv_color_hex(0x5A6B7C), 0);
+        lv_obj_set_style_border_width(lvglProtectedPinModal, 1, 0);
+        lv_obj_set_style_radius(lvglProtectedPinModal, 12, 0);
+        lv_obj_set_style_pad_all(lvglProtectedPinModal, 10, 0);
+        lv_obj_set_style_pad_row(lvglProtectedPinModal, 8, 0);
+        lv_obj_set_flex_flow(lvglProtectedPinModal, LV_FLEX_FLOW_COLUMN);
+        lv_obj_clear_flag(lvglProtectedPinModal, LV_OBJ_FLAG_SCROLLABLE);
 
-        lv_obj_t *title = lv_label_create(lvglScreenLockModal);
-        lv_label_set_text(title, "Set 4-digit PIN");
-        lv_obj_set_style_text_color(title, lv_color_hex(0xE5ECF3), 0);
+        lvglProtectedPinTitleLabel = lv_label_create(lvglProtectedPinModal);
+        lv_obj_set_style_text_color(lvglProtectedPinTitleLabel, lv_color_hex(0xE5ECF3), 0);
 
-        lvglScreenLockSetupPinTa = lv_textarea_create(lvglScreenLockModal);
-        lv_obj_set_width(lvglScreenLockSetupPinTa, min<lv_coord_t>(DISPLAY_WIDTH - 56, 124));
-        lv_obj_set_height(lvglScreenLockSetupPinTa, 28);
-        lvglConfigureSingleLinePasswordTa(lvglScreenLockSetupPinTa);
-        lv_textarea_set_max_length(lvglScreenLockSetupPinTa, 4);
-        lv_textarea_set_accepted_chars(lvglScreenLockSetupPinTa, "0123456789");
-        lv_textarea_set_placeholder_text(lvglScreenLockSetupPinTa, "0000");
-        lv_obj_set_style_text_font(lvglScreenLockSetupPinTa, LV_FONT_DEFAULT, LV_PART_MAIN | LV_STATE_ANY);
-        lv_obj_set_style_text_align(lvglScreenLockSetupPinTa, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_ANY);
-        lv_obj_add_event_cb(lvglScreenLockSetupPinTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
-        lv_obj_add_event_cb(lvglScreenLockSetupPinTa, lvglScreenLockSetupPinChangedEvent, LV_EVENT_VALUE_CHANGED, nullptr);
-        screenLockApplySetupPinTaStyle();
+        lvglProtectedPinTa = lv_textarea_create(lvglProtectedPinModal);
+        lv_obj_set_width(lvglProtectedPinTa, min<lv_coord_t>(DISPLAY_WIDTH - 56, 124));
+        lv_obj_set_height(lvglProtectedPinTa, 28);
+        lvglConfigureSingleLinePasswordTa(lvglProtectedPinTa);
+        lv_textarea_set_max_length(lvglProtectedPinTa, 4);
+        lv_textarea_set_accepted_chars(lvglProtectedPinTa, "0123456789");
+        lv_textarea_set_placeholder_text(lvglProtectedPinTa, "0000");
+        lv_obj_set_style_text_font(lvglProtectedPinTa, LV_FONT_DEFAULT, LV_PART_MAIN | LV_STATE_ANY);
+        lv_obj_set_style_text_align(lvglProtectedPinTa, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_ANY);
+        lv_obj_add_event_cb(lvglProtectedPinTa, lvglTextAreaFocusEvent, LV_EVENT_FOCUSED, nullptr);
+        lv_obj_add_event_cb(lvglProtectedPinTa, lvglScreenLockPinChangedEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+        protectedPinApplyTaStyle();
 
-        lvglScreenLockSetupStatusLabel = lv_label_create(lvglScreenLockModal);
-        lv_obj_set_width(lvglScreenLockSetupStatusLabel, lv_pct(100));
-        lv_label_set_long_mode(lvglScreenLockSetupStatusLabel, LV_LABEL_LONG_WRAP);
-        lv_obj_set_style_text_color(lvglScreenLockSetupStatusLabel, lv_color_hex(0xD8B36A), 0);
+        lvglProtectedPinStatusLabel = lv_label_create(lvglProtectedPinModal);
+        lv_obj_set_width(lvglProtectedPinStatusLabel, lv_pct(100));
+        lv_label_set_long_mode(lvglProtectedPinStatusLabel, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_color(lvglProtectedPinStatusLabel, lv_color_hex(0xD8B36A), 0);
 
-        lv_obj_t *actions = lv_obj_create(lvglScreenLockModal);
+        lv_obj_t *actions = lv_obj_create(lvglProtectedPinModal);
         lv_obj_set_size(actions, lv_pct(100), LV_SIZE_CONTENT);
         lv_obj_set_style_bg_opa(actions, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(actions, 0, 0);
@@ -191,7 +274,7 @@ static void screenLockShowSetupModal()
         lv_obj_set_flex_flow(actions, LV_FLEX_FLOW_ROW);
         lv_obj_clear_flag(actions, LV_OBJ_FLAG_SCROLLABLE);
 
-        auto makeModalBtn = [&](lv_obj_t **slot, const char *txt, lv_color_t color, lv_event_cb_t cb) {
+        auto makeModalBtn = [&](lv_obj_t **slot, lv_obj_t **labelSlot, const char *txt, lv_color_t color, lv_event_cb_t cb) {
             lv_obj_t *btn = lv_btn_create(actions);
             if (!btn) return;
             lv_obj_set_size(btn, 88, 32);
@@ -205,76 +288,93 @@ static void screenLockShowSetupModal()
             lv_obj_center(lbl);
             lvglRegisterStyledButton(btn, color, true);
             *slot = btn;
+            if (labelSlot) *labelSlot = lbl;
         };
 
-        makeModalBtn(&lvglScreenLockSetupCancelBtn, tr(TXT_CANCEL), lv_color_hex(0x4E5D6C), lvglStyleScreenLockToggleEvent);
-        makeModalBtn(&lvglScreenLockSetupSaveBtn, tr(TXT_SAVE), lv_color_hex(0x2F7A45), lvglScreenLockUnlockEvent);
+        makeModalBtn(&lvglProtectedPinCancelBtn, nullptr, tr(TXT_CANCEL), lv_color_hex(0x4E5D6C), protectedPinCancelEvent);
+        makeModalBtn(&lvglProtectedPinSubmitBtn, &lvglProtectedPinSubmitBtnLabel, tr(TXT_SAVE), lv_color_hex(0x2F7A45), lvglProtectedPinSubmitEvent);
     }
 
-    if (lvglScreenLockSetupPinTa) lv_textarea_set_text(lvglScreenLockSetupPinTa, "");
-    screenLockApplySetupPinTaStyle();
-    if (lvglScreenLockSetupStatusLabel) lv_label_set_text(lvglScreenLockSetupStatusLabel, "");
-    lv_obj_clear_flag(lvglScreenLockModal, LV_OBJ_FLAG_HIDDEN);
+    protectedPinAction = action;
+    if (lvglProtectedPinTitleLabel) lv_label_set_text(lvglProtectedPinTitleLabel, protectedPinTitleText().c_str());
+    if (lvglProtectedPinSubmitBtnLabel) lv_label_set_text(lvglProtectedPinSubmitBtnLabel, protectedPinSubmitText());
+    if (lvglProtectedPinTa) lv_textarea_set_text(lvglProtectedPinTa, "");
+    protectedPinApplyTaStyle();
+    if (lvglProtectedPinStatusLabel) lv_label_set_text(lvglProtectedPinStatusLabel, protectedPinPromptText().c_str());
+    lv_obj_clear_flag(lvglProtectedPinModal, LV_OBJ_FLAG_HIDDEN);
 }
 
-void lvglScreenLockSetupPinChangedEvent(lv_event_t *e)
+static void screenLockHideSetupModal(bool restoreToggle)
 {
-    lv_obj_t *ta = e ? lv_event_get_target(e) : nullptr;
-    screenLockSanitizeTextArea(ta);
-    if (!lvglScreenLockSetupStatusLabel || !ta) return;
+    protectedPinHideModal(restoreToggle);
+}
 
-    const size_t len = strlen(lv_textarea_get_text(ta));
-    if (len == 0) lv_label_set_text(lvglScreenLockSetupStatusLabel, "Enter exactly 4 digits.");
-    else if (len < 4) lv_label_set_text(lvglScreenLockSetupStatusLabel, "PIN must be exactly 4 digits.");
-    else lv_label_set_text(lvglScreenLockSetupStatusLabel, "");
+static void screenLockShowSetupModal()
+{
+    protectedPinShowModal(PROTECTED_PIN_ACTION_SCREEN_LOCK_SETUP);
 }
 
 void lvglScreenLockPinChangedEvent(lv_event_t *e)
 {
     screenLockSanitizeTextArea(e ? lv_event_get_target(e) : nullptr);
+    lv_obj_t *ta = e ? lv_event_get_target(e) : nullptr;
+    if (ta != lvglProtectedPinTa || !lvglProtectedPinStatusLabel) return;
+    const size_t len = strlen(lv_textarea_get_text(ta));
+    if (len == 0) lv_label_set_text(lvglProtectedPinStatusLabel, protectedPinPromptText().c_str());
+    else if (len < 4) lv_label_set_text(lvglProtectedPinStatusLabel, "PIN must be exactly 4 digits.");
+    else lv_label_set_text(lvglProtectedPinStatusLabel, "");
 }
 
 void lvglStyleScreenLockToggleEvent(lv_event_t *e)
 {
     lv_obj_t *target = e ? lv_event_get_target(e) : nullptr;
-    if (target == lvglScreenLockSetupCancelBtn) {
-        screenLockEnabled = false;
-        screenLockPin[0] = '\0';
-        screenLockPersistConfig();
-        screenLockUnlocked = true;
-        screenLockFailedTotal = 0;
-        screenLockBlockedUntilMs = 0;
-        screenLockHideSetupModal(true);
-        lvglRefreshStyleUi();
-        return;
-    }
     if (!target || target != lvglStyleScreenLockSw) return;
 
     const bool enabled = lv_obj_has_state(target, LV_STATE_CHECKED);
     if (!enabled) {
-        screenLockEnabled = false;
-        screenLockPin[0] = '\0';
-        screenLockPersistConfig();
-        screenLockUnlocked = true;
-        screenLockFailedTotal = 0;
-        screenLockBlockedUntilMs = 0;
-        screenLockHideSetupModal(false);
-        lvglRefreshStyleUi();
+        if (screenLockEnabled) protectedPinShowModal(PROTECTED_PIN_ACTION_SCREEN_LOCK_DISABLE);
+        else protectedPinSyncToggleStates();
         return;
     }
 
-    screenLockShowSetupModal();
+    if (!screenLockEnabled) screenLockShowSetupModal();
+    else protectedPinSyncToggleStates();
 }
 
-void lvglScreenLockUnlockEvent(lv_event_t *e)
+void lvglStyleConfigLockToggleEvent(lv_event_t *e)
 {
     const lv_obj_t *target = e ? lv_event_get_target(e) : nullptr;
-    if (target == lvglScreenLockSetupSaveBtn || (!e && lvglScreenLockSetupPinTa && lvglKb && lv_keyboard_get_textarea(lvglKb) == lvglScreenLockSetupPinTa)) {
-        if (!lvglScreenLockSetupPinTa) return;
-        screenLockSanitizeTextArea(lvglScreenLockSetupPinTa);
-        String pin = lv_textarea_get_text(lvglScreenLockSetupPinTa);
+    if (!target || target != lvglStyleConfigLockSw) return;
+
+    const bool enabled = lv_obj_has_state(target, LV_STATE_CHECKED);
+    if (!enabled) {
+        if (configLockEnabled) protectedPinShowModal(PROTECTED_PIN_ACTION_CONFIG_LOCK_DISABLE);
+        else protectedPinSyncToggleStates();
+        return;
+    }
+
+    if (!configLockEnabled) protectedPinShowModal(PROTECTED_PIN_ACTION_CONFIG_LOCK_SETUP);
+    else protectedPinSyncToggleStates();
+}
+
+static void configLockPromptForEntry()
+{
+    protectedPinShowModal(PROTECTED_PIN_ACTION_CONFIG_LOCK_OPEN);
+}
+
+void lvglProtectedPinSubmitEvent(lv_event_t *e)
+{
+    if (!lvglProtectedPinTa) return;
+    screenLockSanitizeTextArea(lvglProtectedPinTa);
+    String pin = lv_textarea_get_text(lvglProtectedPinTa);
+    if (pin.length() != 4) {
+        if (lvglProtectedPinStatusLabel) lv_label_set_text(lvglProtectedPinStatusLabel, "PIN must be exactly 4 digits.");
+        return;
+    }
+
+    if (protectedPinAction == PROTECTED_PIN_ACTION_SCREEN_LOCK_SETUP) {
         if (pin.length() != 4) {
-            if (lvglScreenLockSetupStatusLabel) lv_label_set_text(lvglScreenLockSetupStatusLabel, "PIN must be exactly 4 digits.");
+            if (lvglProtectedPinStatusLabel) lv_label_set_text(lvglProtectedPinStatusLabel, "PIN must be exactly 4 digits.");
             return;
         }
         copyTextToBuf(screenLockPin, sizeof(screenLockPin), pin);
@@ -283,13 +383,68 @@ void lvglScreenLockUnlockEvent(lv_event_t *e)
         screenLockUnlocked = true;
         screenLockFailedTotal = 0;
         screenLockBlockedUntilMs = 0;
-        screenLockHideSetupModal(false);
-        if (lvglStyleScreenLockSw) lv_obj_add_state(lvglStyleScreenLockSw, LV_STATE_CHECKED);
+        protectedPinHideModal(false);
         uiStatusLine = "Screen lock enabled";
         lvglSyncStatusLine();
         lvglRefreshStyleUi();
         return;
     }
+
+    if (protectedPinAction == PROTECTED_PIN_ACTION_CONFIG_LOCK_SETUP) {
+        copyTextToBuf(configLockPin, sizeof(configLockPin), pin);
+        configLockEnabled = true;
+        configLockPersistConfig();
+        protectedPinHideModal(false);
+        uiStatusLine = "Config password enabled";
+        lvglSyncStatusLine();
+        lvglRefreshStyleUi();
+        return;
+    }
+
+    const String expected = protectedPinAction == PROTECTED_PIN_ACTION_SCREEN_LOCK_DISABLE ? String(screenLockPin)
+                          : String(configLockPin);
+    if (pin != expected) {
+        if (lvglProtectedPinStatusLabel) lv_label_set_text(lvglProtectedPinStatusLabel, "Wrong PIN.");
+        lv_textarea_set_text(lvglProtectedPinTa, "");
+        return;
+    }
+
+    if (protectedPinAction == PROTECTED_PIN_ACTION_SCREEN_LOCK_DISABLE) {
+        screenLockEnabled = false;
+        screenLockPin[0] = '\0';
+        screenLockPersistConfig();
+        screenLockUnlocked = true;
+        screenLockFailedTotal = 0;
+        screenLockBlockedUntilMs = 0;
+        protectedPinHideModal(false);
+        uiStatusLine = "Screen lock disabled";
+        lvglSyncStatusLine();
+        lvglRefreshStyleUi();
+        return;
+    }
+
+    if (protectedPinAction == PROTECTED_PIN_ACTION_CONFIG_LOCK_DISABLE) {
+        configLockEnabled = false;
+        configLockPin[0] = '\0';
+        configLockPersistConfig();
+        protectedPinHideModal(false);
+        uiStatusLine = "Config password disabled";
+        lvglSyncStatusLine();
+        lvglRefreshStyleUi();
+        return;
+    }
+
+    if (protectedPinAction == PROTECTED_PIN_ACTION_CONFIG_LOCK_OPEN) {
+        protectedPinHideModal(false);
+        lvglEnsureScreenBuilt(UI_CONFIG);
+        lvglOpenScreen(UI_CONFIG, LV_SCR_LOAD_ANIM_MOVE_LEFT);
+    }
+}
+
+void lvglScreenLockUnlockEvent(lv_event_t *e)
+{
+    const lv_obj_t *target = e ? lv_event_get_target(e) : nullptr;
+    (void)target;
 
     if (!lvglScreenLockPinTa) return;
     screenLockSanitizeTextArea(lvglScreenLockPinTa);
@@ -374,6 +529,13 @@ void lvglRefreshStyleUi()
         if (screenLockEnabled != checked) {
             if (screenLockEnabled) lv_obj_add_state(lvglStyleScreenLockSw, LV_STATE_CHECKED);
             else lv_obj_clear_state(lvglStyleScreenLockSw, LV_STATE_CHECKED);
+        }
+    }
+    if (lvglStyleConfigLockSw) {
+        const bool checked = lv_obj_has_state(lvglStyleConfigLockSw, LV_STATE_CHECKED);
+        if (configLockEnabled != checked) {
+            if (configLockEnabled) lv_obj_add_state(lvglStyleConfigLockSw, LV_STATE_CHECKED);
+            else lv_obj_clear_state(lvglStyleConfigLockSw, LV_STATE_CHECKED);
         }
     }
 
@@ -512,8 +674,6 @@ void lvglRefreshStyleHomeItemsUi()
     if (lvglStyleHomeInfoLabel) lvglLabelSetTextIfChanged(lvglStyleHomeInfoLabel, tr(TXT_INFO));
     if (lvglStyleHomeGamesLabel) lvglLabelSetTextIfChanged(lvglStyleHomeGamesLabel, tr(TXT_GAMES));
     if (lvglStyleHomeMqttLabel) lvglLabelSetTextIfChanged(lvglStyleHomeMqttLabel, tr(TXT_MQTT_CONTROLS));
-    if (lvglStyleHomeConfigLabel) lvglLabelSetTextIfChanged(lvglStyleHomeConfigLabel, tr(TXT_CONFIG));
-    if (lvglStyleHomePowerLabel) lvglLabelSetTextIfChanged(lvglStyleHomePowerLabel, tr(TXT_POWER));
     if (lvglStyleHomeAirplaneLabel) lvglLabelSetTextIfChanged(lvglStyleHomeAirplaneLabel, tr(TXT_AIRPLANE_MODE));
     if (lvglStyleHomeApLabel) lvglLabelSetTextIfChanged(lvglStyleHomeApLabel, tr(TXT_AP_MODE));
 
@@ -544,8 +704,6 @@ void lvglRefreshStyleHomeItemsUi()
     syncModuleRow(lvglStyleHomeInfoLabel, lvglStyleHomeInfoSw, moduleInstalled[APP_MODULE_INFO], homeInfoVisible);
     syncModuleRow(lvglStyleHomeGamesLabel, lvglStyleHomeGamesSw, moduleInstalled[APP_MODULE_GAMES], homeGamesVisible);
     syncModuleRow(lvglStyleHomeMqttLabel, lvglStyleHomeMqttSw, moduleInstalled[APP_MODULE_MQTT], homeMqttVisible);
-    syncSwitch(lvglStyleHomeConfigSw, homeConfigVisible);
-    syncSwitch(lvglStyleHomePowerSw, homePowerVisible);
     syncSwitch(lvglStyleHomeAirplaneSw, homeAirplaneVisible);
     syncSwitch(lvglStyleHomeApSw, homeApVisible);
 
@@ -859,10 +1017,22 @@ void lvglBrightnessEvent(lv_event_t *e)
     (void)e;
     if (!lvglBrightnessSlider) return;
     displayBrightnessPercent = static_cast<uint8_t>(lv_slider_get_value(lvglBrightnessSlider));
-    if (displayAwake) displayBacklightSet(displayBacklightLevelFromPercent(displayBrightnessPercent));
     uiPrefs.begin("ui", false);
     uiPrefs.putUChar("disp_bri", displayBrightnessPercent);
     uiPrefs.end();
+    displayApplyBacklightPolicy(true);
+    lvglRefreshConfigUi();
+}
+
+void lvglAdaptiveBrightnessEvent(lv_event_t *e)
+{
+    (void)e;
+    if (!lvglAdaptiveBrightnessSw) return;
+    adaptiveBrightnessEnabled = lv_obj_has_state(lvglAdaptiveBrightnessSw, LV_STATE_CHECKED);
+    uiPrefs.begin("ui", false);
+    uiPrefs.putBool("disp_adapt", adaptiveBrightnessEnabled);
+    uiPrefs.end();
+    displayApplyBacklightPolicy(true);
     lvglRefreshConfigUi();
 }
 
@@ -995,6 +1165,7 @@ void lvglRefreshConfigUi()
     if (lvglConfigDeviceNameHeader) lvglLabelSetTextIfChanged(lvglConfigDeviceNameHeader, tr(TXT_DEVICE_NAME));
     if (lvglConfigDeviceNameSaveBtnLabel) lvglLabelSetTextIfChanged(lvglConfigDeviceNameSaveBtnLabel, tr(TXT_SAVE));
     if (lvglConfigBrightnessHeader) lvglLabelSetTextIfChanged(lvglConfigBrightnessHeader, tr(TXT_BRIGHTNESS));
+    if (lvglConfigAdaptiveBrightnessLabel) lvglLabelSetTextIfChanged(lvglConfigAdaptiveBrightnessLabel, tr(TXT_ADAPTIVE_BRIGHTNESS));
     if (lvglConfigVolumeHeader) lvglLabelSetTextIfChanged(lvglConfigVolumeHeader, tr(TXT_VOLUME));
     if (lvglConfigVibrationHeader) lvglLabelSetTextIfChanged(lvglConfigVibrationHeader, "Vibration");
     if (lvglConfigMessageToneHeader) lvglLabelSetTextIfChanged(lvglConfigMessageToneHeader, "Message tone");
@@ -1021,6 +1192,10 @@ void lvglRefreshConfigUi()
         lv_slider_set_value(lvglBrightnessSlider, displayBrightnessPercent, LV_ANIM_OFF);
     }
     if (lvglBrightnessValueLabel) lvglLabelSetTextIfChanged(lvglBrightnessValueLabel, String(displayBrightnessPercent) + "%");
+    if (lvglAdaptiveBrightnessSw) {
+        if (adaptiveBrightnessEnabled) lv_obj_add_state(lvglAdaptiveBrightnessSw, LV_STATE_CHECKED);
+        else lv_obj_clear_state(lvglAdaptiveBrightnessSw, LV_STATE_CHECKED);
+    }
     if (lvglVolumeSlider && lv_slider_get_value(lvglVolumeSlider) != mediaVolumePercent) {
         lv_slider_set_value(lvglVolumeSlider, mediaVolumePercent, LV_ANIM_OFF);
     }

@@ -333,6 +333,22 @@ static bool moduleInstalledForScreen(UiScreen screen)
     return idx < 0 || moduleInstalled[idx];
 }
 
+static bool moduleDefaultInstalled(AppModuleId id)
+{
+#if defined(BOARD_ESP32_2432S024C)
+    if (id == APP_MODULE_RADIO) return true;
+#endif
+    return false;
+}
+
+static bool moduleMustBeInstalledOnBoot(AppModuleId id)
+{
+#if defined(BOARD_ESP32_2432S024C)
+    if (id == APP_MODULE_RADIO) return true;
+#endif
+    return false;
+}
+
 static void modulePersistInstalledState(AppModuleId id, bool installed)
 {
     moduleInstalled[id] = installed;
@@ -515,7 +531,8 @@ static void moduleLoadInstalledState()
             uiPrefs.isKey("home_games") ||
             uiPrefs.isKey("home_mqtt");
         for (uint8_t i = 0; i < APP_MODULE_COUNT; ++i) {
-            moduleInstalled[i] = legacyInstall;
+            const AppModuleId id = static_cast<AppModuleId>(i);
+            moduleInstalled[i] = legacyInstall || moduleDefaultInstalled(id);
             uiPrefs.putBool(modulePrefKey(static_cast<AppModuleId>(i)), moduleInstalled[i]);
         }
         uiPrefs.putBool("mods_init", true);
@@ -523,7 +540,15 @@ static void moduleLoadInstalledState()
     }
 
     for (uint8_t i = 0; i < APP_MODULE_COUNT; ++i) {
-        moduleInstalled[i] = uiPrefs.getBool(modulePrefKey(static_cast<AppModuleId>(i)), false);
+        const AppModuleId id = static_cast<AppModuleId>(i);
+        moduleInstalled[i] = uiPrefs.isKey(modulePrefKey(id))
+                                 ? uiPrefs.getBool(modulePrefKey(id), false)
+                                 : moduleDefaultInstalled(id);
+        if (moduleMustBeInstalledOnBoot(id) && !moduleInstalled[i]) {
+            moduleInstalled[i] = true;
+            uiPrefs.putBool(modulePrefKey(id), true);
+            uiPrefs.putBool("mods_init", true);
+        }
     }
 }
 
@@ -661,6 +686,7 @@ void appendUiSettings(JsonDocument &doc)
     doc["StartupSoundEnabled"] = uiPrefs.getBool("boot_snd", startupSoundEnabled) ? 1 : 0;
     doc["TouchVibrationEnabled"] = uiPrefs.getBool("touch_vib", touchVibrationEnabled) ? 1 : 0;
     doc["DisplayBrightness"] = uiPrefs.getUChar("disp_bri", displayBrightnessPercent);
+    doc["AdaptiveBrightness"] = uiPrefs.getBool("disp_adapt", adaptiveBrightnessEnabled) ? 1 : 0;
     doc["DeviceName"] = uiPrefs.getString("dev_name", deviceShortNameValue());
     doc["WsRebootOnDisconnect"] = uiPrefs.getBool("ws_reboot", wsRebootOnDisconnectEnabled) ? 1 : 0;
     doc["AirplaneMode"] = uiPrefs.getBool("airplane", airplaneModeEnabled) ? 1 : 0;
@@ -698,8 +724,8 @@ void appendUiSettings(JsonDocument &doc)
     doc["HomeInfoVisible"] = homeInfoVisible ? 1 : 0;
     doc["HomeGamesVisible"] = homeGamesVisible ? 1 : 0;
     doc["HomeMqttVisible"] = homeMqttVisible ? 1 : 0;
-    doc["HomeConfigVisible"] = homeConfigVisible ? 1 : 0;
-    doc["HomePowerVisible"] = homePowerVisible ? 1 : 0;
+    doc["HomeConfigVisible"] = 1;
+    doc["HomePowerVisible"] = 1;
     doc["HomeAirplaneVisible"] = homeAirplaneVisible ? 1 : 0;
     doc["HomeApVisible"] = homeApVisible ? 1 : 0;
     doc["ScreenLockEnabled"] = uiPrefs.getBool("scr_lock", screenLockEnabled) ? 1 : 0;
@@ -729,6 +755,7 @@ void loadUiRuntimeConfig()
     systemSoundsEnabled = uiPrefs.getBool("sys_snd", true);
     mediaVolumePercent = uiPrefs.getUChar("sys_vol", mediaVolumePercent);
     displayBrightnessPercent = static_cast<uint8_t>(constrain(uiPrefs.getUChar("disp_bri", displayBrightnessPercent), 5, 100));
+    adaptiveBrightnessEnabled = uiPrefs.getBool("disp_adapt", adaptiveBrightnessEnabled);
     rgbLedPercent = static_cast<uint8_t>(constrain(uiPrefs.getUChar("rgb_led", rgbLedPercent), 0, 100));
     deviceShortName = sanitizeDeviceShortName(uiPrefs.getString("dev_name", DEVICE_SHORT_NAME));
     if (deviceShortName.isEmpty()) deviceShortName = DEVICE_SHORT_NAME;
@@ -754,8 +781,10 @@ void loadUiRuntimeConfig()
     homeInfoVisible = uiPrefs.getBool("home_info", true);
     homeGamesVisible = uiPrefs.getBool("home_games", true);
     homeMqttVisible = uiPrefs.getBool("home_mqtt", true);
-    homeConfigVisible = uiPrefs.getBool("home_cfg", true);
-    homePowerVisible = uiPrefs.getBool("home_power", true);
+    homeConfigVisible = true;
+    homePowerVisible = true;
+    uiPrefs.putBool("home_cfg", true);
+    uiPrefs.putBool("home_power", true);
     homeAirplaneVisible = uiPrefs.getBool("home_air", true);
     homeApVisible = uiPrefs.getBool("home_ap", true);
     screenLockEnabled = uiPrefs.getBool("scr_lock", false);
@@ -767,6 +796,15 @@ void loadUiRuntimeConfig()
     screenLockUnlocked = !screenLockEnabled;
     screenLockFailedTotal = 0;
     screenLockBlockedUntilMs = 0;
+    configLockEnabled = uiPrefs.getBool("cfg_lock", true);
+    copyTextToBuf(configLockPin, sizeof(configLockPin), uiPrefs.getString("cfg_pin", configLockEnabled ? "1111" : ""));
+    if (configLockEnabled && strlen(configLockPin) != 4) {
+        copyTextToBuf(configLockPin, sizeof(configLockPin), "1111");
+        uiPrefs.putString("cfg_pin", configLockPin);
+    } else if (!configLockEnabled && strlen(configLockPin) != 0) {
+        configLockPin[0] = '\0';
+        uiPrefs.putString("cfg_pin", configLockPin);
+    }
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
     radioModuleType = static_cast<RadioModuleType>(constrain(uiPrefs.getUChar("radio_mod", static_cast<uint8_t>(RADIO_MODULE_HC12)),
                                                              static_cast<uint8_t>(RADIO_MODULE_HC12),
@@ -987,7 +1025,13 @@ bool handleUiSettingMessage(const char *msg)
     else if (strcmp(key, "DisplayBrightness") == 0 && parseIntMessageValue(value, parsed)) {
         displayBrightnessPercent = static_cast<uint8_t>(max(5, min(100, parsed)));
         uiPrefs.putUChar("disp_bri", displayBrightnessPercent);
-        if (displayAwake) displayBacklightSet(displayBacklightLevelFromPercent(displayBrightnessPercent));
+        displayApplyBacklightPolicy(true);
+        lvglRefreshConfigUi();
+    }
+    else if (strcmp(key, "AdaptiveBrightness") == 0) {
+        adaptiveBrightnessEnabled = atoi(value) != 0;
+        uiPrefs.putBool("disp_adapt", adaptiveBrightnessEnabled);
+        displayApplyBacklightPolicy(true);
         lvglRefreshConfigUi();
     }
     else if (strcmp(key, "DeviceName") == 0) {
@@ -1191,16 +1235,16 @@ bool handleUiSettingMessage(const char *msg)
         }
     }
     else if (strcmp(key, "HomeConfigVisible") == 0) {
-        homeConfigVisible = atoi(value) != 0;
-        uiPrefs.putBool("home_cfg", homeConfigVisible);
+        homeConfigVisible = true;
+        uiPrefs.putBool("home_cfg", true);
         if (lvglReady) {
             lvglRefreshHomeButtonVisibility();
             lvglRefreshStyleHomeItemsUi();
         }
     }
     else if (strcmp(key, "HomePowerVisible") == 0) {
-        homePowerVisible = atoi(value) != 0;
-        uiPrefs.putBool("home_power", homePowerVisible);
+        homePowerVisible = true;
+        uiPrefs.putBool("home_power", true);
         if (lvglReady) {
             lvglRefreshHomeButtonVisibility();
             lvglRefreshStyleHomeItemsUi();

@@ -9,7 +9,9 @@ struct RadioControlButton {
     int16_t onDataValue;
     int16_t offDataValue;
     bool requireConfirm;
+    bool toggleEnabled;
     bool toggleState;
+    bool pressActive;
     bool selected;
 };
 
@@ -84,6 +86,34 @@ static RadioRuntimeSnapshot radioReceiverTestRestoreSnapshot = {};
 static String radioReceiverTestLog;
 static uint8_t radioReceiverTestFrameBuf[3 + sizeof(GateLegacyPacket) + 1] = {};
 static size_t radioReceiverTestFrameLen = 0;
+
+struct RadioControlTxRequest {
+    bool valid;
+    int buttonIndex;
+    uint16_t destinationId;
+    int16_t payload;
+    bool notifyOnSuccess;
+    bool toggleStateValid;
+    bool nextToggleState;
+    bool clearPressActive;
+    bool followUpValid;
+    int16_t followUpPayload;
+    bool followUpClearsPressActive;
+};
+
+static void savePersistedRadioControlButtons();
+static void gatePersistRollingCount();
+static bool gateSendLegacyPacket(uint16_t destinationId, int16_t payload, String &statusOut);
+
+static portMUX_TYPE radioControlTxMux = portMUX_INITIALIZER_UNLOCKED;
+static TaskHandle_t radioControlTxTaskHandle = nullptr;
+static RadioControlTxRequest radioControlTxPending = {};
+static RadioControlTxRequest radioControlTxActive = {};
+static RadioControlTxRequest radioControlTxCompleted = {};
+static bool radioControlTxBusy = false;
+static bool radioControlTxCompletedReady = false;
+static bool radioControlTxCompletedSuccess = false;
+static char radioControlTxCompletedStatus[96] = {};
 
 static bool remoteControlUsesHc12()
 {
@@ -199,7 +229,181 @@ static String radioControlButtonDisplayName(int index)
 
 static bool radioControlButtonUsesLocalToggle(const RadioControlButton &btn)
 {
-    return btn.offDataValue >= 0;
+    return btn.toggleEnabled && btn.offDataValue >= 0;
+}
+
+static bool radioControlButtonUsesMomentary(const RadioControlButton &btn)
+{
+    return !btn.toggleEnabled && btn.offDataValue >= 0;
+}
+
+static bool radioControlButtonNeedsReleaseTx(const RadioControlButton &btn)
+{
+    return radioControlButtonUsesMomentary(btn) && btn.offDataValue != btn.onDataValue;
+}
+
+static bool radioControlTxInProgress()
+{
+    return radioControlTxBusy || radioControlTxPending.valid;
+}
+
+static bool radioControlModuleReadyForTx()
+{
+    if (radioReceiverTestActive) return false;
+    if (hc12ConfigApplyPending != HC12_CFG_APPLY_NONE) return false;
+    if (radioInfoFetchPending || radioInfoFetchActive) return false;
+    if (uiDeferredFlags & UI_DEFERRED_HC12_SETTLE_PENDING) return false;
+    return true;
+}
+
+static bool radioControlEnqueueTx(const RadioControlTxRequest &request, String &statusOut)
+{
+    if (!request.valid) {
+        statusOut = "Radio request invalid";
+        return false;
+    }
+
+    bool queued = false;
+    portENTER_CRITICAL(&radioControlTxMux);
+    if (!radioControlTxPending.valid) {
+        radioControlTxPending = request;
+        queued = true;
+    }
+    portEXIT_CRITICAL(&radioControlTxMux);
+
+    if (!queued) {
+        statusOut = "Radio busy, wait for queued command";
+        return false;
+    }
+
+    statusOut = radioControlModuleReadyForTx() ? "Radio command queued" : "Radio queued, waiting for module";
+    return true;
+}
+
+static void radioControlTxTask(void *param)
+{
+    (void)param;
+
+    RadioControlTxRequest request = {};
+    portENTER_CRITICAL(&radioControlTxMux);
+    request = radioControlTxActive;
+    portEXIT_CRITICAL(&radioControlTxMux);
+
+    String status;
+    const bool success = gateSendLegacyPacket(request.destinationId, request.payload, status);
+
+    portENTER_CRITICAL(&radioControlTxMux);
+    radioControlTxCompleted = request;
+    radioControlTxCompletedSuccess = success;
+    snprintf(radioControlTxCompletedStatus, sizeof(radioControlTxCompletedStatus), "%s", status.c_str());
+    radioControlTxCompletedReady = true;
+    radioControlTxBusy = false;
+    radioControlTxTaskHandle = nullptr;
+    portEXIT_CRITICAL(&radioControlTxMux);
+
+    vTaskDelete(nullptr);
+}
+
+static void serviceRadioControlTxQueue()
+{
+    RadioControlTxRequest completed = {};
+    bool completedReady = false;
+    bool completedSuccess = false;
+    char completedStatus[96] = {};
+
+    portENTER_CRITICAL(&radioControlTxMux);
+    if (radioControlTxCompletedReady) {
+        completed = radioControlTxCompleted;
+        completedSuccess = radioControlTxCompletedSuccess;
+        snprintf(completedStatus, sizeof(completedStatus), "%s", radioControlTxCompletedStatus);
+        radioControlTxCompletedReady = false;
+        radioControlTxCompleted.valid = false;
+        radioControlTxCompletedStatus[0] = '\0';
+        completedReady = true;
+    }
+    portEXIT_CRITICAL(&radioControlTxMux);
+
+    if (completedReady) {
+        bool refreshRadioUi = false;
+        if (completed.buttonIndex >= 0 && completed.buttonIndex < radioControlButtonCount) {
+            RadioControlButton &btn = radioControlButtons[completed.buttonIndex];
+            if (completed.clearPressActive) btn.pressActive = false;
+            if (completedSuccess && completed.toggleStateValid) {
+                btn.toggleState = completed.nextToggleState;
+                refreshRadioUi = true;
+            }
+        }
+
+        if (completedSuccess) {
+            if (!displayAwake) displaySetAwake(true);
+            lastUserActivityMs = millis();
+            gatePersistRollingCount();
+            if (completed.notifyOnSuccess) chatQueueIncomingMessageBeep();
+        }
+
+        if (completedSuccess && completed.followUpValid) {
+            RadioControlTxRequest followUp = {};
+            followUp.valid = true;
+            followUp.buttonIndex = completed.buttonIndex;
+            followUp.destinationId = completed.destinationId;
+            followUp.payload = completed.followUpPayload;
+            followUp.notifyOnSuccess = false;
+            followUp.toggleStateValid = false;
+            followUp.nextToggleState = false;
+            followUp.clearPressActive = completed.followUpClearsPressActive;
+            followUp.followUpValid = false;
+            String queueStatus;
+            if (!radioControlEnqueueTx(followUp, queueStatus) && completed.buttonIndex >= 0 && completed.buttonIndex < radioControlButtonCount) {
+                radioControlButtons[completed.buttonIndex].pressActive = false;
+            }
+        }
+
+        if (refreshRadioUi) {
+            savePersistedRadioControlButtons();
+            lvglRefreshRadioControlUi();
+        }
+
+        uiStatusLine = completedStatus;
+        lvglSyncStatusLine();
+    }
+
+    if (radioControlTxBusy || radioControlTxTaskHandle != nullptr) return;
+    if (!radioControlModuleReadyForTx()) return;
+
+    RadioControlTxRequest next = {};
+    bool havePending = false;
+    portENTER_CRITICAL(&radioControlTxMux);
+    if (radioControlTxPending.valid) {
+        next = radioControlTxPending;
+        radioControlTxPending.valid = false;
+        radioControlTxActive = next;
+        radioControlTxBusy = true;
+        havePending = true;
+    }
+    portEXIT_CRITICAL(&radioControlTxMux);
+
+    if (!havePending) return;
+
+#if CONFIG_FREERTOS_UNICORE
+    const BaseType_t workerCore = ARDUINO_RUNNING_CORE;
+#else
+    const BaseType_t workerCore = (ARDUINO_RUNNING_CORE == 0) ? 1 : 0;
+#endif
+    if (xTaskCreatePinnedToCore(radioControlTxTask,
+                                "radio_btn_tx",
+                                8192,
+                                nullptr,
+                                1,
+                                &radioControlTxTaskHandle,
+                                workerCore) != pdPASS) {
+        portENTER_CRITICAL(&radioControlTxMux);
+        radioControlTxBusy = false;
+        radioControlTxActive.valid = false;
+        radioControlTxTaskHandle = nullptr;
+        portEXIT_CRITICAL(&radioControlTxMux);
+        uiStatusLine = "Failed to start radio task";
+        lvglSyncStatusLine();
+    }
 }
 
 static bool remoteProgramActiveHc12(int currentBaudIndex,
@@ -232,6 +436,10 @@ static void savePersistedRadioControlButtons()
         uiPrefs.putInt(key, (i < radioControlButtonCount) ? radioControlButtons[i].offDataValue : -1);
         snprintf(key, sizeof(key), "rc_btn_cf_%02d", i);
         uiPrefs.putBool(key, (i < radioControlButtonCount) ? radioControlButtons[i].requireConfirm : false);
+        snprintf(key, sizeof(key), "rc_btn_tg_%02d", i);
+        uiPrefs.putBool(key,
+                (i < radioControlButtonCount && radioControlButtons[i].offDataValue >= 0) ? radioControlButtons[i].toggleEnabled
+                                                    : false);
         snprintf(key, sizeof(key), "rc_btn_ts_%02d", i);
         uiPrefs.putBool(key,
                         (i < radioControlButtonCount && radioControlButtonUsesLocalToggle(radioControlButtons[i])) ? radioControlButtons[i].toggleState
@@ -266,8 +474,13 @@ static void loadPersistedRadioControlButtons()
         if (uiPrefs.isKey(key)) radioControlButtons[i].offDataValue = constrain(uiPrefs.getInt(key, -1), -1, 99);
         snprintf(key, sizeof(key), "rc_btn_cf_%02d", i);
         radioControlButtons[i].requireConfirm = uiPrefs.getBool(key, false);
+        snprintf(key, sizeof(key), "rc_btn_tg_%02d", i);
+        radioControlButtons[i].toggleEnabled = (radioControlButtons[i].offDataValue >= 0)
+                                                   ? uiPrefs.getBool(key, true)
+                                                   : false;
         snprintf(key, sizeof(key), "rc_btn_ts_%02d", i);
         radioControlButtons[i].toggleState = radioControlButtonUsesLocalToggle(radioControlButtons[i]) ? uiPrefs.getBool(key, false) : false;
+        radioControlButtons[i].pressActive = false;
         radioControlButtons[i].selected = false;
     }
 }
@@ -284,7 +497,8 @@ static void syncRadioButtonConfigFromUi()
         lv_obj_t *idTa = lv_obj_get_child(row, 2);
         lv_obj_t *onTa = lv_obj_get_child(row, 3);
         lv_obj_t *offTa = lv_obj_get_child(row, 4);
-        lv_obj_t *confirmCb = lv_obj_get_child(row, 5);
+        lv_obj_t *toggleCb = lv_obj_get_child(row, 5);
+        lv_obj_t *confirmCb = lv_obj_get_child(row, 6);
         if (selCb) radioControlButtons[i].selected = lv_obj_has_state(selCb, LV_STATE_CHECKED);
         if (nameTa) {
             radioControlButtons[i].name = lv_textarea_get_text(nameTa);
@@ -303,8 +517,11 @@ static void syncRadioButtonConfigFromUi()
             const String raw = lv_textarea_get_text(offTa);
             radioControlButtons[i].offDataValue = raw.isEmpty() ? -1 : constrain(static_cast<int>(strtoul(raw.c_str(), nullptr, 10)), 0, 99);
         }
+        if (toggleCb) radioControlButtons[i].toggleEnabled = lv_obj_has_state(toggleCb, LV_STATE_CHECKED);
         if (confirmCb) radioControlButtons[i].requireConfirm = lv_obj_has_state(confirmCb, LV_STATE_CHECKED);
+        if (radioControlButtons[i].offDataValue < 0) radioControlButtons[i].toggleEnabled = false;
         if (!radioControlButtonUsesLocalToggle(radioControlButtons[i])) radioControlButtons[i].toggleState = false;
+        radioControlButtons[i].pressActive = false;
     }
 }
 
@@ -351,6 +568,19 @@ static uint32_t gateKeeLoqEncrypt(uint32_t data, uint32_t keyHigh, uint32_t keyL
     return x;
 }
 
+static uint32_t gateKeeLoqDecrypt(uint32_t data, uint32_t keyHigh, uint32_t keyLow)
+{
+    uint32_t x = data;
+    for (int round = 527; round >= 0; --round) {
+        const int keyBitNo = round & 63;
+        const uint32_t keyBit = keyBitNo < 32 ? bitRead(keyLow, keyBitNo) : bitRead(keyHigh, keyBitNo - 32);
+        const int index = 1 * bitRead(x, 0) + 2 * bitRead(x, 8) + 4 * bitRead(x, 19) + 8 * bitRead(x, 25) + 16 * bitRead(x, 30);
+        const uint32_t bitVal = bitRead(x, 31) ^ bitRead(x, 15) ^ bitRead(KEELOQ_NLF, index) ^ keyBit;
+        x = (x << 1) ^ bitVal;
+    }
+    return x;
+}
+
 static void gatePersistRollingCount()
 {
     uiPrefs.begin("ui", false);
@@ -370,6 +600,27 @@ static void radioReceiverTestAppend(const String &line)
         lv_textarea_set_text(lvglRadioReceiverTestTa, radioReceiverTestLog.c_str());
         lv_textarea_set_cursor_pos(lvglRadioReceiverTestTa, LV_TEXTAREA_CURSOR_LAST);
     }
+}
+
+static String radioReceiverTestDecodeCounter(const GateLegacyPacket &packet)
+{
+    uint32_t keyHigh = 0;
+    uint32_t keyLow = 0;
+    String status;
+    if (!remoteParseKey(keyHigh, keyLow, status)) return String("");
+
+    const uint32_t decoded = gateKeeLoqDecrypt(packet.packet_id, keyHigh, keyLow);
+    const uint32_t decodedDeviceId = decoded % 100000UL;
+    const uint32_t decodedCounter = (decoded / 100000UL) + 1UL;
+    if (decodedDeviceId != static_cast<uint32_t>(packet.device_id)) return String("");
+    if (decodedCounter == 0UL || decodedCounter > 65535UL) return String("");
+
+    char decodedLine[64];
+    snprintf(decodedLine,
+             sizeof(decodedLine),
+             " counter=%lu",
+             static_cast<unsigned long>(decodedCounter));
+    return String(decodedLine);
 }
 
 static String radioReceiverTestProfileSummary()
@@ -523,16 +774,18 @@ bool radioReceiverTestHandleByte(uint8_t ch)
 
     GateLegacyPacket packet = {};
     memcpy(&packet, &radioReceiverTestFrameBuf[3], sizeof(packet));
-    char line[192];
+    const String decodedCounter = radioReceiverTestDecodeCounter(packet);
+    char line[224];
     snprintf(line,
              sizeof(line),
-             "[RXTEST] device=%u dest=%u packet=%08lX cmd=%u data=%d chk=%02X\n",
+             "[RXTEST] device=%u dest=%u packet=%08lX cmd=%u data=%d chk=%02X%s\n",
              packet.device_id,
              packet.destination_id,
              static_cast<unsigned long>(packet.packet_id),
              packet.command,
              packet.data,
-             receivedChecksum);
+             receivedChecksum,
+             decodedCounter.c_str());
     radioReceiverTestAppend(line);
     radioReceiverTestFrameLen = 0;
     return true;
@@ -843,6 +1096,11 @@ void lvglRefreshRadioControlUi()
                                              lvglRadioControlButtonEvent,
                                              reinterpret_cast<void *>(static_cast<intptr_t>(i)));
         if (btn) {
+            if (radioControlButtonUsesMomentary(radioControlButtons[i])) {
+                lv_obj_add_event_cb(btn, lvglRadioControlButtonEvent, LV_EVENT_PRESSED, reinterpret_cast<void *>(static_cast<intptr_t>(i)));
+                lv_obj_add_event_cb(btn, lvglRadioControlButtonEvent, LV_EVENT_RELEASED, reinterpret_cast<void *>(static_cast<intptr_t>(i)));
+                lv_obj_add_event_cb(btn, lvglRadioControlButtonEvent, LV_EVENT_PRESS_LOST, reinterpret_cast<void *>(static_cast<intptr_t>(i)));
+            }
             if (radioControlButtonUsesLocalToggle(radioControlButtons[i]) && radioControlButtons[i].toggleState) lv_obj_add_state(btn, LV_STATE_CHECKED);
             else lv_obj_clear_state(btn, LV_STATE_CHECKED);
             lvglRegisterReorderableItem(btn, "ord_rctl", String("btn_" + String(i)).c_str());
@@ -857,6 +1115,7 @@ void lvglGateControlActionEvent(lv_event_t *e)
 
 void lvglRadioControlButtonEvent(lv_event_t *e)
 {
+    const lv_event_code_t code = lv_event_get_code(e);
     const int idx = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
     if (idx < 0 || idx >= radioControlButtonCount) return;
 
@@ -873,6 +1132,45 @@ void lvglRadioControlButtonEvent(lv_event_t *e)
         return;
     }
     const bool toggleButton = radioControlButtonUsesLocalToggle(btn);
+    const bool momentaryButton = radioControlButtonUsesMomentary(btn);
+    if (code == LV_EVENT_PRESSED) {
+        if (!momentaryButton || btn.pressActive) return;
+        if (btn.requireConfirm) return;
+        btn.pressActive = true;
+        RadioControlTxRequest request = {};
+        request.valid = true;
+        request.buttonIndex = idx;
+        request.destinationId = btn.destinationId;
+        request.payload = btn.onDataValue;
+        request.notifyOnSuccess = true;
+        String status;
+        const bool sent = radioControlEnqueueTx(request, status);
+        if (!sent) btn.pressActive = false;
+        uiStatusLine = status;
+        lvglSyncStatusLine();
+        return;
+    }
+    if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        if (!momentaryButton || !btn.pressActive) return;
+        if (!radioControlButtonNeedsReleaseTx(btn)) {
+            btn.pressActive = false;
+            return;
+        }
+        RadioControlTxRequest request = {};
+        request.valid = true;
+        request.buttonIndex = idx;
+        request.destinationId = btn.destinationId;
+        request.payload = btn.offDataValue;
+        request.notifyOnSuccess = true;
+        request.clearPressActive = true;
+        String status;
+        if (!radioControlEnqueueTx(request, status)) btn.pressActive = false;
+        uiStatusLine = status;
+        lvglSyncStatusLine();
+        return;
+    }
+    if (code != LV_EVENT_CLICKED) return;
+
     const int16_t payload = toggleButton ? static_cast<int16_t>(btn.toggleState ? btn.offDataValue : btn.onDataValue)
                                          : static_cast<int16_t>(btn.onDataValue);
     if (btn.requireConfirm) {
@@ -888,17 +1186,18 @@ void lvglRadioControlButtonEvent(lv_event_t *e)
         return;
     }
 
+    if (momentaryButton) return;
+
+    RadioControlTxRequest request = {};
+    request.valid = true;
+    request.buttonIndex = idx;
+    request.destinationId = btn.destinationId;
+    request.payload = payload;
+    request.notifyOnSuccess = true;
+    request.toggleStateValid = toggleButton;
+    request.nextToggleState = toggleButton ? !btn.toggleState : false;
     String status;
-    const bool sent = gateSendLegacyPacket(btn.destinationId, payload, status);
-    if (sent) {
-        if (toggleButton) {
-            btn.toggleState = !btn.toggleState;
-            savePersistedRadioControlButtons();
-            lvglRefreshRadioControlUi();
-        }
-        if (!displayAwake) displaySetAwake(true);
-        lastUserActivityMs = millis();
-    }
+    radioControlEnqueueTx(request, status);
     uiStatusLine = status;
     lvglSyncStatusLine();
 }
@@ -927,17 +1226,26 @@ void lvglRadioControlConfirmEvent(lv_event_t *e)
         const bool toggleButton = radioControlButtonUsesLocalToggle(buttonCfg);
         const int16_t payload = toggleButton ? static_cast<int16_t>(buttonCfg.toggleState ? buttonCfg.offDataValue : buttonCfg.onDataValue)
                                              : static_cast<int16_t>(buttonCfg.onDataValue);
-        String status;
-        const bool sent = gateSendLegacyPacket(buttonCfg.destinationId, payload, status);
-        if (sent) {
-            if (toggleButton) {
-                buttonCfg.toggleState = !buttonCfg.toggleState;
-                savePersistedRadioControlButtons();
-                lvglRefreshRadioControlUi();
+        RadioControlTxRequest request = {};
+        request.valid = true;
+        request.buttonIndex = idx;
+        request.destinationId = buttonCfg.destinationId;
+        request.payload = payload;
+        request.notifyOnSuccess = true;
+        request.toggleStateValid = toggleButton;
+        request.nextToggleState = toggleButton ? !buttonCfg.toggleState : false;
+        if (radioControlButtonUsesMomentary(buttonCfg)) {
+            buttonCfg.pressActive = true;
+            if (radioControlButtonNeedsReleaseTx(buttonCfg)) {
+                request.followUpValid = true;
+                request.followUpPayload = buttonCfg.offDataValue;
+                request.followUpClearsPressActive = true;
+            } else {
+                request.clearPressActive = true;
             }
-            if (!displayAwake) displaySetAwake(true);
-            lastUserActivityMs = millis();
         }
+        String status;
+        if (!radioControlEnqueueTx(request, status) && radioControlButtonUsesMomentary(buttonCfg)) buttonCfg.pressActive = false;
         uiStatusLine = status;
         lvglSyncStatusLine();
     }
@@ -1019,6 +1327,12 @@ void lvglRefreshRadioButtonConfigUi()
         lv_obj_add_event_cb(offTa, lvglRadioButtonFieldChangedEvent, LV_EVENT_DEFOCUSED, reinterpret_cast<void *>(static_cast<intptr_t>(i)));
         lv_obj_add_event_cb(offTa, lvglRadioButtonFieldChangedEvent, LV_EVENT_READY, reinterpret_cast<void *>(static_cast<intptr_t>(i)));
 
+        lv_obj_t *toggleCb = lv_checkbox_create(row);
+        lv_obj_set_width(toggleCb, 36);
+        if (radioControlButtons[i].toggleEnabled) lv_obj_add_state(toggleCb, LV_STATE_CHECKED);
+        else lv_obj_clear_state(toggleCb, LV_STATE_CHECKED);
+        lv_obj_add_event_cb(toggleCb, lvglRadioButtonFieldChangedEvent, LV_EVENT_VALUE_CHANGED, reinterpret_cast<void *>(static_cast<intptr_t>(i)));
+
         lv_obj_t *confirmCb = lv_checkbox_create(row);
         lv_checkbox_set_text(confirmCb, tr(TXT_CONFIRM));
         if (radioControlButtons[i].requireConfirm) lv_obj_add_state(confirmCb, LV_STATE_CHECKED);
@@ -1066,7 +1380,9 @@ void lvglRadioButtonAddEvent(lv_event_t *e)
     btn.onDataValue = -1;
     btn.offDataValue = -1;
     btn.requireConfirm = false;
+    btn.toggleEnabled = false;
     btn.toggleState = false;
+    btn.pressActive = false;
     btn.selected = false;
     savePersistedRadioControlButtons();
     lvglRefreshRadioButtonConfigUi();

@@ -767,7 +767,6 @@ static void lvglRefreshPrimaryMenuButtonIcons()
     lvglSetMenuButtonIconMode(lvglConfigRemoteBtn, tr(TXT_REMOTE_CONTROL), LV_SYMBOL_HOME, &img_radio_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(lvglConfigStyleBtn, tr(TXT_SCREEN), LV_SYMBOL_SETTINGS, &img_styles_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(lvglConfigMqttBtn, tr(TXT_MQTT_CONFIG), LV_SYMBOL_SETTINGS, &img_mqtt_conf_small_icon, 8, 12);
-    lvglSetMenuButtonIconMode(lvglConfigScreenshotBtn, tr(TXT_SCREENSHOT), LV_SYMBOL_IMAGE, &img_screenshot_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(lvglConfigLanguageBtn, tr(TXT_LANGUAGE), LV_SYMBOL_EDIT, &img_styles_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(lvglConfigOtaBtn, tr(TXT_OTA_UPDATES), LV_SYMBOL_UPLOAD, &img_ota_small_icon, 8, 12);
     lvglSetMenuButtonIconMode(lvglConfigModulesBtn, "Modules", LV_SYMBOL_LIST, &img_config_small_icon, 8, 12);

@@ -37,7 +37,6 @@ static const char *tr(UiTextId id)
                 case TXT_STYLE: return "Стиль";
                 case TXT_MQTT_CONFIG: return "MQTT";
                 case TXT_MQTT_CONTROLS: return "MQTT кнопки";
-                case TXT_SCREENSHOT: return "Скриншот";
                 case TXT_LANGUAGE: return "Язык";
                 case TXT_OTA_UPDATES: return "OTA обновления";
                 
@@ -51,6 +50,7 @@ static const char *tr(UiTextId id)
                 case TXT_OTA_SELECT_RELEASE: return "???????? ???? ?????";case TXT_DEVICE_NAME: return "Имя устройства";
                 case TXT_SAVE: return "Сохранить";
                 case TXT_BRIGHTNESS: return "Яркость";
+                case TXT_ADAPTIVE_BRIGHTNESS: return "Адаптивная яркость";
                 case TXT_VOLUME: return "Громкость";
                 
                 case TXT_VIBRATION: return "????????";
@@ -146,7 +146,6 @@ static const char *tr(UiTextId id)
                 case TXT_STYLE: return "样式";
                 case TXT_MQTT_CONFIG: return "MQTT设置";
                 case TXT_MQTT_CONTROLS: return "MQTT控制";
-                case TXT_SCREENSHOT: return "截图";
                 case TXT_LANGUAGE: return "语言";
                 case TXT_OTA_UPDATES: return "OTA更新";
                 
@@ -160,6 +159,7 @@ static const char *tr(UiTextId id)
                 case TXT_OTA_SELECT_RELEASE: return "??????";case TXT_DEVICE_NAME: return "设备名称";
                 case TXT_SAVE: return "保存";
                 case TXT_BRIGHTNESS: return "亮度";
+                case TXT_ADAPTIVE_BRIGHTNESS: return "自适应亮度";
                 case TXT_VOLUME: return "音量";
                 
                 case TXT_VIBRATION: return "??";
@@ -255,7 +255,6 @@ static const char *tr(UiTextId id)
                 case TXT_STYLE: return "Style";
                 case TXT_MQTT_CONFIG: return "Config MQTT";
                 case TXT_MQTT_CONTROLS: return "Commandes MQTT";
-                case TXT_SCREENSHOT: return "Capture";
                 case TXT_LANGUAGE: return "Langue";
                 case TXT_OTA_UPDATES: return "Mises a jour OTA";
                 
@@ -269,6 +268,7 @@ static const char *tr(UiTextId id)
                 case TXT_OTA_SELECT_RELEASE: return "Selectionnez une version";case TXT_DEVICE_NAME: return "Nom appareil";
                 case TXT_SAVE: return "Enregistrer";
                 case TXT_BRIGHTNESS: return "Luminosite";
+                case TXT_ADAPTIVE_BRIGHTNESS: return "Luminosite adaptive";
                 case TXT_VOLUME: return "Volume";
                 
                 case TXT_VIBRATION: return "Vibration";
@@ -364,7 +364,6 @@ static const char *tr(UiTextId id)
                 case TXT_STYLE: return "Stil";
                 case TXT_MQTT_CONFIG: return "MQTT Ayari";
                 case TXT_MQTT_CONTROLS: return "MQTT Kontroller";
-                case TXT_SCREENSHOT: return "Ekran Goruntusu";
                 case TXT_LANGUAGE: return "Dil";
                 case TXT_OTA_UPDATES: return "OTA Guncelleme";
                 
@@ -378,6 +377,7 @@ static const char *tr(UiTextId id)
                 case TXT_OTA_SELECT_RELEASE: return "Bir surum sec";case TXT_DEVICE_NAME: return "Cihaz Adi";
                 case TXT_SAVE: return "Kaydet";
                 case TXT_BRIGHTNESS: return "Parlaklik";
+                case TXT_ADAPTIVE_BRIGHTNESS: return "Uyarlanir parlaklik";
                 case TXT_VOLUME: return "Ses";
                 
                 case TXT_VIBRATION: return "Titresim";
@@ -473,7 +473,6 @@ static const char *tr(UiTextId id)
                 case TXT_STYLE: return "Stile";
                 case TXT_MQTT_CONFIG: return "Config MQTT";
                 case TXT_MQTT_CONTROLS: return "Controlli MQTT";
-                case TXT_SCREENSHOT: return "Screenshot";
                 case TXT_LANGUAGE: return "Lingua";
                 case TXT_OTA_UPDATES: return "Aggiornamenti OTA";
                 
@@ -487,6 +486,7 @@ static const char *tr(UiTextId id)
                 case TXT_OTA_SELECT_RELEASE: return "Seleziona una versione";case TXT_DEVICE_NAME: return "Nome dispositivo";
                 case TXT_SAVE: return "Salva";
                 case TXT_BRIGHTNESS: return "Luminosita";
+                case TXT_ADAPTIVE_BRIGHTNESS: return "Luminosita adattiva";
                 case TXT_VOLUME: return "Volume";
                 
                 case TXT_VIBRATION: return "Vibrazione";
@@ -578,7 +578,6 @@ static const char *tr(UiTextId id)
                 case TXT_STYLE: return "Stil";
                 case TXT_MQTT_CONFIG: return "MQTT Konfig";
                 case TXT_MQTT_CONTROLS: return "MQTT Steuerung";
-                case TXT_SCREENSHOT: return "Screenshot";
                 case TXT_LANGUAGE: return "Sprache";
                 case TXT_OTA_UPDATES: return "OTA Updates";
                 
@@ -592,6 +591,7 @@ static const char *tr(UiTextId id)
                 case TXT_OTA_SELECT_RELEASE: return "Eine Version auswahlen";case TXT_DEVICE_NAME: return "Geratename";
                 case TXT_SAVE: return "Speichern";
                 case TXT_BRIGHTNESS: return "Helligkeit";
+                case TXT_ADAPTIVE_BRIGHTNESS: return "Adaptive Helligkeit";
                 case TXT_VOLUME: return "Lautstarke";
                 
                 case TXT_VIBRATION: return "Vibration";
@@ -687,7 +687,6 @@ static const char *tr(UiTextId id)
                 case TXT_STYLE: return "スタイル";
                 case TXT_MQTT_CONFIG: return "MQTT設定";
                 case TXT_MQTT_CONTROLS: return "MQTT操作";
-                case TXT_SCREENSHOT: return "スクリーンショット";
                 case TXT_LANGUAGE: return "言語";
                 case TXT_OTA_UPDATES: return "OTA更新";
                 
@@ -701,6 +700,7 @@ static const char *tr(UiTextId id)
                 case TXT_OTA_SELECT_RELEASE: return "1???";case TXT_DEVICE_NAME: return "デバイス名";
                 case TXT_SAVE: return "保存";
                 case TXT_BRIGHTNESS: return "明るさ";
+                case TXT_ADAPTIVE_BRIGHTNESS: return "自動明るさ";
                 case TXT_VOLUME: return "音量";
                 
                 case TXT_VIBRATION: return "??";
@@ -796,7 +796,6 @@ static const char *tr(UiTextId id)
                 case TXT_STYLE: return "스타일";
                 case TXT_MQTT_CONFIG: return "MQTT 설정";
                 case TXT_MQTT_CONTROLS: return "MQTT 제어";
-                case TXT_SCREENSHOT: return "스크린샷";
                 case TXT_LANGUAGE: return "언어";
                 case TXT_OTA_UPDATES: return "OTA 업데이트";
                 
@@ -810,6 +809,7 @@ static const char *tr(UiTextId id)
                 case TXT_OTA_SELECT_RELEASE: return "?? ??";case TXT_DEVICE_NAME: return "장치 이름";
                 case TXT_SAVE: return "저장";
                 case TXT_BRIGHTNESS: return "밝기";
+                case TXT_ADAPTIVE_BRIGHTNESS: return "적응형 밝기";
                 case TXT_VOLUME: return "볼륨";
                 
                 case TXT_VIBRATION: return "??";
@@ -906,7 +906,6 @@ static const char *tr(UiTextId id)
                 case TXT_STYLE: return "Style";
                 case TXT_MQTT_CONFIG: return "MQTT Config";
                 case TXT_MQTT_CONTROLS: return "MQTT Controls";
-                case TXT_SCREENSHOT: return "Screenshot";
                 case TXT_LANGUAGE: return "Language";
                 case TXT_OTA_UPDATES: return "OTA Updates";
                 
@@ -920,6 +919,7 @@ static const char *tr(UiTextId id)
                 case TXT_OTA_SELECT_RELEASE: return "Select one release";case TXT_DEVICE_NAME: return "Device Name";
                 case TXT_SAVE: return "Save";
                 case TXT_BRIGHTNESS: return "Brightness";
+                case TXT_ADAPTIVE_BRIGHTNESS: return "Adaptive Brightness";
                 case TXT_VOLUME: return "Volume";
                 
                 case TXT_VIBRATION: return "Vibration";

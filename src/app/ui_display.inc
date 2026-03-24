@@ -174,7 +174,6 @@ static lv_obj_t *lvglConfigRemoteBtn = nullptr;
 static lv_obj_t *lvglConfigStyleBtn = nullptr;
 static lv_obj_t *lvglConfigBatteryBtn = nullptr;
 static lv_obj_t *lvglConfigMqttBtn = nullptr;
-static lv_obj_t *lvglConfigScreenshotBtn = nullptr;
 static lv_obj_t *lvglConfigLanguageBtn = nullptr;
 static lv_obj_t *lvglConfigOtaBtn = nullptr;
 static lv_obj_t *lvglConfigModulesBtn = nullptr;
@@ -188,11 +187,14 @@ static lv_obj_t *lvglModulesVersionLabels[MODULE_SLOT_COUNT] = {};
 static lv_obj_t *lvglModulesActionBtns[MODULE_SLOT_COUNT] = {};
 static lv_obj_t *lvglModulesActionLabels[MODULE_SLOT_COUNT] = {};
 static lv_obj_t *lvglStyleScreenLockSw = nullptr;
-static lv_obj_t *lvglScreenLockModal = nullptr;
-static lv_obj_t *lvglScreenLockSetupPinTa = nullptr;
-static lv_obj_t *lvglScreenLockSetupStatusLabel = nullptr;
-static lv_obj_t *lvglScreenLockSetupCancelBtn = nullptr;
-static lv_obj_t *lvglScreenLockSetupSaveBtn = nullptr;
+static lv_obj_t *lvglStyleConfigLockSw = nullptr;
+static lv_obj_t *lvglProtectedPinModal = nullptr;
+static lv_obj_t *lvglProtectedPinTitleLabel = nullptr;
+static lv_obj_t *lvglProtectedPinTa = nullptr;
+static lv_obj_t *lvglProtectedPinStatusLabel = nullptr;
+static lv_obj_t *lvglProtectedPinCancelBtn = nullptr;
+static lv_obj_t *lvglProtectedPinSubmitBtn = nullptr;
+static lv_obj_t *lvglProtectedPinSubmitBtnLabel = nullptr;
 static lv_obj_t *lvglScreenLockPinTa = nullptr;
 static lv_obj_t *lvglScreenLockStatusLabel = nullptr;
 static lv_obj_t *lvglScreenLockUnlockBtn = nullptr;
@@ -230,8 +232,6 @@ static lv_obj_t *lvglStyleHomeMediaSw = nullptr;
 static lv_obj_t *lvglStyleHomeInfoSw = nullptr;
 static lv_obj_t *lvglStyleHomeGamesSw = nullptr;
 static lv_obj_t *lvglStyleHomeMqttSw = nullptr;
-static lv_obj_t *lvglStyleHomeConfigSw = nullptr;
-static lv_obj_t *lvglStyleHomePowerSw = nullptr;
 static lv_obj_t *lvglStyleHomeAirplaneSw = nullptr;
 static lv_obj_t *lvglStyleHomeApSw = nullptr;
 static lv_obj_t *lvglStyleHomeChatLabel = nullptr;
@@ -240,8 +240,6 @@ static lv_obj_t *lvglStyleHomeMediaLabel = nullptr;
 static lv_obj_t *lvglStyleHomeInfoLabel = nullptr;
 static lv_obj_t *lvglStyleHomeGamesLabel = nullptr;
 static lv_obj_t *lvglStyleHomeMqttLabel = nullptr;
-static lv_obj_t *lvglStyleHomeConfigLabel = nullptr;
-static lv_obj_t *lvglStyleHomePowerLabel = nullptr;
 static lv_obj_t *lvglStyleHomeAirplaneLabel = nullptr;
 static lv_obj_t *lvglStyleHomeApLabel = nullptr;
 static lv_obj_t *lvglOtaCurrentLabel = nullptr;
@@ -277,6 +275,7 @@ static lv_obj_t *lvglLanguageDropdown = nullptr;
 static lv_obj_t *lvglLanguageInfoLabel = nullptr;
 static lv_obj_t *lvglConfigDeviceNameHeader = nullptr;
 static lv_obj_t *lvglConfigBrightnessHeader = nullptr;
+static lv_obj_t *lvglConfigAdaptiveBrightnessLabel = nullptr;
 static lv_obj_t *lvglConfigVolumeHeader = nullptr;
 static lv_obj_t *lvglConfigRgbHeader = nullptr;
 static lv_obj_t *lvglConfigVibrationHeader = nullptr;
@@ -285,6 +284,7 @@ static lv_obj_t *lvglConfigStartupSoundLabel = nullptr;
 static lv_obj_t *lvglConfigDeviceNameSaveBtnLabel = nullptr;
 static lv_obj_t *lvglBrightnessSlider = nullptr;
 static lv_obj_t *lvglBrightnessValueLabel = nullptr;
+static lv_obj_t *lvglAdaptiveBrightnessSw = nullptr;
 static lv_obj_t *lvglVolumeSlider = nullptr;
 static lv_obj_t *lvglVolumeValueLabel = nullptr;
 static lv_obj_t *lvglRgbLedSlider = nullptr;
@@ -1130,6 +1130,11 @@ static void lvglApplyStyleScreenControlStyles()
         lv_obj_set_style_bg_color(lvglStyleScreenLockSw, lv_color_hex(0x3A8F4B), LV_PART_INDICATOR | LV_STATE_CHECKED);
         lv_obj_set_style_bg_color(lvglStyleScreenLockSw, lv_color_hex(0xDCE7F2), LV_PART_KNOB);
     }
+    if (lvglStyleConfigLockSw) {
+        lv_obj_set_style_bg_color(lvglStyleConfigLockSw, lv_color_hex(0x48515C), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(lvglStyleConfigLockSw, lv_color_hex(0x3A8F4B), LV_PART_INDICATOR | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_color(lvglStyleConfigLockSw, lv_color_hex(0xDCE7F2), LV_PART_KNOB);
+    }
     if (lvglStyleMenuIconsSw) {
         lv_obj_set_style_bg_color(lvglStyleMenuIconsSw, lv_color_hex(0x48515C), LV_PART_MAIN);
         lv_obj_set_style_bg_color(lvglStyleMenuIconsSw, lv_color_hex(0x3A8F4B), LV_PART_INDICATOR | LV_STATE_CHECKED);
@@ -1201,6 +1206,11 @@ static void lvglApplyConfigScreenControlStyles()
         lv_obj_set_style_bg_color(lvglStartupSoundSw, lv_color_hex(0x48515C), LV_PART_MAIN);
         lv_obj_set_style_bg_color(lvglStartupSoundSw, lv_color_hex(0x3A8F4B), LV_PART_INDICATOR | LV_STATE_CHECKED);
         lv_obj_set_style_bg_color(lvglStartupSoundSw, lv_color_hex(0xDCE7F2), LV_PART_KNOB);
+    }
+    if (lvglAdaptiveBrightnessSw) {
+        lv_obj_set_style_bg_color(lvglAdaptiveBrightnessSw, lv_color_hex(0x48515C), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(lvglAdaptiveBrightnessSw, lv_color_hex(0x3A8F4B), LV_PART_INDICATOR | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_color(lvglAdaptiveBrightnessSw, lv_color_hex(0xDCE7F2), LV_PART_KNOB);
     }
 }
 
@@ -4742,31 +4752,6 @@ static void hc12Service()
     }
 }
 
-static void screenshotService(bool touchDown)
-{
-    if ((uiDeferredFlags & UI_DEFERRED_SCREENSHOT_PENDING) == 0 || (uiDeferredFlags & UI_DEFERRED_SCREENSHOT_BUSY) != 0) return;
-    if (touchDown || fsWriteBusy()) return;
-
-    uiDeferredFlags &= static_cast<uint8_t>(~UI_DEFERRED_SCREENSHOT_PENDING);
-    uiDeferredFlags |= UI_DEFERRED_SCREENSHOT_BUSY;
-
-    if (!sdEnsureMounted(true)) {
-        uiDeferredFlags &= static_cast<uint8_t>(~UI_DEFERRED_SCREENSHOT_BUSY);
-        lvglStatusPush("Screenshot failed: no SD");
-        return;
-    }
-
-    fsWriteBegin();
-    String path;
-    String err;
-    const bool ok = captureScreenToJpeg(path, err);
-    fsWriteEnd();
-    uiDeferredFlags &= static_cast<uint8_t>(~UI_DEFERRED_SCREENSHOT_BUSY);
-
-    if (!ok) lvglStatusPush("Screenshot error: " + (err.length() ? err : String("unknown")));
-    else lvglStatusPush("Saved: " + path);
-}
-
 void lvglWifiPwdCancelEvent(lv_event_t *e)
 {
     (void)e;
@@ -5100,17 +5085,6 @@ void lvglOtaPopupEvent(lv_event_t *e)
     (void)e;
     otaClearPopupVersion();
     lvglHideOtaPostUpdatePopup();
-}
-
-void lvglScreenshotEvent(lv_event_t *e)
-{
-    (void)e;
-    if (uiDeferredFlags & (UI_DEFERRED_SCREENSHOT_PENDING | UI_DEFERRED_SCREENSHOT_BUSY)) {
-        lvglStatusPush("Screenshot already queued");
-        return;
-    }
-    uiDeferredFlags |= UI_DEFERRED_SCREENSHOT_PENDING;
-    lvglStatusPush("Screenshot queued");
 }
 
 // Snake, Snake 3D, and Tetris game UI/draw logic moved to dedicated game include files.
@@ -5713,6 +5687,7 @@ void displayBacklightInit()
     if (!DISPLAY_BACKLIGHT_PWM_SUPPORTED) return;
     ledcSetup(TFT_BL_LEDC_CHANNEL, TFT_BL_LEDC_FREQ, TFT_BL_LEDC_RES);
     ledcAttachPin(TFT_BL, TFT_BL_LEDC_CHANNEL);
+    displayAppliedBrightnessPercent = 0;
     displayBacklightSet(TFT_BL_LEVEL_OFF);
 }
 
@@ -5720,6 +5695,36 @@ uint8_t displayBacklightLevelFromPercent(uint8_t percent)
 {
     percent = static_cast<uint8_t>(constrain(percent, 5, 100));
     return static_cast<uint8_t>((static_cast<uint16_t>(TFT_BL_LEVEL_ON) * percent) / 100U);
+}
+
+uint8_t displayEffectiveBrightnessPercent()
+{
+    uint8_t targetPercent = static_cast<uint8_t>(constrain(displayBrightnessPercent, 5, 100));
+    if (!adaptiveBrightnessEnabled) return targetPercent;
+
+    if (LIGHT_ADC_PIN >= 0) {
+        const uint16_t factorPercent = static_cast<uint16_t>(ADAPTIVE_BRIGHTNESS_SENSOR_MIN_FACTOR_PERCENT)
+                                     + static_cast<uint16_t>((static_cast<uint32_t>(100U - ADAPTIVE_BRIGHTNESS_SENSOR_MIN_FACTOR_PERCENT) * lightPercent) / 100U);
+        const uint16_t ambientPercent = max<uint16_t>(5U, static_cast<uint16_t>((static_cast<uint32_t>(targetPercent) * factorPercent) / 100U));
+        targetPercent = static_cast<uint8_t>(min<uint16_t>(targetPercent, ambientPercent));
+    }
+
+    if (displayBrightnessPercent > ADAPTIVE_BRIGHTNESS_IDLE_TRIGGER_PERCENT &&
+        displayAwake &&
+        !screensaverActive &&
+        static_cast<unsigned long>(millis() - lastUserActivityMs) >= ADAPTIVE_BRIGHTNESS_IDLE_DIM_DELAY_MS) {
+        targetPercent = min<uint8_t>(targetPercent, ADAPTIVE_BRIGHTNESS_IDLE_DIM_PERCENT);
+    }
+
+    return static_cast<uint8_t>(constrain(targetPercent, 5, 100));
+}
+
+void displayApplyBacklightPolicy(bool force)
+{
+    const uint8_t nextPercent = displayAwake ? displayEffectiveBrightnessPercent() : 0U;
+    if (!force && displayAppliedBrightnessPercent == nextPercent) return;
+    displayAppliedBrightnessPercent = nextPercent;
+    displayBacklightSet(displayAwake ? displayBacklightLevelFromPercent(nextPercent) : TFT_BL_LEVEL_OFF);
 }
 
 void displayBacklightSet(uint8_t level)
@@ -5732,12 +5737,14 @@ void displayBacklightFadeIn(uint16_t durationMs)
 {
     const uint8_t steps = 16;
     const uint16_t stepDelay = max<uint16_t>(8, durationMs / steps);
-    const uint8_t target = displayBacklightLevelFromPercent(displayBrightnessPercent);
+    const uint8_t targetPercent = displayEffectiveBrightnessPercent();
+    const uint8_t target = displayBacklightLevelFromPercent(targetPercent);
     for (uint8_t i = 0; i <= steps; i++) {
         const uint8_t level = static_cast<uint8_t>((static_cast<uint16_t>(target) * i) / steps);
         displayBacklightSet(level);
         delay(stepDelay);
     }
+    displayAppliedBrightnessPercent = targetPercent;
 }
 
 #endif

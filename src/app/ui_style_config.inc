@@ -75,6 +75,8 @@ void lvglStyleTouchSoundToggleEvent(lv_event_t *e)
 
 static void saveHomeScreenPrefs()
 {
+    homeConfigVisible = true;
+    homePowerVisible = true;
     uiPrefs.begin("ui", false);
     uiPrefs.putBool("home_chat", homeChatVisible);
     uiPrefs.putBool("home_gate", homeRadioVisible);
@@ -105,8 +107,6 @@ void lvglStyleHomeMediaToggleEvent(lv_event_t *e) { lvglHandleHomeVisibilityTogg
 void lvglStyleHomeInfoToggleEvent(lv_event_t *e) { lvglHandleHomeVisibilityToggle(e, homeInfoVisible); }
 void lvglStyleHomeGamesToggleEvent(lv_event_t *e) { lvglHandleHomeVisibilityToggle(e, homeGamesVisible); }
 void lvglStyleHomeMqttToggleEvent(lv_event_t *e) { lvglHandleHomeVisibilityToggle(e, homeMqttVisible); }
-void lvglStyleHomeConfigToggleEvent(lv_event_t *e) { lvglHandleHomeVisibilityToggle(e, homeConfigVisible); }
-void lvglStyleHomePowerToggleEvent(lv_event_t *e) { lvglHandleHomeVisibilityToggle(e, homePowerVisible); }
 void lvglStyleHomeAirplaneToggleEvent(lv_event_t *e) { lvglHandleHomeVisibilityToggle(e, homeAirplaneVisible); }
 void lvglStyleHomeApToggleEvent(lv_event_t *e) { lvglHandleHomeVisibilityToggle(e, homeApVisible); }
 

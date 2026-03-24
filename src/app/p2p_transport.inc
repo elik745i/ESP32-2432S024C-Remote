@@ -1018,8 +1018,8 @@ void lvglTextAreaFocusEvent(lv_event_t *e)
                     return;
                 }
                 if (code != LV_EVENT_READY && code != LV_EVENT_CANCEL) return;
-                if (code == LV_EVENT_READY && lvglScreenLockSetupPinTa && lv_keyboard_get_textarea(lvglKb) == lvglScreenLockSetupPinTa) {
-                    lvglScreenLockUnlockEvent(nullptr);
+                if (code == LV_EVENT_READY && lvglProtectedPinTa && lv_keyboard_get_textarea(lvglKb) == lvglProtectedPinTa) {
+                    lvglProtectedPinSubmitEvent(nullptr);
                 } else if (code == LV_EVENT_READY && lvglScreenLockPinTa && lv_keyboard_get_textarea(lvglKb) == lvglScreenLockPinTa) {
                     lvglScreenLockUnlockEvent(nullptr);
                 } else if (code == LV_EVENT_READY && lvglWifiPwdModal && !lv_obj_has_flag(lvglWifiPwdModal, LV_OBJ_FLAG_HIDDEN) &&

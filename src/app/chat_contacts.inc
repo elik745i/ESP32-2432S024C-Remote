@@ -278,8 +278,6 @@ void lvglStyleHomeMediaToggleEvent(lv_event_t *e);
 void lvglStyleHomeInfoToggleEvent(lv_event_t *e);
 void lvglStyleHomeGamesToggleEvent(lv_event_t *e);
 void lvglStyleHomeMqttToggleEvent(lv_event_t *e);
-void lvglStyleHomeConfigToggleEvent(lv_event_t *e);
-void lvglStyleHomePowerToggleEvent(lv_event_t *e);
 void lvglStyleHomeAirplaneToggleEvent(lv_event_t *e);
 void lvglStyleHomeApToggleEvent(lv_event_t *e);
 void lvglStyleButtonFlatEvent(lv_event_t *e);
@@ -317,9 +315,9 @@ void lvglShowChatAirplanePrompt();
 bool lvglChatPromptIfAirplaneBlocked();
 void lvglPowerButtonEvent(lv_event_t *e);
 void lvglPowerDialogEvent(lv_event_t *e);
-void lvglScreenshotEvent(lv_event_t *e);
 void lvglStatusPush(const String &line);
 void lvglBrightnessEvent(lv_event_t *e);
+void lvglAdaptiveBrightnessEvent(lv_event_t *e);
 void lvglConfigVolumeEvent(lv_event_t *e);
 void lvglRgbLedEvent(lv_event_t *e);
 static void lvglRefreshHomeButtonVisibility();
@@ -347,7 +345,6 @@ static lv_obj_t *hc12SetBtnObj();
 static lv_obj_t *hc12TerminalObj();
 static lv_obj_t *hc12CmdTaObj();
 static bool hc12SetIsAsserted();
-static void screenshotService(bool touchDown);
 void lvglWifiApShowToggleEvent(lv_event_t *e);
 void lvglWifiPwdCancelEvent(lv_event_t *e);
 void lvglWifiPwdConnectEvent(lv_event_t *e);
@@ -436,6 +433,10 @@ static void lvglPrepareScreenLeave(UiScreen screen)
 {
     if (screen == UI_WIFI_LIST) stopWifiScan(false);
     if (screen == UI_CONFIG_MODULES) moduleStopCatalogRefresh(false);
+    if (screen == UI_CONFIG_RADIO_BUTTONS) {
+        syncRadioButtonConfigFromUi();
+        savePersistedRadioControlButtons();
+    }
     if (screen == UI_CONFIG_RADIO_RECEIVER_TEST) radioReceiverTestLeaveScreen();
     lv_obj_t *screenObj = lvglScreenForUi(screen);
     if (screenObj && lv_obj_is_valid(screenObj)) {
@@ -1440,7 +1441,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_flex_flow(wrap, LV_FLEX_FLOW_COLUMN);
             lv_obj_set_scrollbar_mode(wrap, LV_SCROLLBAR_MODE_OFF);
 #if defined(BOARD_ESP32_2432S024C)
-            static constexpr lv_coord_t RADIO_BUTTON_CONFIG_WIDE_W = 312;
+            static constexpr lv_coord_t RADIO_BUTTON_CONFIG_WIDE_W = 360;
             lv_obj_set_scroll_dir(wrap, LV_DIR_HOR | LV_DIR_VER);
 #else
             lv_obj_clear_flag(wrap, LV_OBJ_FLAG_SCROLLABLE);
@@ -1489,6 +1490,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             makeHeaderLabel("Dest.", 46);
             makeHeaderLabel("ON", 34);
             makeHeaderLabel("OFF", 34);
+            makeHeaderLabel("Tgl", 36);
             makeHeaderLabel("Conf", 44);
 
 #if defined(BOARD_ESP32_2432S024C)
@@ -1575,7 +1577,6 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglConfigStyleBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_SCREEN), lv_color_hex(0x2D6D8E), lvglOpenStyleScreenEvent, nullptr);
             lvglConfigBatteryBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_BATTERY), lv_color_hex(0x6C7E2C), lvglHomeNavEvent, reinterpret_cast<void *>(static_cast<intptr_t>(UI_CONFIG_BATTERY)));
             lvglConfigMqttBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_MQTT_CONFIG), lv_color_hex(0x6D4B9A), lvglOpenMqttCfgEvent, nullptr);
-            lvglConfigScreenshotBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_SCREENSHOT), lv_color_hex(0x6B5B2A), lvglScreenshotEvent, nullptr);
             lvglConfigLanguageBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_LANGUAGE), lv_color_hex(0x5A6FA8), lvglOpenLanguageScreenEvent, nullptr);
             lvglConfigOtaBtn = lvglCreateMenuButton(lvglConfigWrap, tr(TXT_OTA_UPDATES), lv_color_hex(0x2E6F95), lvglOpenOtaScreenEvent, nullptr);
             lvglConfigModulesBtn = lvglCreateMenuButton(lvglConfigWrap, "Modules", lv_color_hex(0x357A38), lvglOpenModulesScreenEvent, nullptr);
@@ -1653,6 +1654,27 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_width(lvglBrightnessSlider, lv_pct(100));
             lv_slider_set_range(lvglBrightnessSlider, 5, 100);
             lv_obj_add_event_cb(lvglBrightnessSlider, lvglBrightnessEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+
+            lv_obj_t *adaptiveRow = lv_obj_create(brightWrap);
+            lv_obj_set_size(adaptiveRow, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(adaptiveRow, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(adaptiveRow, 0, 0);
+            lv_obj_set_style_pad_all(adaptiveRow, 0, 0);
+            lv_obj_set_style_pad_column(adaptiveRow, 8, 0);
+            lv_obj_set_flex_flow(adaptiveRow, LV_FLEX_FLOW_ROW);
+            lv_obj_set_flex_align(adaptiveRow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+            lv_obj_clear_flag(adaptiveRow, LV_OBJ_FLAG_SCROLLABLE);
+
+            lvglConfigAdaptiveBrightnessLabel = lv_label_create(adaptiveRow);
+            lv_label_set_text(lvglConfigAdaptiveBrightnessLabel, tr(TXT_ADAPTIVE_BRIGHTNESS));
+            lv_obj_set_style_text_color(lvglConfigAdaptiveBrightnessLabel, lv_color_hex(0xB7C4D1), 0);
+            lv_obj_set_flex_grow(lvglConfigAdaptiveBrightnessLabel, 1);
+
+            lvglAdaptiveBrightnessSw = lv_switch_create(adaptiveRow);
+            lv_obj_add_event_cb(lvglAdaptiveBrightnessSw, lvglAdaptiveBrightnessEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+            lv_obj_add_event_cb(lvglAdaptiveBrightnessSw, lvglGestureBlockEvent, LV_EVENT_PRESSED, nullptr);
+            lv_obj_add_event_cb(lvglAdaptiveBrightnessSw, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
+            lv_obj_add_event_cb(lvglAdaptiveBrightnessSw, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
 
             lv_obj_t *volWrap = lv_obj_create(lvglConfigWrap);
             lv_obj_set_size(volWrap, lv_pct(100), LV_SIZE_CONTENT);
@@ -1809,7 +1831,6 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglRegisterReorderableItem(lvglConfigRemoteBtn, "ord_cfg", "rctl");
             lvglRegisterReorderableItem(lvglConfigStyleBtn, "ord_cfg", "style");
             lvglRegisterReorderableItem(lvglConfigMqttBtn, "ord_cfg", "mqtt");
-            lvglRegisterReorderableItem(lvglConfigScreenshotBtn, "ord_cfg", "shot");
             lvglRegisterReorderableItem(lvglConfigLanguageBtn, "ord_cfg", "lang");
             lvglRegisterReorderableItem(lvglConfigOtaBtn, "ord_cfg", "ota");
             lvglRegisterReorderableItem(lvglConfigModulesBtn, "ord_cfg", "mods");
@@ -2110,6 +2131,27 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_add_event_cb(lvglStyleScreenLockSw, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
             lv_obj_add_event_cb(lvglStyleScreenLockSw, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
 
+            lv_obj_t *configLockRow = lv_obj_create(wrap);
+            lv_obj_set_size(configLockRow, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_color(configLockRow, lv_color_hex(0x18222D), 0);
+            lv_obj_set_style_border_width(configLockRow, 0, 0);
+            lv_obj_set_style_radius(configLockRow, 12, 0);
+            lv_obj_set_style_pad_all(configLockRow, 12, 0);
+            lv_obj_set_style_pad_column(configLockRow, 8, 0);
+            lv_obj_set_flex_flow(configLockRow, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(configLockRow, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *configLockLbl = lv_label_create(configLockRow);
+            lv_label_set_text(configLockLbl, "Config Password");
+            lv_obj_set_style_text_color(configLockLbl, lv_color_hex(0xE5ECF3), 0);
+            lv_obj_set_flex_grow(configLockLbl, 1);
+
+            lvglStyleConfigLockSw = lv_switch_create(configLockRow);
+            lv_obj_add_event_cb(lvglStyleConfigLockSw, lvglStyleConfigLockToggleEvent, LV_EVENT_VALUE_CHANGED, nullptr);
+            lv_obj_add_event_cb(lvglStyleConfigLockSw, lvglGestureBlockEvent, LV_EVENT_PRESSED, nullptr);
+            lv_obj_add_event_cb(lvglStyleConfigLockSw, lvglGestureBlockEvent, LV_EVENT_RELEASED, nullptr);
+            lv_obj_add_event_cb(lvglStyleConfigLockSw, lvglGestureBlockEvent, LV_EVENT_PRESS_LOST, nullptr);
+
             lv_obj_t *menuIconsRow = lv_obj_create(wrap);
             lv_obj_set_size(menuIconsRow, lv_pct(100), LV_SIZE_CONTENT);
             lv_obj_set_style_bg_color(menuIconsRow, lv_color_hex(0x18222D), 0);
@@ -2404,8 +2446,6 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglStyleHomeInfoSw = nullptr;
             lvglStyleHomeGamesSw = nullptr;
             lvglStyleHomeMqttSw = nullptr;
-            lvglStyleHomeConfigSw = nullptr;
-            lvglStyleHomePowerSw = nullptr;
             lvglStyleHomeAirplaneSw = nullptr;
             lvglStyleHomeApSw = nullptr;
             lvglStyleHomeChatLabel = nullptr;
@@ -2414,8 +2454,6 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglStyleHomeInfoLabel = nullptr;
             lvglStyleHomeGamesLabel = nullptr;
             lvglStyleHomeMqttLabel = nullptr;
-            lvglStyleHomeConfigLabel = nullptr;
-            lvglStyleHomePowerLabel = nullptr;
             lvglStyleHomeAirplaneLabel = nullptr;
             lvglStyleHomeApLabel = nullptr;
 
@@ -2458,8 +2496,6 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             makeHomeRow(&lvglStyleHomeInfoLabel, &lvglStyleHomeInfoSw, tr(TXT_INFO), lvglStyleHomeInfoToggleEvent);
             makeHomeRow(&lvglStyleHomeGamesLabel, &lvglStyleHomeGamesSw, tr(TXT_GAMES), lvglStyleHomeGamesToggleEvent);
             makeHomeRow(&lvglStyleHomeMqttLabel, &lvglStyleHomeMqttSw, tr(TXT_MQTT_CONTROLS), lvglStyleHomeMqttToggleEvent);
-            makeHomeRow(&lvglStyleHomeConfigLabel, &lvglStyleHomeConfigSw, tr(TXT_CONFIG), lvglStyleHomeConfigToggleEvent);
-            makeHomeRow(&lvglStyleHomePowerLabel, &lvglStyleHomePowerSw, tr(TXT_POWER), lvglStyleHomePowerToggleEvent);
             makeHomeRow(&lvglStyleHomeAirplaneLabel, &lvglStyleHomeAirplaneSw, tr(TXT_AIRPLANE_MODE), lvglStyleHomeAirplaneToggleEvent);
             makeHomeRow(&lvglStyleHomeApLabel, &lvglStyleHomeApSw, tr(TXT_AP_MODE), lvglStyleHomeApToggleEvent);
 
@@ -3825,6 +3861,10 @@ void lvglHomeNavEvent(lv_event_t *e)
 {
     if (lvglClickSuppressed() || lvglReorderDrag.active) return;
     const UiScreen target = static_cast<UiScreen>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
+    if (target == UI_CONFIG && configLockIsConfigured()) {
+        configLockPromptForEntry();
+        return;
+    }
     if (target == UI_CHAT) {
         lvglHideChatMenu();
         currentChatPeerKey = "";

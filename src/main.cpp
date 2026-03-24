@@ -14,7 +14,6 @@
 #include <WiFiUdp.h>
 #include <Wire.h>
 #include <Audio.h>
-#include <JPEGENC.h>
 #include <HTTPClient.h>
 #include <Update.h>
 #include <WiFiClientSecure.h>
@@ -50,7 +49,6 @@
 #include "generated/img_full_small_icon.h"
 #include "generated/img_power_small_icon.h"
 #include "generated/img_radio_small_icon.h"
-#include "generated/img_screenshot_small_icon.h"
 #include "generated/img_silent_small_icon.h"
 #include "generated/img_speaker_small_icon.h"
 #include "generated/img_styles_small_icon.h"
@@ -162,6 +160,10 @@ static constexpr unsigned long LCD_IDLE_TIMEOUT_MS_DEFAULT = 120000UL;
 static constexpr unsigned long LCD_IDLE_TIMEOUT_MS_MIN = 15000UL;
 static constexpr unsigned long LCD_IDLE_TIMEOUT_MS_MAX = 600000UL;
 static constexpr unsigned long LCD_IDLE_TIMEOUT_STEP_MS = 15000UL;
+static constexpr unsigned long ADAPTIVE_BRIGHTNESS_IDLE_DIM_DELAY_MS = 5000UL;
+static constexpr uint8_t ADAPTIVE_BRIGHTNESS_IDLE_DIM_PERCENT = 50U;
+static constexpr uint8_t ADAPTIVE_BRIGHTNESS_IDLE_TRIGGER_PERCENT = 80U;
+static constexpr uint8_t ADAPTIVE_BRIGHTNESS_SENSOR_MIN_FACTOR_PERCENT = 35U;
 static constexpr unsigned long SENSOR_SAMPLE_PERIOD_MS = 2000;
 static constexpr unsigned long TOP_INDICATOR_REFRESH_MS = 1500;
 static constexpr unsigned long TOP_INDICATOR_WIFI_CONNECT_ANIM_MS = 220;
@@ -325,8 +327,6 @@ static constexpr size_t HC12_RADIO_MAX_LINE = 1216;   // payload only
 static constexpr int MAX_HC12_DISCOVERED = 8;
 static constexpr unsigned long HC12_DISCOVERY_INTERVAL_MS = 8000UL;
 static constexpr unsigned long HC12_DISCOVERY_STALE_MS = 45000UL;
-static constexpr uint8_t UI_DEFERRED_SCREENSHOT_PENDING = 0x01;
-static constexpr uint8_t UI_DEFERRED_SCREENSHOT_BUSY = 0x02;
 static constexpr uint8_t UI_DEFERRED_HC12_SETTLE_PENDING = 0x04;
 static constexpr uint8_t UI_DEFERRED_HC12_TARGET_ASSERTED = 0x08;
 static constexpr const char *MODULES_STATUS_CHECKING = "Checking...";
@@ -551,7 +551,6 @@ void lvglHideKeyboard();
 void networkSuspendForAudio();
 bool networkResumeAfterAudio();
 void lvglNavigateBackBySwipe(lv_scr_load_anim_t anim = LV_SCR_LOAD_ANIM_MOVE_RIGHT);
-bool captureScreenToJpeg(String &savedPathOut, String &errorOut);
 String mqttDefaultButtonName(int idx);
 String mqttButtonPayloadForIndex(int idx);
 String mediaBuildListLabel(const String &name, bool isDir, size_t sizeBytes);
@@ -561,6 +560,8 @@ void displayBacklightInit();
 void displayBacklightSet(uint8_t level);
 void displayBacklightFadeIn(uint16_t durationMs = 220);
 uint8_t displayBacklightLevelFromPercent(uint8_t percent);
+uint8_t displayEffectiveBrightnessPercent();
+void displayApplyBacklightPolicy(bool force = false);
 bool animateChargingBeforeSleep();
 void snakeResetGame();
 void snakePrepareGame();
@@ -700,10 +701,11 @@ void lvglApplyWifiWebServerButtonStyle();
 void lvglFactoryResetEvent(lv_event_t *e);
 void lvglFactoryResetConfirmEvent(lv_event_t *e);
 void lvglStyleScreenLockToggleEvent(lv_event_t *e);
+void lvglStyleConfigLockToggleEvent(lv_event_t *e);
 void lvglScreenLockUnlockEvent(lv_event_t *e);
 void lvglScreenLockFactoryResetEvent(lv_event_t *e);
-void lvglScreenLockSetupPinChangedEvent(lv_event_t *e);
 void lvglScreenLockPinChangedEvent(lv_event_t *e);
+void lvglProtectedPinSubmitEvent(lv_event_t *e);
 void lvglOpenMqttButtonConfigScreenEvent(lv_event_t *e);
 enum ChatTransport : uint8_t;
 static bool p2pHexToBytes(const String &hex, unsigned char *out, size_t outLen);
@@ -722,6 +724,8 @@ static void factoryResetWipeSdData();
 static bool screenLockIsConfigured();
 static bool screenLockShouldGateUi();
 static bool screenLockIsBlocked();
+static bool configLockIsConfigured();
+static void configLockPromptForEntry();
 static bool screenLockNumericTarget(lv_obj_t *ta);
 static void screenLockSanitizeTextArea(lv_obj_t *ta);
 static void screenLockResetState();
@@ -971,6 +975,8 @@ unsigned long lastChargeEvalMs = 0;
 unsigned long lastChargeSeenMs = 0;
 bool displayAwake = true;
 uint8_t displayBrightnessPercent = 100;
+bool adaptiveBrightnessEnabled = false;
+uint8_t displayAppliedBrightnessPercent = 0;
 unsigned long displayIdleTimeoutMs = LCD_IDLE_TIMEOUT_MS_DEFAULT;
 unsigned long powerOffIdleTimeoutMs = 0;
 unsigned long deepSleepIdleTimeoutMs = 0;
@@ -1095,7 +1101,6 @@ enum UiTextId : uint8_t {
     TXT_STYLE,
     TXT_MQTT_CONFIG,
     TXT_MQTT_CONTROLS,
-    TXT_SCREENSHOT,
     TXT_LANGUAGE,
     TXT_OTA_UPDATES,
     TXT_OTA_CURRENT_VERSION,
@@ -1133,6 +1138,7 @@ enum UiTextId : uint8_t {
     TXT_FACTORY_RESET_DONE,    
     TXT_SCREEN,
     TXT_BATTERY,
+    TXT_ADAPTIVE_BRIGHTNESS,
     TXT_RADIO_MODULE,
     TXT_RADIO_INFO_LOADING,
     TXT_SCREENSAVER,
@@ -1986,6 +1992,8 @@ uint32_t moduleCatalogRequestToken = 0;
 bool screenLockEnabled = false;
 bool screenLockUnlocked = true;
 char screenLockPin[5] = "";
+bool configLockEnabled = true;
+char configLockPin[5] = "1111";
 uint8_t screenLockFailedTotal = 0;
 unsigned long screenLockBlockedUntilMs = 0;
 unsigned long screenLockLastUiRefreshMs = 0;
@@ -2074,9 +2082,6 @@ static constexpr unsigned long BG_SERVICE_INTERVAL_UI_PRIORITY_MS = 36UL;
 // WIFI_SCAN_SERVICE_INTERVAL_MS, WIFI_CONN_SERVICE_INTERVAL_MS, SD_STATS_SERVICE_INTERVAL_MS,
 // MDNS_SERVICE_INTERVAL_MS, P2P_SERVICE_INTERVAL_MS, CHAT_PENDING_SERVICE_INTERVAL_MS,
 // RGB_SERVICE_INTERVAL_MS, CAR_TELEMETRY_SERVICE_INTERVAL_MS
-File screenshotJpegFile;
-String screenshotJpegPath;
-
 #include "app/mqtt.inc"
 #include "app/web_html.inc"
 
@@ -2644,7 +2649,7 @@ void loop()
                     if (!uiPriorityActive) serviceCarInputTelemetry();
                     if (!uiPriorityActive || uiScreen == UI_INFO) serviceInfoRefresh();
 
-                    if (!uiPriorityActive || uiScreen == UI_INFO || uiScreen == UI_CONFIG_HC12_INFO) {
+                    if (!radioControlTxInProgress() && (!uiPriorityActive || uiScreen == UI_INFO || uiScreen == UI_CONFIG_HC12_INFO)) {
                         serviceDeferredRadioInfoFetch();
                     }
                     break;
@@ -2662,17 +2667,17 @@ void loop()
     moduleCatalogService();
     otaUpdateService();
     if (modulesRuntimeActive) {
-        if (moduleInstalled[APP_MODULE_RADIO]) hc12Service();
-        if (moduleInstalled[APP_MODULE_RADIO] && (!uiPriorityActive || uiScreen == UI_CONFIG_HC12) && hc12ConfigApplyPending != HC12_CFG_APPLY_NONE) {
+        if (moduleInstalled[APP_MODULE_RADIO]) serviceRadioControlTxQueue();
+        if (moduleInstalled[APP_MODULE_RADIO] && !radioControlTxInProgress()) hc12Service();
+        if (moduleInstalled[APP_MODULE_RADIO] && !radioControlTxInProgress() && (!uiPriorityActive || uiScreen == UI_CONFIG_HC12) && hc12ConfigApplyPending != HC12_CFG_APPLY_NONE) {
             serviceDeferredHc12ConfigApply();
         }
-        if (moduleInstalled[APP_MODULE_RADIO] && moduleInstalled[APP_MODULE_CHAT]) radioChatService();
+        if (moduleInstalled[APP_MODULE_RADIO] && !radioControlTxInProgress() && moduleInstalled[APP_MODULE_CHAT]) radioChatService();
         if (moduleInstalled[APP_MODULE_CHAT] && (!uiPriorityActive || realtimeMessaging || chatPendingCount > 0)) {
             chatPendingService();
         }
         if (moduleInstalled[APP_MODULE_CHAT]) chatPendingOutboxService();
     }
-    screenshotService(isDown);
     const bool allowSdAutoRetry = (moduleInstalled[APP_MODULE_MEDIA] && uiScreen == UI_MEDIA) || !displayAwake;
     if (!sdMounted && allowSdAutoRetry && !isDown && !fsWriteBusy() &&
         static_cast<unsigned long>(millis() - sdLastAutoRetryMs) >= SD_AUTORETRY_PERIOD_MS) {
@@ -2771,6 +2776,7 @@ void loop()
     }
 
     if (displayAwake && isDown) lastUserActivityMs = millis();
+    displayApplyBacklightPolicy(false);
 
     if (topBarCenterMode == TOP_BAR_CENTER_TIME) syncInternetTimeIfNeeded(false);
 

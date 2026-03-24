@@ -90,7 +90,6 @@ bool sdMountAttemptAtFreq(uint32_t freqHz)
     delay(2);
     if (!SD.begin(SD_CS, sdSpi, freqHz)) return false;
     if (!SD.exists("/web")) SD.mkdir("/web");
-    if (!SD.exists("/Screenshots")) SD.mkdir("/Screenshots");
     if (!SD.exists(CHAT_LOG_DIR)) SD.mkdir(CHAT_LOG_DIR);
     return true;
 }
@@ -175,15 +174,6 @@ bool sdMounted = false;
 bool sdSpiReady = false;
 unsigned long sdLastAutoRetryMs = 0;
 bool bootSdInitPending = true;
-
-bool pathUnderScreenshots(const String &path)
-{
-    String p = path;
-    if (!p.startsWith("/")) p = "/" + p;
-    String l = p;
-    l.toLowerCase();
-    return (l == "/screenshots") || l.startsWith("/screenshots/");
-}
 
 // Legacy unused SD route helper moved to app/garbage.inc:
 // pathUnderConversations(const String&)
