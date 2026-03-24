@@ -63,12 +63,26 @@ void lvglRefreshHc12ConfigUi()
         if (lvglHc12PowerSubLabel) lv_label_set_text_fmt(lvglHc12PowerSubLabel, "%d dBm", HC12_POWER_DBM[powerLevel - 1]);
         if (lvglRadioPinSwapCard) lv_obj_clear_flag(lvglRadioPinSwapCard, LV_OBJ_FLAG_HIDDEN);
         if (lvglRadioPinSwapTitleLabel) lv_label_set_text(lvglRadioPinSwapTitleLabel, "UART Pins");
+    #if defined(BOARD_ESP32_2432S024C)
+        if (lvglRadioPinSwapTitleLabel) lv_label_set_text(lvglRadioPinSwapTitleLabel, "ESP UART");
+        if (lvglRadioPinSwapValueLabel) lv_label_set_text_fmt(lvglRadioPinSwapValueLabel, "TX%d", hc12ActiveTxPin());
+        if (lvglRadioPinSwapSubLabel) lv_label_set_text_fmt(lvglRadioPinSwapSubLabel, "RX%d fixed", hc12ActiveRxPin());
+    #else
         if (lvglRadioPinSwapValueLabel) lv_label_set_text(lvglRadioPinSwapValueLabel, hc12SwapUartPins ? "Swapped" : "Normal");
         if (lvglRadioPinSwapSubLabel) lv_label_set_text_fmt(lvglRadioPinSwapSubLabel, "ESP RX %d  |  TX %d", hc12ActiveRxPin(), hc12ActiveTxPin());
+    #endif
         if (lvglRadioModePinSwapCard) lv_obj_add_flag(lvglRadioModePinSwapCard, LV_OBJ_FLAG_HIDDEN);
-        if (lvglRadioHintLabel) lv_label_set_text_fmt(lvglRadioHintLabel,
-                                                      "HC-12 RXD %d  |  TXD %d  |  SET %d  |  %lu baud\nLegacy gate controllers use CH100 + 2400 baud. Serial Terminal and Info use HC-12 AT mode.",
-                                                      hc12ActiveTxPin(), hc12ActiveRxPin(), hc12ActiveSetPin(), hc12RuntimeBaud());
+        if (lvglRadioHintLabel) {
+    #if defined(BOARD_ESP32_2432S024C)
+            lv_label_set_text_fmt(lvglRadioHintLabel,
+                                      "HC-12 wiring: RXD->GPIO%d, TXD->GPIO%d, SET->GPIO%d, %lu baud\nLegacy gate controllers use CH100 + 2400 baud. Serial Terminal and Info use HC-12 AT mode.",
+                      hc12ActiveTxPin(), hc12ActiveRxPin(), hc12ActiveSetPin(), hc12RuntimeBaud());
+    #else
+            lv_label_set_text_fmt(lvglRadioHintLabel,
+                      "HC-12 RXD %d  |  TXD %d  |  SET %d  |  %lu baud\nLegacy gate controllers use CH100 + 2400 baud. Serial Terminal and Info use HC-12 AT mode.",
+                      hc12ActiveTxPin(), hc12ActiveRxPin(), hc12ActiveSetPin(), hc12RuntimeBaud());
+    #endif
+        }
     } else {
         if (lvglRadioExtraCard) lv_obj_clear_flag(lvglRadioExtraCard, LV_OBJ_FLAG_HIDDEN);
         if (lvglHc12ChannelValueLabel) lv_label_set_text_fmt(lvglHc12ChannelValueLabel, "CH%02d", e220CurrentChannel);
@@ -184,6 +198,11 @@ void lvglRadioPrevPinSwapEvent(lv_event_t *e)
 {
     (void)e;
     if (radioModuleType == RADIO_MODULE_HC12) {
+#if defined(BOARD_ESP32_2432S024C)
+        hc12ConfigStatusText = "HC-12 UART pins are fixed on this board";
+        lvglRefreshHc12ConfigUi();
+        return;
+#endif
         hc12SwapUartPins = !hc12SwapUartPins;
         savePersistedRadioSettings();
         hc12RestartWithCurrentPins(hc12SwapUartPins ? "HC-12 UART pins swapped" : "HC-12 UART pins restored");

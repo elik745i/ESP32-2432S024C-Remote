@@ -2840,6 +2840,12 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lvglRadioModePinSwapCard = makeSelectorRow("Mode Pins", lv_color_hex(0x6A7D42), lvglRadioPrevModePinSwapEvent, lvglRadioNextModePinSwapEvent,
                                                     &lvglRadioModePinSwapTitleLabel, &lvglRadioModePinSwapValueLabel, &lvglRadioModePinSwapSubLabel);
 
+            if (lvglRadioPinSwapSubLabel) {
+                lv_obj_set_width(lvglRadioPinSwapSubLabel, lv_pct(100));
+                lv_obj_set_style_text_align(lvglRadioPinSwapSubLabel, LV_TEXT_ALIGN_CENTER, 0);
+                lv_label_set_long_mode(lvglRadioPinSwapSubLabel, LV_LABEL_LONG_WRAP);
+            }
+
             lv_obj_t *hc12DefaultBtn = lvglCreateMenuButton(wrap, lvglSymbolText(LV_SYMBOL_REFRESH, "Default").c_str(), lv_color_hex(0xA35757), lvglHc12DefaultEvent, nullptr);
             lvglHc12ConfigStatusLabel = lv_label_create(wrap);
             if (lvglHc12ConfigStatusLabel) {

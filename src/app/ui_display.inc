@@ -3850,6 +3850,21 @@ static int hc12FindPowerLevelFromResponse(const String &raw)
     return hc12CurrentPowerLevel;
 }
 
+static bool radioPinsSupportSwappedUart(RadioModuleType moduleType)
+{
+    if (moduleType == RADIO_MODULE_HC12) {
+        return HC12_TX_PIN_DEFAULT >= 0 &&
+               HC12_RX_PIN_DEFAULT >= 0 &&
+               GPIO_IS_VALID_GPIO(HC12_TX_PIN_DEFAULT) &&
+               GPIO_IS_VALID_OUTPUT_GPIO(HC12_RX_PIN_DEFAULT);
+    }
+
+    return E220_TX_PIN_DEFAULT >= 0 &&
+           E220_RX_PIN_DEFAULT >= 0 &&
+           GPIO_IS_VALID_GPIO(E220_TX_PIN_DEFAULT) &&
+           GPIO_IS_VALID_OUTPUT_GPIO(E220_RX_PIN_DEFAULT);
+}
+
 static void loadPersistedRadioSettings()
 {
     hc12SwapUartPins = uiPrefs.getBool("hc12_swap", false);
@@ -3865,6 +3880,18 @@ static void loadPersistedRadioSettings()
     e220CurrentAirRateIndex = constrain(uiPrefs.getInt("e220_rate", 2), 0, static_cast<int>(sizeof(E220_AIR_RATE_OPTIONS) / sizeof(E220_AIR_RATE_OPTIONS[0])) - 1);
     e220CurrentPowerIndex = constrain(uiPrefs.getInt("e220_pwr", 0), 0, 3);
     e220CurrentFixedTransmission = uiPrefs.getBool("e220_fix", false);
+
+    if (hc12SwapUartPins && !radioPinsSupportSwappedUart(RADIO_MODULE_HC12)) {
+        hc12SwapUartPins = false;
+        uiPrefs.putBool("hc12_swap", false);
+        Serial.println("[RADIO] Ignored saved HC-12 UART swap: swapped TX pin cannot drive output on this board");
+    }
+
+    if (e220SwapUartPins && !radioPinsSupportSwappedUart(RADIO_MODULE_E220)) {
+        e220SwapUartPins = false;
+        uiPrefs.putBool("e220_swap", false);
+        Serial.println("[RADIO] Ignored saved E220 UART swap: swapped TX pin cannot drive output on this board");
+    }
 }
 
 static void savePersistedRadioSettings()

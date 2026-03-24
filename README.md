@@ -2,7 +2,7 @@
 
 Firmware for Sunton-style ESP32 touch display boards with an LVGL UI, Wi-Fi/AP tools, SD recovery/file access, MQTT controls, encrypted chat, and optional radio modules.
 
-Current firmware version: **`0.21.12`**
+Current firmware version: **`0.21.13`**
 
 ![ESP32 Remote Render](3D_Models/render1.jpeg)
 
@@ -29,8 +29,7 @@ Board references used while adding `ESP32-3248S035` support:
 - LVGL touch UI with swipe-back, reorderable menus, and double-tap screen off
 - Wi-Fi station/AP setup, captive portal helpers, and SD-backed recovery browser
 - Encrypted chat over LAN UDP, MQTT, and optional radio modules
-- `Radio Config` with `HC-12` and `Ebyte E220-400T22D` support on the S3 build
-- Radio pin-swap selectors for `HC-12` and `E220`, persisted in memory
+- `Radio Config` with board-aware HC-12/E220 wiring, safe UART swap validation, and terminal/info tools
 - `OTA Updates` includes both update-check and same-version `Reflash` on supported boards
 - `Battery` screen with manual `FULL` / `DISCHARGE` training and opt-in auto calibration
 - `Screen` settings for theme, timezone, 3D icons, touch feedback, screen timeout, auto power-off, and boot-time PIN lock
@@ -184,8 +183,9 @@ Radio notes:
 - `E220` chat/discovery works in `Transparent` mode.
 - `E220 Fixed` mode is available for module configuration, but current chat/discovery transport is disabled there.
 - Radio encryption is shared across both modules.
-- `Radio Config` can swap `RX/TX` for both modules and `M0/M1` for `E220` if wiring was cross-connected.
-- Radio pin-swap settings are stored in NVS and restored after reboot.
+- On `ESP32-2432S024C` and `ESP32-3248S035`, HC-12 wiring is fixed to `TX1`, `RX39`, `SET22`; invalid saved UART swaps are cleared automatically at boot.
+- On the S3 build, `Radio Config` can swap `RX/TX` for both modules and `M0/M1` for `E220` if wiring was cross-connected.
+- Radio pin-swap settings are stored in NVS and restored after reboot when the resulting GPIO map is valid.
 - `Radio Terminal` shows example test commands for the selected module.
 
 ## Battery and Power
@@ -387,6 +387,13 @@ Home Assistant integration repository: https://github.com/elik745i/MQTT-Remote-B
 ## Releases
 
 GitHub Releases contain published firmware binaries for each supported target.
+
+## v0.21.13
+
+- Added `Config Password` under `Config -> Screen`, defaulted to PIN `1111`, and require the current PIN before disabling either `Config Password` or `Screen Lock`.
+- Removed the screenshot feature and cleaned up `Main Screen Items` so `Config` and `Power` stay available without separate visibility toggles.
+- Fixed duplicate radio-control sends for gate and momentary actions, and keep the bundled Radio pack installed by default on `ESP32-2432S024C`.
+- Hardened radio startup by auto-clearing invalid saved UART swaps and clarified the fixed HC-12 wiring shown on compact ESP32 boards.
 
 ## v0.21.12
 
