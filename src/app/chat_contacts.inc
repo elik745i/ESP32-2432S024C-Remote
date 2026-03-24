@@ -1493,14 +1493,6 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             makeHeaderLabel("Tgl", 36);
             makeHeaderLabel("Conf", 44);
 
-#if defined(BOARD_ESP32_2432S024C)
-            lv_obj_t *scrollHint = lv_label_create(wrap);
-            lv_obj_set_width(scrollHint, RADIO_BUTTON_CONFIG_WIDE_W);
-            lv_label_set_text(scrollHint, "Swipe sideways to see all columns");
-            lv_obj_set_style_text_color(scrollHint, lv_color_hex(0x8FA5B8), 0);
-            lv_obj_set_style_text_align(scrollHint, LV_TEXT_ALIGN_LEFT, 0);
-#endif
-
             lvglRadioButtonConfigList = lv_obj_create(wrap);
 #if defined(BOARD_ESP32_2432S024C)
             lv_obj_set_size(lvglRadioButtonConfigList, RADIO_BUTTON_CONFIG_WIDE_W, UI_CONTENT_H - 144);
@@ -1520,7 +1512,7 @@ void lvglEnsureScreenBuilt(UiScreen screen)
             lv_obj_set_scrollbar_mode(lvglRadioButtonConfigList, LV_SCROLLBAR_MODE_OFF);
 
 #if defined(BOARD_ESP32_2432S024C)
-            lvglRadioReceiverTestBtn = makeSmallBtn(wrap, "Receiver Test", RADIO_BUTTON_CONFIG_WIDE_W, 32, lv_color_hex(0x7A5C2E), lvglOpenRadioReceiverTestScreenEvent, nullptr);
+            lvglRadioReceiverTestBtn = makeSmallBtn(wrap, "Receiver Test", DISPLAY_WIDTH - 20, 32, lv_color_hex(0x7A5C2E), lvglOpenRadioReceiverTestScreenEvent, nullptr);
 #else
             lvglRadioReceiverTestBtn = makeSmallBtn(wrap, "Receiver Test", DISPLAY_WIDTH - 20, 32, lv_color_hex(0x7A5C2E), lvglOpenRadioReceiverTestScreenEvent, nullptr);
 #endif
@@ -3972,6 +3964,15 @@ static void powerOffSignalPulse()
     digitalWrite(POWER_OFF_SIGNAL_PIN, HIGH);
 }
 
+static bool powerDialogSupportsManualPowerOff()
+{
+#if defined(BOARD_ESP32_2432S024C) || defined(BOARD_ESP32_3248S035)
+    return true;
+#else
+    return POWER_OFF_SIGNAL_PIN >= 0;
+#endif
+}
+
 void lvglPowerDialogEvent(lv_event_t *e)
 {
     lv_obj_t *msgbox = lv_event_get_current_target(e);
@@ -3992,9 +3993,16 @@ void lvglPowerDialogEvent(lv_event_t *e)
 
     if (strcmp(txt, tr(TXT_POWER_OFF)) == 0) {
         lv_msgbox_close(msgbox);
-        uiStatusLine = "Power-off signal sent";
-        if (lvglReady) lvglSyncStatusLine();
-        powerOffSignalPulse();
+        if (POWER_OFF_SIGNAL_PIN >= 0) {
+            uiStatusLine = "Power-off signal sent";
+            if (lvglReady) lvglSyncStatusLine();
+            powerOffSignalPulse();
+        } else if (powerDialogSupportsManualPowerOff()) {
+            uiStatusLine = "Entering deep sleep...";
+            if (lvglReady) lvglSyncStatusLine();
+            delay(80);
+            enterDeepSleep();
+        }
         return;
     }
 
@@ -4008,7 +4016,7 @@ void lvglPowerButtonEvent(lv_event_t *e)
     static const char *btns[4];
     btns[0] = tr(TXT_CANCEL);
     btns[1] = tr(TXT_RESTART);
-    btns[2] = POWER_OFF_SIGNAL_PIN >= 0 ? tr(TXT_POWER_OFF) : "";
+    btns[2] = powerDialogSupportsManualPowerOff() ? tr(TXT_POWER_OFF) : "";
     btns[3] = "";
 
     lv_obj_t *m = lv_msgbox_create(nullptr,
@@ -4020,12 +4028,19 @@ void lvglPowerButtonEvent(lv_event_t *e)
 
     lvglApplyMsgboxModalStyle(m);
     lv_obj_center(m);
-    lv_obj_set_width(m, min<int16_t>(DISPLAY_WIDTH - 24, 270));
+    const lv_coord_t powerPopupWidth =
+#if defined(BOARD_ESP32_2432S024C)
+        static_cast<lv_coord_t>(max<int16_t>(DISPLAY_WIDTH - 8, 220));
+#else
+        static_cast<lv_coord_t>(min<int16_t>(DISPLAY_WIDTH - 24, 270));
+#endif
+    lv_obj_set_width(m, powerPopupWidth);
     lv_obj_add_event_cb(m, lvglPowerDialogEvent, LV_EVENT_VALUE_CHANGED, nullptr);
 
     lv_obj_t *btnMatrix = lv_msgbox_get_btns(m);
     if (btnMatrix) {
         lv_btnmatrix_set_btn_ctrl(btnMatrix, 2, LV_BTNMATRIX_CTRL_CHECKABLE);
+        lv_obj_set_width(btnMatrix, lv_pct(100));
         lv_obj_set_style_bg_color(btnMatrix, lv_color_hex(0xA33F3F), LV_PART_ITEMS | LV_STATE_DEFAULT);
         lv_obj_set_style_bg_color(btnMatrix, lv_color_hex(0x7F2D2D), LV_PART_ITEMS | LV_STATE_PRESSED);
     }

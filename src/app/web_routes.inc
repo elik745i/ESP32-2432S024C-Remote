@@ -2037,7 +2037,9 @@ void wifiConnectionService()
             pendingSavePass = "";
         }
         uiStatusLine = "Connected: " + ssid;
-        syncInternetTimeIfNeeded(true);
+        if (!(bootInteractiveUntilMs != 0 && static_cast<long>(millis() - bootInteractiveUntilMs) < 0)) {
+            syncInternetTimeIfNeeded(true);
+        }
         lvglTopIndicatorStateValid = false;
         if (lvglReady) lvglRefreshTopIndicators();
         if (lvglWifiPwdConnectPending && ssid == lvglWifiPendingSsid) {

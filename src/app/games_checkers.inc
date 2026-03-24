@@ -758,7 +758,7 @@ static void checkersRefreshVariantPopup()
         if (!lbl) continue;
         lv_label_set_text(lbl, checkersVariantName(variants[i]));
         lv_obj_center(lbl);
-        lvglRegisterStyledButton(btn, variants[i] == checkersVariant ? lv_color_hex(0x3A7A3A) : lv_color_hex(0x2F4658), true);
+        lvglRegisterPersistentStateButtonColors(btn, lv_color_hex(0x2F4658), lv_color_hex(0x3A7A3A), variants[i] == checkersVariant, true);
         char orderKey[16];
         snprintf(orderKey, sizeof(orderKey), "v%d", static_cast<int>(variants[i]));
         lvglRegisterReorderableItem(btn, "ord_ckv", orderKey);

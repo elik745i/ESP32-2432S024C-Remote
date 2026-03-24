@@ -5,7 +5,7 @@ void lvglRefreshHc12Ui()
     lv_obj_t *setBtnLabel = setBtn ? lv_obj_get_child(setBtn, 0) : nullptr;
     if (setBtnLabel) lv_label_set_text(setBtnLabel, setAsserted ? "CFG: ON" : "CFG: OFF");
     if (setBtn) {
-        lvglRegisterStyledButton(setBtn, setAsserted ? lv_color_hex(0xC06C2B) : lv_color_hex(0x7A5C2E), true);
+        lvglRegisterPersistentStateButtonColors(setBtn, lv_color_hex(0x7A5C2E), lv_color_hex(0xC06C2B), setAsserted, true);
     }
     lv_obj_t *wrap = hc12WrapObj();
     lv_obj_t *topRow = wrap ? lv_obj_get_child(wrap, 0) : nullptr;

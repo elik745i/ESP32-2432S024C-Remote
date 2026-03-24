@@ -716,9 +716,11 @@ static void lvglRefreshBatteryTrainUi()
 
     lvglRefreshBatteryTrainButtonIcons();
     if (lvglBatteryTrainAutoBtn) {
-        lvglRegisterStyledButton(lvglBatteryTrainAutoBtn,
-                                 batteryTrainingState.autoCalibrationEnabled ? lv_color_hex(0x2F7A45) : lv_color_hex(0x345D8A),
-                                 false);
+        lvglRegisterPersistentStateButtonColors(lvglBatteryTrainAutoBtn,
+                                                lv_color_hex(0x345D8A),
+                                                lv_color_hex(0x2F7A45),
+                                                batteryTrainingState.autoCalibrationEnabled,
+                                                false);
     }
 
     String status = String("Mode: ") + batteryTrainingPhaseLabel();

@@ -932,7 +932,7 @@ void lvglRefreshMqttButtonConfigUi()
         lv_obj_t *selBtn = lv_obj_get_child(topRow, 1);
         lv_obj_t *delBtn = lv_obj_get_child(topRow, 2);
         if (addBtn) lvglRegisterStyledButton(addBtn, lv_color_hex(0x2F7A45), true);
-        if (selBtn) lvglRegisterStyledButton(selBtn, mqttButtonSelectionMode ? lv_color_hex(0x8A5A25) : lv_color_hex(0x2F6D86), true);
+        if (selBtn) lvglRegisterPersistentStateButtonColors(selBtn, lv_color_hex(0x2F6D86), lv_color_hex(0x8A5A25), mqttButtonSelectionMode, true);
         if (delBtn) lvglRegisterStyledButton(delBtn, lv_color_hex(0x8A3A3A), true);
     }
 
@@ -1233,6 +1233,12 @@ void mqttTrimBufferForIdle()
 
 void mqttService()
 {
+    if (!mqttClient.connected() &&
+        !mqttConnectRequested &&
+        bootInteractiveUntilMs != 0 &&
+        static_cast<long>(millis() - bootInteractiveUntilMs) < 0) {
+        return;
+    }
     if (networkSuspendedForAudio || airplaneModeEnabled) {
         const bool wasConnected = mqttClient.connected();
         if (wasConnected) mqttClient.disconnect();

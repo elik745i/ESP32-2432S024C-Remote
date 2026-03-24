@@ -38,6 +38,9 @@ struct RadioRuntimeSnapshot {
     bool e220FixedTransmission;
 };
 
+static bool radioAppliedRuntimeValid = false;
+static RadioRuntimeSnapshot radioAppliedRuntimeSnapshot = {};
+
 static lv_obj_t *lvglRemotePowerLabel = nullptr;
 static lv_obj_t *lvglRemotePowerDropdown = nullptr;
 static lv_obj_t *lvglRemoteExtraCard = nullptr;
@@ -420,6 +423,45 @@ static bool remoteProgramActiveE220(int targetChannel,
                                     String &statusOut);
 static bool remoteApplySelectedProfile(String &statusOut);
 
+static bool remoteApplySelectedHc12Profile(const RadioRuntimeSnapshot &targetRuntime, String &statusOut)
+{
+    int candidateBaudIndices[3] = {-1, -1, -1};
+    size_t candidateCount = 0;
+    const auto addCandidate = [&](int baudIndex) {
+        const int bounded = constrain(baudIndex,
+                                      0,
+                                      static_cast<int>(sizeof(HC12_SUPPORTED_BAUDS) / sizeof(HC12_SUPPORTED_BAUDS[0])) - 1);
+        for (size_t i = 0; i < candidateCount; ++i) {
+            if (candidateBaudIndices[i] == bounded) return;
+        }
+        if (candidateCount < (sizeof(candidateBaudIndices) / sizeof(candidateBaudIndices[0]))) {
+            candidateBaudIndices[candidateCount++] = bounded;
+        }
+    };
+
+    if (radioAppliedRuntimeValid && radioAppliedRuntimeSnapshot.moduleType == RADIO_MODULE_HC12) {
+        addCandidate(radioAppliedRuntimeSnapshot.hc12BaudIndex);
+    }
+    addCandidate(hc12CurrentBaudIndex);
+    addCandidate(targetRuntime.hc12BaudIndex);
+
+    String lastStatus;
+    for (size_t i = 0; i < candidateCount; ++i) {
+        if (remoteProgramActiveHc12(candidateBaudIndices[i],
+                                    targetRuntime.hc12Channel,
+                                    targetRuntime.hc12BaudIndex,
+                                    targetRuntime.hc12ModeIndex,
+                                    targetRuntime.hc12PowerLevel,
+                                    lastStatus)) {
+            statusOut = "";
+            return true;
+        }
+    }
+
+    statusOut = lastStatus;
+    return false;
+}
+
 static void savePersistedRadioControlButtons()
 {
     uiPrefs.begin("ui", false);
@@ -553,6 +595,58 @@ static void restoreRadioRuntimeSnapshot(const RadioRuntimeSnapshot &snap)
     e220CurrentAirRateIndex = snap.e220AirRateIndex;
     e220CurrentPowerIndex = snap.e220PowerIndex;
     e220CurrentFixedTransmission = snap.e220FixedTransmission;
+}
+
+static RadioRuntimeSnapshot captureSelectedRemoteRuntimeSnapshot()
+{
+    RadioRuntimeSnapshot snap = {};
+    snap.moduleType = remoteControlModuleType;
+    snap.hc12Channel = constrain(remoteHc12Channel, HC12_MIN_CHANNEL, HC12_MAX_CHANNEL);
+    snap.hc12BaudIndex = constrain(remoteHc12BaudIndex,
+                                   0,
+                                   static_cast<int>(sizeof(HC12_SUPPORTED_BAUDS) / sizeof(HC12_SUPPORTED_BAUDS[0])) - 1);
+    snap.hc12ModeIndex = constrain(remoteHc12ModeIndex, 0, 3);
+    snap.hc12PowerLevel = constrain(remoteHc12PowerLevel, 1, 8);
+    snap.e220Channel = constrain(remoteE220Channel, E220_MIN_CHANNEL, E220_MAX_CHANNEL);
+    snap.e220BaudIndex = constrain(remoteE220BaudIndex,
+                                   0,
+                                   static_cast<int>(sizeof(E220_UART_BAUD_VALUES) / sizeof(E220_UART_BAUD_VALUES[0])) - 1);
+    snap.e220AirRateIndex = constrain(remoteE220AirRateIndex,
+                                      0,
+                                      static_cast<int>(sizeof(E220_AIR_RATE_OPTIONS) / sizeof(E220_AIR_RATE_OPTIONS[0])) - 1);
+    snap.e220PowerIndex = constrain(remoteE220PowerIndex, 0, 3);
+    snap.e220FixedTransmission = remoteE220FixedTransmission;
+    return snap;
+}
+
+static bool radioRuntimeSnapshotsMatch(const RadioRuntimeSnapshot &lhs, const RadioRuntimeSnapshot &rhs)
+{
+    if (lhs.moduleType != rhs.moduleType) return false;
+
+    if (lhs.moduleType == RADIO_MODULE_HC12) {
+        return lhs.hc12Channel == rhs.hc12Channel &&
+               lhs.hc12BaudIndex == rhs.hc12BaudIndex &&
+               lhs.hc12ModeIndex == rhs.hc12ModeIndex &&
+               lhs.hc12PowerLevel == rhs.hc12PowerLevel;
+    }
+
+    return lhs.e220Channel == rhs.e220Channel &&
+           lhs.e220BaudIndex == rhs.e220BaudIndex &&
+           lhs.e220AirRateIndex == rhs.e220AirRateIndex &&
+           lhs.e220PowerIndex == rhs.e220PowerIndex &&
+           lhs.e220FixedTransmission == rhs.e220FixedTransmission;
+}
+
+static void radioRememberAppliedRuntime(const RadioRuntimeSnapshot &snap, bool persist)
+{
+    radioAppliedRuntimeSnapshot = snap;
+    radioAppliedRuntimeValid = true;
+    (void)persist;
+}
+
+static void radioSyncAppliedRuntimeWithCurrentSettings()
+{
+    radioRememberAppliedRuntime(captureRadioRuntimeSnapshot(), false);
 }
 
 static uint32_t gateKeeLoqEncrypt(uint32_t data, uint32_t keyHigh, uint32_t keyLow)
@@ -704,12 +798,7 @@ void radioReceiverTestLeaveScreen()
     radioReceiverTestAppend("[RXTEST] Restoring previous radio settings\n");
     String status;
     if (radioReceiverTestRestoreSnapshot.moduleType == RADIO_MODULE_HC12) {
-        remoteProgramActiveHc12(1,
-                                radioReceiverTestRestoreSnapshot.hc12Channel,
-                                radioReceiverTestRestoreSnapshot.hc12BaudIndex,
-                                radioReceiverTestRestoreSnapshot.hc12ModeIndex,
-                                radioReceiverTestRestoreSnapshot.hc12PowerLevel,
-                                status);
+        remoteApplySelectedHc12Profile(radioReceiverTestRestoreSnapshot, status);
     } else {
         remoteProgramActiveE220(radioReceiverTestRestoreSnapshot.e220Channel,
                                 radioReceiverTestRestoreSnapshot.e220BaudIndex,
@@ -718,6 +807,7 @@ void radioReceiverTestLeaveScreen()
                                 radioReceiverTestRestoreSnapshot.e220FixedTransmission,
                                 status);
     }
+    radioRememberAppliedRuntime(radioReceiverTestRestoreSnapshot, false);
     restoreRadioRuntimeSnapshot(radioReceiverTestRestoreSnapshot);
     hc12RestartWithCurrentPins("");
     radioReceiverTestActive = false;
@@ -939,20 +1029,28 @@ static bool remoteProgramActiveE220(int targetChannel,
 
 static bool remoteApplySelectedProfile(String &statusOut)
 {
-    if (remoteControlUsesHc12()) {
-        return remoteProgramActiveHc12(hc12CurrentBaudIndex,
-                                       remoteHc12Channel,
-                                       remoteHc12BaudIndex,
-                                       remoteHc12ModeIndex,
-                                       remoteHc12PowerLevel,
-                                       statusOut);
+    const RadioRuntimeSnapshot targetRuntime = captureSelectedRemoteRuntimeSnapshot();
+    if (radioAppliedRuntimeValid && radioRuntimeSnapshotsMatch(radioAppliedRuntimeSnapshot, targetRuntime)) {
+        restoreRadioRuntimeSnapshot(targetRuntime);
+        hc12RestartWithCurrentPins("");
+        statusOut = "";
+        return true;
     }
-    return remoteProgramActiveE220(remoteE220Channel,
-                                   remoteE220BaudIndex,
-                                   remoteE220AirRateIndex,
-                                   remoteE220PowerIndex,
-                                   remoteE220FixedTransmission,
-                                   statusOut);
+
+    bool ok = false;
+    if (targetRuntime.moduleType == RADIO_MODULE_HC12) {
+        ok = remoteApplySelectedHc12Profile(targetRuntime, statusOut);
+    } else {
+        ok = remoteProgramActiveE220(targetRuntime.e220Channel,
+                                     targetRuntime.e220BaudIndex,
+                                     targetRuntime.e220AirRateIndex,
+                                     targetRuntime.e220PowerIndex,
+                                     targetRuntime.e220FixedTransmission,
+                                     statusOut);
+    }
+
+    if (ok) radioRememberAppliedRuntime(targetRuntime, false);
+    return ok;
 }
 
 static bool gateSendLegacyPacket(uint16_t destinationId, int16_t payload, String &statusOut)
@@ -973,15 +1071,11 @@ static bool gateSendLegacyPacket(uint16_t destinationId, int16_t payload, String
                   static_cast<unsigned long>(keyHigh),
                   static_cast<unsigned long>(keyLow));
 
-    const RadioRuntimeSnapshot snapshot = captureRadioRuntimeSnapshot();
-    const RadioRuntimeSnapshot restoreProfile = snapshot;
-    restoreRadioRuntimeSnapshot(snapshot);
-
-    radioModuleType = remoteControlModuleType;
+    const RadioRuntimeSnapshot configSnapshot = captureRadioRuntimeSnapshot();
+    const RadioRuntimeSnapshot targetRuntime = captureSelectedRemoteRuntimeSnapshot();
     String applyStatus;
     if (!remoteApplySelectedProfile(applyStatus)) {
-        restoreRadioRuntimeSnapshot(snapshot);
-        hc12RestartWithCurrentPins("");
+        restoreRadioRuntimeSnapshot(configSnapshot);
         Serial.printf("[RCTL] remoteApplySelectedProfile FAILED: %s\n", applyStatus.c_str());
         statusOut = applyStatus;
         return false;
@@ -990,7 +1084,7 @@ static bool gateSendLegacyPacket(uint16_t destinationId, int16_t payload, String
 
     while (Serial1.available() > 0) Serial1.read();
 
-    if (radioModuleType == RADIO_MODULE_HC12) {
+    if (targetRuntime.moduleType == RADIO_MODULE_HC12) {
         pinMode(hc12ActiveSetPin(), OUTPUT);
         digitalWrite(hc12ActiveSetPin(), LOW);
         delay(300);
@@ -1042,36 +1136,6 @@ static bool gateSendLegacyPacket(uint16_t destinationId, int16_t payload, String
     gateRollingCount = txRollingCounter;
     gatePersistRollingCount();
 
-    if (radioModuleType == RADIO_MODULE_HC12) {
-        digitalWrite(hc12ActiveSetPin(), LOW);
-        delay(300);
-        Serial1.print("AT+SLEEP");
-        Serial1.flush();
-        delay(200);
-        digitalWrite(hc12ActiveSetPin(), HIGH);
-        delay(40);
-    }
-
-    String restoreStatus;
-    if (remoteControlUsesHc12()) {
-        remoteProgramActiveHc12(remoteHc12BaudIndex,
-                                restoreProfile.hc12Channel,
-                                restoreProfile.hc12BaudIndex,
-                                restoreProfile.hc12ModeIndex,
-                                restoreProfile.hc12PowerLevel,
-                                restoreStatus);
-    } else {
-        remoteProgramActiveE220(restoreProfile.e220Channel,
-                                restoreProfile.e220BaudIndex,
-                                restoreProfile.e220AirRateIndex,
-                                restoreProfile.e220PowerIndex,
-                                restoreProfile.e220FixedTransmission,
-                                restoreStatus);
-    }
-
-    restoreRadioRuntimeSnapshot(snapshot);
-    hc12RestartWithCurrentPins("");
-
     statusOut = "Gate command sent";
     return true;
 }
@@ -1096,13 +1160,19 @@ void lvglRefreshRadioControlUi()
                                              lvglRadioControlButtonEvent,
                                              reinterpret_cast<void *>(static_cast<intptr_t>(i)));
         if (btn) {
+            const bool localToggle = radioControlButtonUsesLocalToggle(radioControlButtons[i]);
             if (radioControlButtonUsesMomentary(radioControlButtons[i])) {
                 lv_obj_add_event_cb(btn, lvglRadioControlButtonEvent, LV_EVENT_PRESSED, reinterpret_cast<void *>(static_cast<intptr_t>(i)));
                 lv_obj_add_event_cb(btn, lvglRadioControlButtonEvent, LV_EVENT_RELEASED, reinterpret_cast<void *>(static_cast<intptr_t>(i)));
                 lv_obj_add_event_cb(btn, lvglRadioControlButtonEvent, LV_EVENT_PRESS_LOST, reinterpret_cast<void *>(static_cast<intptr_t>(i)));
             }
-            if (radioControlButtonUsesLocalToggle(radioControlButtons[i]) && radioControlButtons[i].toggleState) lv_obj_add_state(btn, LV_STATE_CHECKED);
-            else lv_obj_clear_state(btn, LV_STATE_CHECKED);
+            if (localToggle) {
+                lvglRegisterPersistentStateButton(btn, lv_color_hex(0x355F9A), radioControlButtons[i].toggleState, false);
+                lv_obj_clear_state(btn, LV_STATE_CHECKED);
+            } else {
+                lvglRegisterStyledButton(btn, lv_color_hex(0x355F9A), false);
+                lv_obj_clear_state(btn, LV_STATE_CHECKED);
+            }
             lvglRegisterReorderableItem(btn, "ord_rctl", String("btn_" + String(i)).c_str());
         }
     }
@@ -1255,7 +1325,7 @@ void lvglRadioControlConfirmEvent(lv_event_t *e)
 void lvglRefreshRadioButtonConfigUi()
 {
     if (lvglRadioButtonAddBtn) lvglRegisterStyledButton(lvglRadioButtonAddBtn, lv_color_hex(0x2F7A45), true);
-    if (lvglRadioButtonSelBtn) lvglRegisterStyledButton(lvglRadioButtonSelBtn, radioButtonSelectionMode ? lv_color_hex(0x8A5A25) : lv_color_hex(0x2F6D86), true);
+    if (lvglRadioButtonSelBtn) lvglRegisterPersistentStateButtonColors(lvglRadioButtonSelBtn, lv_color_hex(0x2F6D86), lv_color_hex(0x8A5A25), radioButtonSelectionMode, true);
     if (lvglRadioButtonDelBtn) lvglRegisterStyledButton(lvglRadioButtonDelBtn, lv_color_hex(0x8A3A3A), true);
     if (lvglRadioReceiverTestBtn) lvglRegisterStyledButton(lvglRadioReceiverTestBtn, lv_color_hex(0x7A5C2E), true);
     if (!lvglRadioButtonConfigList || !lv_obj_is_valid(lvglRadioButtonConfigList)) return;
@@ -1293,8 +1363,7 @@ void lvglRefreshRadioButtonConfigUi()
 
         lv_obj_t *idTa = lv_textarea_create(row);
         lv_obj_set_width(idTa, 46);
-        lv_obj_set_height(idTa, 34);
-        lv_textarea_set_one_line(idTa, true);
+        lvglConfigureCompactSingleLineTa(idTa, 34);
         lv_textarea_set_max_length(idTa, 5);
         lv_textarea_set_accepted_chars(idTa, "0123456789");
         lv_textarea_set_placeholder_text(idTa, "ID");
@@ -1305,8 +1374,7 @@ void lvglRefreshRadioButtonConfigUi()
 
         lv_obj_t *onTa = lv_textarea_create(row);
         lv_obj_set_width(onTa, 34);
-        lv_obj_set_height(onTa, 34);
-        lv_textarea_set_one_line(onTa, true);
+        lvglConfigureCompactSingleLineTa(onTa, 34);
         lv_textarea_set_max_length(onTa, 2);
         lv_textarea_set_accepted_chars(onTa, "0123456789");
         lv_textarea_set_placeholder_text(onTa, "On");
@@ -1317,8 +1385,7 @@ void lvglRefreshRadioButtonConfigUi()
 
         lv_obj_t *offTa = lv_textarea_create(row);
         lv_obj_set_width(offTa, 34);
-        lv_obj_set_height(offTa, 34);
-        lv_textarea_set_one_line(offTa, true);
+        lvglConfigureCompactSingleLineTa(offTa, 34);
         lv_textarea_set_max_length(offTa, 2);
         lv_textarea_set_accepted_chars(offTa, "0123456789");
         lv_textarea_set_placeholder_text(offTa, "Off");

@@ -670,6 +670,21 @@ static uint16_t lvglSwipeBackAnimDuration(lv_coord_t fromX, lv_coord_t toX, bool
                                            static_cast<uint32_t>(UI_ANIM_MS)));
 }
 
+static bool lvglScreenNeedsScrollResetBeforeSwipeBack(lv_obj_t *screenObj)
+{
+    if (!screenObj || !lv_obj_is_valid(screenObj)) return false;
+
+    const uint32_t childCount = lv_obj_get_child_cnt(screenObj);
+    for (uint32_t i = 0; i < childCount; ++i) {
+        lv_obj_t *child = lv_obj_get_child(screenObj, i);
+        if (!child || !lv_obj_is_valid(child)) continue;
+        if (!lv_obj_has_flag(child, LV_OBJ_FLAG_SCROLLABLE)) continue;
+        if ((lv_obj_get_scroll_dir(child) & LV_DIR_HOR) == 0) continue;
+        if (abs(static_cast<int>(lv_obj_get_scroll_x(child))) > 4) return true;
+    }
+    return false;
+}
+
 static void lvglReleaseSwipeBackPreview()
 {
     if (lvglSwipePreviewImg && lv_obj_is_valid(lvglSwipePreviewImg)) {
@@ -3562,15 +3577,19 @@ void lvglKeyboardRefreshLayout()
     lvglSetConfigKeyboardVisible(configManagedTarget);
 
     lv_obj_t *scrollable = lvglKeyboardFindScrollableAncestor(lvglKeyboardFocusedTa);
+    const bool compactRadioButtonTarget =
+        lvglRadioButtonConfigList && lv_obj_is_valid(lvglRadioButtonConfigList) &&
+        lvglObjHasAncestor(lvglKeyboardFocusedTa, lvglRadioButtonConfigList);
+    const lv_coord_t keyboardPadBottom = compactRadioButtonTarget ? 118 : 132;
     if (scrollable != lvglKeyboardPaddedContainer) {
         lvglKeyboardReleasePaddedContainer();
         if (scrollable && lv_obj_is_valid(scrollable)) {
             lvglKeyboardPaddedContainer = scrollable;
             lvglKeyboardPaddedContainerPrevBottom = lv_obj_get_style_pad_bottom(scrollable, LV_PART_MAIN);
-            lv_obj_set_style_pad_bottom(scrollable, max<lv_coord_t>(lvglKeyboardPaddedContainerPrevBottom, 132), 0);
+            lv_obj_set_style_pad_bottom(scrollable, max<lv_coord_t>(lvglKeyboardPaddedContainerPrevBottom, keyboardPadBottom), 0);
         }
     } else if (scrollable && lv_obj_is_valid(scrollable)) {
-        lv_obj_set_style_pad_bottom(scrollable, max<lv_coord_t>(lvglKeyboardPaddedContainerPrevBottom, 132), 0);
+        lv_obj_set_style_pad_bottom(scrollable, max<lv_coord_t>(lvglKeyboardPaddedContainerPrevBottom, keyboardPadBottom), 0);
     }
 
     lvglKeyboardEnsureFocusedVisible(false);
@@ -3994,7 +4013,10 @@ static bool hc12ReadConfigSelection()
     hc12CurrentPowerLevel = hc12FindPowerLevelFromResponse(powerRaw);
     ok = true;
 
-    if (ok) savePersistedRadioSettings();
+    if (ok) {
+        savePersistedRadioSettings();
+        radioSyncAppliedRuntimeWithCurrentSettings();
+    }
     hc12ConfigStatusText = ok ? "Module settings loaded" : "HC-12 did not return settings";
     return ok;
 }
@@ -4009,6 +4031,7 @@ static bool hc12ApplyChannel(int channel)
         if (resp.indexOf("OK") >= 0) {
             e220CurrentChannel = channel;
             savePersistedRadioSettings();
+            radioSyncAppliedRuntimeWithCurrentSettings();
             hc12ConfigStatusText = "Channel set to CH" + String(channel);
             return true;
         }
@@ -4024,6 +4047,7 @@ static bool hc12ApplyChannel(int channel)
     if (resp.startsWith("OK+C")) {
         hc12CurrentChannel = channel;
         savePersistedRadioSettings();
+        radioSyncAppliedRuntimeWithCurrentSettings();
         hc12ConfigStatusText = "Channel set to CH" + String(channel);
         return true;
     }
@@ -4088,6 +4112,7 @@ static bool hc12ApplyModeIndex(int index)
         if (resp.indexOf("OK") >= 0) {
             e220CurrentAirRateIndex = index;
             savePersistedRadioSettings();
+            radioSyncAppliedRuntimeWithCurrentSettings();
             hc12ConfigStatusText = String("Air rate set to ") + E220_AIR_RATE_LABELS[index] + " bps";
             return true;
         }
@@ -4103,6 +4128,7 @@ static bool hc12ApplyModeIndex(int index)
     if (resp.startsWith("OK+FU")) {
         hc12CurrentModeIndex = index;
         savePersistedRadioSettings();
+        radioSyncAppliedRuntimeWithCurrentSettings();
         hc12ConfigStatusText = String("Mode set to ") + HC12_MODE_LABELS[index];
         return true;
     }
@@ -4120,6 +4146,7 @@ static bool hc12ApplyPowerLevel(int level)
         if (resp.indexOf("OK") >= 0) {
             e220CurrentPowerIndex = level;
             savePersistedRadioSettings();
+            radioSyncAppliedRuntimeWithCurrentSettings();
             hc12ConfigStatusText = String("Power set to ") + E220_POWER_DBM[level] + " dBm";
             return true;
         }
@@ -4135,6 +4162,7 @@ static bool hc12ApplyPowerLevel(int level)
     if (resp.startsWith("OK+P")) {
         hc12CurrentPowerLevel = level;
         savePersistedRadioSettings();
+        radioSyncAppliedRuntimeWithCurrentSettings();
         hc12ConfigStatusText = String("Power set to ") + HC12_POWER_DBM[level - 1] + " dBm";
         return true;
     }
@@ -4150,6 +4178,7 @@ static bool e220ApplyTransferMode(bool fixedTransmission)
     if (resp.indexOf("OK") >= 0) {
         e220CurrentFixedTransmission = fixedTransmission;
         savePersistedRadioSettings();
+        radioSyncAppliedRuntimeWithCurrentSettings();
         hc12ConfigStatusText = String("Transfer mode set to ") + (fixedTransmission ? "Fixed" : "Transparent");
         if (fixedTransmission && lvglReady) lvglShowE220FixedModeWarning();
         return true;
@@ -5476,6 +5505,7 @@ void lvglService()
             const UiScreen activeScreen = lvglUiForScreenObj(lv_scr_act());
             if (activeScreen != uiScreen) uiScreen = activeScreen;
             const bool forceSwipeBackScreen = (uiScreen == UI_CONFIG_STYLE_HOME_ITEMS);
+            const bool needsScrollReset = lvglScreenNeedsScrollResetBeforeSwipeBack(lv_scr_act());
             lvglSwipeTracking = true;
             lvglSwipeStartX = lvglLastTouchX;
             lvglSwipeStartY = lvglLastTouchY;
@@ -5484,6 +5514,7 @@ void lvglService()
             lvglSwipeStartMs = now;
             lvglSwipeSourceScreen = uiScreenSupportsSwipeBack(activeScreen) ? activeScreen : uiScreen;
             lvglSwipeCandidate = uiScreenSupportsSwipeBack(lvglSwipeSourceScreen) &&
+                                 !needsScrollReset &&
                                  (forceSwipeBackScreen || !lvglGestureBlocked) &&
                                  (forceSwipeBackScreen || !lvglTouchOwnsHorizontalGesture());
             lvglSwipeHorizontalLocked = false;

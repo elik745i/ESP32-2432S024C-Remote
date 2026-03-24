@@ -1,6 +1,7 @@
 struct LvglStyledButtonEntry {
     lv_obj_t *obj;
     lv_color_t baseColor;
+    lv_color_t activeColor;
     uint8_t flags;
 };
 
@@ -914,11 +915,12 @@ static void lvglRegisterStyledButton(lv_obj_t *btn, lv_color_t baseColor, bool c
     }
     if (!entry) return;
     entry->baseColor = baseColor;
+    entry->activeColor = baseColor;
     entry->flags = compact ? LVGL_STYLED_BUTTON_FLAG_COMPACT : 0;
     lvglApplyMomentaryButtonStyle(btn, lv_obj_get_child(btn, 0), baseColor, compact);
 }
 
-static void lvglRegisterPersistentStateButton(lv_obj_t *btn, lv_color_t offBodyCol, bool enabled, bool compact)
+static void lvglRegisterPersistentStateButtonColors(lv_obj_t *btn, lv_color_t offBodyCol, lv_color_t onBodyCol, bool enabled, bool compact)
 {
     if (!btn) return;
     if (!lvglEnsureUiRegistryStorage()) return;
@@ -936,9 +938,15 @@ static void lvglRegisterPersistentStateButton(lv_obj_t *btn, lv_color_t offBodyC
     }
     if (!entry) return;
     entry->baseColor = offBodyCol;
+    entry->activeColor = onBodyCol;
     entry->flags = (compact ? LVGL_STYLED_BUTTON_FLAG_COMPACT : 0) |
                    (enabled ? LVGL_STYLED_BUTTON_FLAG_PERSISTENT_ON : 0);
-    lvglApplyPersistentToggleButtonStyle(btn, lv_obj_get_child(btn, 0), enabled, offBodyCol, offBodyCol, compact);
+    lvglApplyPersistentToggleButtonStyle(btn, lv_obj_get_child(btn, 0), enabled, offBodyCol, onBodyCol, compact);
+}
+
+static void lvglRegisterPersistentStateButton(lv_obj_t *btn, lv_color_t offBodyCol, bool enabled, bool compact)
+{
+    lvglRegisterPersistentStateButtonColors(btn, offBodyCol, lvglActiveToggleGreen(compact), enabled, compact);
 }
 
 lv_obj_t *lvglCreateMenuButton(lv_obj_t *parent, const char *txt, lv_color_t color, lv_event_cb_t cb, void *user)
@@ -999,7 +1007,7 @@ static void lvglApplyPersistentToggleButtonStyle(lv_obj_t *btn,
 {
     if (!btn) return;
 
-    const lv_color_t bodyCol = enabled ? lvglActiveToggleGreen(compact) : offBodyCol;
+    const lv_color_t bodyCol = enabled ? onBodyCol : offBodyCol;
     const lv_color_t flashColor = lv_color_mix(lv_color_white(), bodyCol, UI_BUTTON_CLICK_FLASH_MIX);
     if (lvglBlackButtonThemeActive()) {
         const lv_color_t blackBody = lv_color_hex(UI_BUTTON_BLACK_BODY_HEX);
@@ -1151,7 +1159,7 @@ static void lvglAirplaneButtonDrawEvent(lv_event_t *e)
         if (!entry) return;
         compact = (entry->flags & LVGL_STYLED_BUTTON_FLAG_COMPACT) != 0;
         const bool enabled = (entry->flags & LVGL_STYLED_BUTTON_FLAG_PERSISTENT_ON) != 0;
-        bodyCol = enabled ? lvglActiveToggleGreen(compact) : entry->baseColor;
+        bodyCol = enabled ? entry->activeColor : entry->baseColor;
         sunken = enabled || sunken;
     }
 
@@ -1225,7 +1233,7 @@ void lvglRefreshAllButtonStyles()
         const bool compact = (entry.flags & LVGL_STYLED_BUTTON_FLAG_COMPACT) != 0;
         const bool enabled = (entry.flags & LVGL_STYLED_BUTTON_FLAG_PERSISTENT_ON) != 0;
         if (enabled) {
-            lvglApplyPersistentToggleButtonStyle(entry.obj, lv_obj_get_child(entry.obj, 0), true, entry.baseColor, entry.baseColor, compact);
+            lvglApplyPersistentToggleButtonStyle(entry.obj, lv_obj_get_child(entry.obj, 0), true, entry.baseColor, entry.activeColor, compact);
         } else {
             lvglApplyMomentaryButtonStyle(entry.obj, lv_obj_get_child(entry.obj, 0), entry.baseColor, compact);
         }

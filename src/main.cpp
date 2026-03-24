@@ -745,6 +745,7 @@ static void lvglApplyPersistentToggleButtonStyle(lv_obj_t *btn,
                                                  lv_color_t onBodyCol,
                                                  bool compact);
 static void lvglRegisterStyledButton(lv_obj_t *btn, lv_color_t baseColor, bool compact);
+static void lvglRegisterPersistentStateButtonColors(lv_obj_t *btn, lv_color_t offBodyCol, lv_color_t onBodyCol, bool enabled, bool compact);
 static void lvglRegisterPersistentStateButton(lv_obj_t *btn, lv_color_t offBodyCol, bool enabled, bool compact);
 static String topBarCenterText();
 static bool internetTimeValid();
@@ -767,6 +768,7 @@ static void batteryTrainingStopManual();
 static const char *batteryTrainingPhaseLabel();
 static void lvglRefreshBatteryTrainButtonIcons();
 static void lvglRefreshBatteryTrainUi();
+void enterDeepSleep();
 void lvglBatteryTrainResetEvent(lv_event_t *e);
 void lvglBatteryTrainResetPromptEvent(lv_event_t *e);
 void lvglBatteryTrainFullConfirmEvent(lv_event_t *e);
@@ -807,6 +809,7 @@ static String hc12QueryCommand(const char *line, unsigned long totalTimeoutMs = 
 static String e220QueryCommand(const char *line, unsigned long totalTimeoutMs, unsigned long quietTimeoutMs);
 static void hc12EnterAtMode();
 static void hc12ExitAtMode();
+static void radioSyncAppliedRuntimeWithCurrentSettings();
 static String e220ValueAfterEquals(String raw);
 static bool infoRefreshPending = false;
 static bool radioInfoFetchPending = false;
@@ -934,6 +937,9 @@ void audio_info(const char *info)
 }
 
 bool bootWifiInitPending = true;
+bool bootRadioInitPending = false;
+bool bootRadioProbePending = false;
+bool bootStartupFeedbackPending = false;
 bool wifiRuntimeManaged = true;
 bool wifiScanInProgress = false;
 unsigned long wifiScanStartedMs = 0;
@@ -941,6 +947,10 @@ bool wifiScanFallbackUsed = false;
 unsigned long wifiScanAnimLastMs = 0;
 uint8_t wifiScanAnimPhase = 0;
 unsigned long bootDeferredStartMs = 0;
+unsigned long bootInteractiveUntilMs = 0;
+unsigned long bootRadioInitDueMs = 0;
+unsigned long bootRadioProbeDueMs = 0;
+unsigned long bootStartupFeedbackDueMs = 0;
 bool mdnsStarted = false;
 bool webRoutesRegistered = false;
 bool webServerRunning = false;
@@ -2443,19 +2453,6 @@ void setup()
     } else {
         p2pReady = false;
     }
-    if (moduleInstalled[APP_MODULE_RADIO] && radioModuleType == RADIO_MODULE_E220) {
-        pinMode(e220ActiveM0Pin(), OUTPUT);
-        pinMode(e220ActiveM1Pin(), OUTPUT);
-        digitalWrite(e220ActiveM0Pin(), LOW);
-        digitalWrite(e220ActiveM1Pin(), LOW);
-        delay(120);
-        hc12SerialReopen(e220RuntimeBaud());
-        delay(30);
-    }
-    if (moduleInstalled[APP_MODULE_RADIO]) hc12InitIfNeeded();
-    if (moduleInstalled[APP_MODULE_RADIO] && radioModuleType == RADIO_MODULE_E220) {
-        hc12ReadConfigSelection();
-    }
     batteryCalibrationLoad();
     batteryTrainingLoad();
     loadGamePrefs();
@@ -2516,14 +2513,20 @@ void setup()
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step displayBacklightFadeIn");
     displayBacklightFadeIn();
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step displayBacklightFadeIn done");
-    playStartupFeedbackIfEnabled();
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] SD/network init deferred to loop");
     bootDeferredStartMs = millis();
+    bootInteractiveUntilMs = bootDeferredStartMs + BOOT_INTERACTIVE_GRACE_MS;
     bootSdInitPending = true;
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] SD boot init enabled on ESP32-S3 after RGB/PSRAM fix");
 #endif
     bootWifiInitPending = true;
+    bootStartupFeedbackPending = true;
+    bootStartupFeedbackDueMs = bootDeferredStartMs + BOOT_DEFER_STARTUP_FEEDBACK_MS;
+    bootRadioInitPending = moduleInstalled[APP_MODULE_RADIO];
+    bootRadioInitDueMs = bootDeferredStartMs + BOOT_DEFER_RADIO_INIT_MS;
+    bootRadioProbePending = moduleInstalled[APP_MODULE_RADIO] && radioModuleType == RADIO_MODULE_E220;
+    bootRadioProbeDueMs = bootDeferredStartMs + BOOT_DEFER_RADIO_PROBE_MS;
     wifiRuntimeManaged = true;
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] WiFi boot init enabled on ESP32-S3 after RGB/PSRAM fix");
@@ -2589,6 +2592,7 @@ void loop()
 
     const unsigned long now = millis();
     const bool modulesRuntimeActive = moduleNeedsRuntime();
+    const bool bootInteractiveGraceActive = bootInteractiveUntilMs != 0 && static_cast<long>(now - bootInteractiveUntilMs) < 0;
 
     if (bootSdInitPending && static_cast<unsigned long>(now - bootDeferredStartMs) >= BOOT_DEFER_SD_MS) {
         bootSdInitPending = false;
@@ -2598,6 +2602,18 @@ void loop()
     if (bootWifiInitPending && static_cast<unsigned long>(now - bootDeferredStartMs) >= BOOT_DEFER_WIFI_MS) {
         bootWifiInitPending = false;
         setupWifiAndServer();
+    }
+    if (bootStartupFeedbackPending && static_cast<long>(now - bootStartupFeedbackDueMs) >= 0 && !isDown && !uiPriorityActive) {
+        bootStartupFeedbackPending = false;
+        playStartupFeedbackIfEnabled();
+    }
+    if (bootRadioInitPending && static_cast<long>(now - bootRadioInitDueMs) >= 0 && !isDown && !uiPriorityActive) {
+        bootRadioInitPending = false;
+        hc12InitIfNeeded();
+    }
+    if (bootRadioProbePending && !bootRadioInitPending && static_cast<long>(now - bootRadioProbeDueMs) >= 0 && !isDown && !uiPriorityActive) {
+        bootRadioProbePending = false;
+        hc12ReadConfigSelection();
     }
 
     static unsigned long lastServiceSliceMs = 0;
@@ -2621,15 +2637,15 @@ void loop()
             }
             if (!uiPriorityActive || uiScreen == UI_INFO) serviceInfoRefresh();
             if (!uiPriorityActive) {
-                refreshMdnsState();
-                otaCheckService();
+                if (!bootInteractiveGraceActive) refreshMdnsState();
+                if (!bootInteractiveGraceActive || uiScreen == UI_CONFIG_OTA) otaCheckService();
             }
         } else {
             switch (serviceSlicePhase) {
                 case 0:
                     if (!deferNetworkWork) {
                         wifiConnectionService();
-                        if (moduleInstalled[APP_MODULE_MQTT] && (!uiPriorityActive || realtimeMessaging)) mqttService();
+                        if (moduleInstalled[APP_MODULE_MQTT] && (!uiPriorityActive || realtimeMessaging) && !bootInteractiveGraceActive) mqttService();
                     }
                     break;
 
@@ -2658,8 +2674,8 @@ void loop()
                     if (moduleInstalled[APP_MODULE_MQTT] && !uiPriorityActive) mqttPruneDiscoveredPeers();
                     if (moduleInstalled[APP_MODULE_RADIO] && !uiPriorityActive) hc12PruneDiscoveredPeers();
 
-                    if (!uiPriorityActive) refreshMdnsState();
-                    if (!uiPriorityActive || uiScreen == UI_CONFIG_OTA) otaCheckService();
+                    if (!uiPriorityActive && !bootInteractiveGraceActive) refreshMdnsState();
+                    if ((!uiPriorityActive || uiScreen == UI_CONFIG_OTA) && (!bootInteractiveGraceActive || uiScreen == UI_CONFIG_OTA)) otaCheckService();
                     break;
             }
         }
@@ -2667,12 +2683,12 @@ void loop()
     moduleCatalogService();
     otaUpdateService();
     if (modulesRuntimeActive) {
-        if (moduleInstalled[APP_MODULE_RADIO]) serviceRadioControlTxQueue();
-        if (moduleInstalled[APP_MODULE_RADIO] && !radioControlTxInProgress()) hc12Service();
-        if (moduleInstalled[APP_MODULE_RADIO] && !radioControlTxInProgress() && (!uiPriorityActive || uiScreen == UI_CONFIG_HC12) && hc12ConfigApplyPending != HC12_CFG_APPLY_NONE) {
+        if (moduleInstalled[APP_MODULE_RADIO] && !bootRadioInitPending) serviceRadioControlTxQueue();
+        if (moduleInstalled[APP_MODULE_RADIO] && !bootRadioInitPending && !radioControlTxInProgress()) hc12Service();
+        if (moduleInstalled[APP_MODULE_RADIO] && !bootRadioInitPending && !radioControlTxInProgress() && (!uiPriorityActive || uiScreen == UI_CONFIG_HC12) && hc12ConfigApplyPending != HC12_CFG_APPLY_NONE) {
             serviceDeferredHc12ConfigApply();
         }
-        if (moduleInstalled[APP_MODULE_RADIO] && !radioControlTxInProgress() && moduleInstalled[APP_MODULE_CHAT]) radioChatService();
+        if (moduleInstalled[APP_MODULE_RADIO] && !bootRadioInitPending && !radioControlTxInProgress() && moduleInstalled[APP_MODULE_CHAT]) radioChatService();
         if (moduleInstalled[APP_MODULE_CHAT] && (!uiPriorityActive || realtimeMessaging || chatPendingCount > 0)) {
             chatPendingService();
         }
@@ -2778,7 +2794,7 @@ void loop()
     if (displayAwake && isDown) lastUserActivityMs = millis();
     displayApplyBacklightPolicy(false);
 
-    if (topBarCenterMode == TOP_BAR_CENTER_TIME) syncInternetTimeIfNeeded(false);
+    if (!bootInteractiveGraceActive && topBarCenterMode == TOP_BAR_CENTER_TIME) syncInternetTimeIfNeeded(false);
 
     if (moduleInstalled[APP_MODULE_GAMES]) {
         snakeTick();

@@ -93,7 +93,11 @@ static constexpr unsigned long CHAT_RETRY_INTERVAL_MS = 5000UL;
 static constexpr int MAX_CHAT_PENDING = 6;
 static constexpr uint32_t SD_BOOT_PROBE_FREQ_HZ = SD_SPI_FREQ_SAFE_HZ;
 static constexpr unsigned long BOOT_DEFER_SD_MS = 80UL;
-static constexpr unsigned long BOOT_DEFER_WIFI_MS = 220UL;
+static constexpr unsigned long BOOT_DEFER_WIFI_MS = 1200UL;
+static constexpr unsigned long BOOT_INTERACTIVE_GRACE_MS = 2200UL;
+static constexpr unsigned long BOOT_DEFER_STARTUP_FEEDBACK_MS = 450UL;
+static constexpr unsigned long BOOT_DEFER_RADIO_INIT_MS = 900UL;
+static constexpr unsigned long BOOT_DEFER_RADIO_PROBE_MS = 1600UL;
 static_assert(TOUCH_SDA != SD_CS && TOUCH_SDA != SD_MOSI && TOUCH_SDA != SD_SCK && TOUCH_SDA != SD_MISO,
               "Pin conflict: TOUCH_SDA overlaps SD SPI pin");
 static_assert(TOUCH_SCL != SD_CS && TOUCH_SCL != SD_MOSI && TOUCH_SCL != SD_SCK && TOUCH_SCL != SD_MISO,
