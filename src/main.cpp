@@ -236,7 +236,7 @@ static constexpr uint8_t VIBRATION_QUEUE_MAX = 4;
 #endif
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.21.13";
+static constexpr const char *FW_VERSION = "0.21.14";
 static constexpr uint8_t MODULE_SLOT_COUNT = 8U;
 static constexpr const char *MODULES_MANIFEST_URL = "https://raw.githubusercontent.com/elik745i/ESP32-2432S024C-Remote/main/modules_manifest.json";
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
@@ -277,6 +277,7 @@ static constexpr const char *NTP_SERVER_1 = "pool.ntp.org";
 static constexpr const char *NTP_SERVER_2 = "time.nist.gov";
 static constexpr const char *NTP_SERVER_3 = "time.google.com";
 static constexpr unsigned long POWER_OFF_IDLE_TIMEOUT_OPTIONS_MS[] = {
+    15UL * 1000UL,
     2UL * 60UL * 1000UL,
     5UL * 60UL * 1000UL,
     15UL * 60UL * 1000UL,
@@ -1424,7 +1425,7 @@ static String formatIdleTimeoutLabel(unsigned long ms)
 
 static String buildPowerOffTimeoutDropdownOptions()
 {
-    return String("2 min\n5 min\n15 min\n30 min\nNever");
+    return String("15 sec\n2 min\n5 min\n15 min\n30 min\nNever");
 }
 
 static String buildDeepSleepTimeoutDropdownOptions()
@@ -1453,7 +1454,7 @@ static bool applyDisplayIdleTimeoutPowerOffCap(bool persist)
     unsigned long cappedTimeoutMs = displayIdleTimeoutMs;
     unsigned long terminalIdleTimeoutMs = 0;
     if (powerOffIdleTimeoutMs >= 120000UL) terminalIdleTimeoutMs = powerOffIdleTimeoutMs;
-    if (POWER_OFF_SIGNAL_PIN < 0 && deepSleepIdleTimeoutMs >= 120000UL) {
+    if (deepSleepIdleTimeoutMs >= 120000UL) {
         if (terminalIdleTimeoutMs == 0 || deepSleepIdleTimeoutMs < terminalIdleTimeoutMs) {
             terminalIdleTimeoutMs = deepSleepIdleTimeoutMs;
         }
@@ -2752,6 +2753,20 @@ void loop()
         lastUserActivityMs = millis();
         if (screensaverActive) screensaverSetActive(false);
         if (!displayAwake) displaySetAwake(true);
+    } else if (deepSleepIdleTimeoutMs > 0 &&
+               !isDown &&
+               !mediaIsPlaying &&
+               !mediaPaused &&
+               !wifiConnectedSafe() &&
+               !fsWriteBusy() &&
+               !bootStaConnectInProgress &&
+               (millis() - lastUserActivityMs >= deepSleepIdleTimeoutMs) &&
+               (powerOffIdleTimeoutMs == 0 ||
+                POWER_OFF_SIGNAL_PIN < 0 ||
+                deepSleepIdleTimeoutMs <= powerOffIdleTimeoutMs)) {
+        uiStatusLine = "Idle deep sleep";
+        if (lvglReady) lvglSyncStatusLine();
+        enterDeepSleep();
     } else if (powerOffIdleTimeoutMs > 0 &&
                POWER_OFF_SIGNAL_PIN >= 0 &&
                !isDown &&
@@ -2763,19 +2778,6 @@ void loop()
         if (lvglReady) lvglSyncStatusLine();
         powerOffSignalPulse();
         lastUserActivityMs = millis();
-    } else if (deepSleepIdleTimeoutMs > 0 &&
-               POWER_OFF_SIGNAL_PIN < 0 &&
-               !isDown &&
-               !batteryCharging &&
-               !mediaIsPlaying &&
-               !mediaPaused &&
-               !wifiConnectedSafe() &&
-               !fsWriteBusy() &&
-               !bootStaConnectInProgress &&
-               (millis() - lastUserActivityMs >= deepSleepIdleTimeoutMs)) {
-        uiStatusLine = "Idle deep sleep";
-        if (lvglReady) lvglSyncStatusLine();
-        enterDeepSleep();
     } else if (!displayAwake && (millis() - lastUserActivityMs >= displayIdleTimeoutMs)) {
         // Keep state as-is while sleeping.
     } else if (!screensaverActive && displayAwake && (millis() - lastUserActivityMs >= displayIdleTimeoutMs)) {

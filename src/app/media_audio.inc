@@ -1088,12 +1088,9 @@ void enterLowPowerSleep()
 
 void enterDeepSleep()
 {
-#if defined(BOARD_ESP32S3_3248S035_N16R8)
-    return;
-#else
     saveBatterySnapshot(batteryRawVoltage, batteryCharging, millis());
     rgbApplyNow(false, false, false);
-    hc12TryEnterSleepMode();
+    radioPrepareForDeepSleep();
     if (TOUCH_USE_IRQ) {
         esp_sleep_enable_ext0_wakeup(static_cast<gpio_num_t>(TOUCH_IRQ), 0);
     } else if (DEEP_SLEEP_WAKE_TIMER_US > 0ULL) {
@@ -1101,7 +1098,6 @@ void enterDeepSleep()
     }
     delay(20);
     esp_deep_sleep_start();
-#endif
 }
 
 static bool normalizeSavedApCreds()

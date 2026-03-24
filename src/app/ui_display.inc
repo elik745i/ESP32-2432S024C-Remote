@@ -3820,6 +3820,35 @@ static bool hc12TryEnterSleepMode()
     return accepted;
 }
 
+static bool e220TryEnterSleepMode()
+{
+    if (!moduleInstalled[APP_MODULE_RADIO] || radioModuleType != RADIO_MODULE_E220) return false;
+    if (e220ActiveM0Pin() < 0 || e220ActiveM1Pin() < 0) return false;
+
+    hc12InitIfNeeded();
+    while (Serial1.available() > 0) Serial1.read();
+
+    digitalWrite(e220ActiveM0Pin(), HIGH);
+    digitalWrite(e220ActiveM1Pin(), HIGH);
+    delay(120);
+
+    Serial1.flush();
+    Serial1.end();
+    return true;
+}
+
+static void radioPrepareForDeepSleep()
+{
+    if (!moduleInstalled[APP_MODULE_RADIO]) return;
+    if (radioModuleType == RADIO_MODULE_HC12) {
+        hc12TryEnterSleepMode();
+        return;
+    }
+    if (radioModuleType == RADIO_MODULE_E220) {
+        e220TryEnterSleepMode();
+    }
+}
+
 static int e220FindBaudIndexFromCode(int code)
 {
     for (int i = 0; i < static_cast<int>(sizeof(E220_UART_BAUD_OPTIONS) / sizeof(E220_UART_BAUD_OPTIONS[0])); ++i) {
