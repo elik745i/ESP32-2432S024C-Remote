@@ -345,12 +345,19 @@ void sampleTopIndicators()
     batteryVoltage = batteryFilterSample(rawVoltage);
     batteryPercent = batteryPercentFromVoltage(batteryVoltage);
 
+    if (!chargeFilterInitialized) {
+        chargeFilteredVoltage = batteryVoltage;
+        chargeFilterInitialized = true;
+    } else {
+        chargeFilteredVoltage += CHARGE_FILTER_ALPHA * (batteryVoltage - chargeFilteredVoltage);
+    }
+
     if (lastChargeEvalMs == 0) {
         lastChargeEvalMs = now;
-        chargePrevVoltage = batteryVoltage;
+        chargePrevVoltage = chargeFilteredVoltage;
     } else if (now - lastChargeEvalMs >= CHARGE_DETECT_INTERVAL_MS) {
-        const float dv = batteryVoltage - chargePrevVoltage;
-        chargePrevVoltage = batteryVoltage;
+        const float dv = chargeFilteredVoltage - chargePrevVoltage;
+        chargePrevVoltage = chargeFilteredVoltage;
         lastChargeEvalMs = now;
 
         if (dv > CHARGE_RISE_THRESHOLD_V) {
@@ -366,8 +373,8 @@ void sampleTopIndicators()
                           (lastChargeSeenMs != 0 && (now - lastChargeSeenMs) <= CHARGE_HOLD_MS);
 
         if (CHARGE_LOG_TO_SERIAL) {
-            Serial.printf("[CHG] raw=%.3f V=%.3f dv=%.4f score=%d charging=%d cal=%.4f\n",
-                          batteryRawVoltage, batteryVoltage, dv, chargeTrendScore, batteryCharging ? 1 : 0,
+            Serial.printf("[CHG] raw=%.3f V=%.3f Vf=%.3f dv=%.4f score=%d charging=%d cal=%.4f\n",
+                          batteryRawVoltage, batteryVoltage, chargeFilteredVoltage, dv, chargeTrendScore, batteryCharging ? 1 : 0,
                           batteryCalibrationFactor());
         }
     }

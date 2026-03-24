@@ -195,11 +195,19 @@ static constexpr float BATTERY_FULL_V = 4.20f;
 // BATTERY_CAL_FACTOR_MIN, BATTERY_CAL_FACTOR_MAX
 static constexpr float BATTERY_CAL_MIN_SPAN_V = 0.55f;
 static constexpr float BATTERY_CAL_BLEND_ALPHA = 0.30f;
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+static constexpr int BATTERY_ADC_SAMPLES = 32;
+#else
 static constexpr int BATTERY_ADC_SAMPLES = 16;
+#endif
 static constexpr int BATTERY_ADC_SETTLE_READS = 3;
 static constexpr unsigned int BATTERY_ADC_SETTLE_US = 250U;
 static constexpr float BATTERY_ADC_FALLBACK_REF_V = 3.30f;
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+static constexpr uint8_t BATTERY_MEDIAN_WINDOW = 7;
+#else
 static constexpr uint8_t BATTERY_MEDIAN_WINDOW = 5;
+#endif
 static constexpr float BATTERY_FILTER_ALPHA_RISE = 0.08f;
 static constexpr float BATTERY_FILTER_ALPHA_FALL = 0.05f;
 static constexpr float BATTERY_FILTER_FAST_ALPHA = 0.30f;
@@ -207,14 +215,27 @@ static constexpr float BATTERY_FILTER_FAST_DELTA_V = 0.12f;
 static constexpr unsigned long BATTERY_SNAPSHOT_PERIOD_MS = 30000;
 static constexpr unsigned long BATTERY_SNAPSHOT_FORCE_MS = 300000;
 static constexpr float BATTERY_SNAPSHOT_MIN_DELTA_V = 0.010f;
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+static constexpr float BATTERY_BOOT_CHARGE_DELTA_V = 0.030f;
+#else
 static constexpr float BATTERY_BOOT_CHARGE_DELTA_V = 0.015f;
+#endif
 static constexpr float BATTERY_BOOT_EMPTY_INFER_MAX_V = 3.55f;
 static constexpr unsigned long BATTERY_BOOT_EMPTY_MIN_UPTIME_MS = 120000UL;
+#if defined(BOARD_ESP32S3_3248S035_N16R8)
+static constexpr unsigned long CHARGE_DETECT_INTERVAL_MS = 5000;
+static constexpr float CHARGE_RISE_THRESHOLD_V = 0.008f;
+static constexpr int8_t CHARGE_SCORE_ON = 3;
+static constexpr float CHARGE_FILTER_ALPHA = 0.18f;
+static constexpr unsigned long CHARGE_HOLD_MS = 30000;
+#else
 static constexpr unsigned long CHARGE_DETECT_INTERVAL_MS = 4000;
 static constexpr float CHARGE_RISE_THRESHOLD_V = 0.003f;
 static constexpr int8_t CHARGE_SCORE_ON = 1;
-static constexpr int8_t CHARGE_SCORE_MAX = 6;
+static constexpr float CHARGE_FILTER_ALPHA = 0.35f;
 static constexpr unsigned long CHARGE_HOLD_MS = 120000;
+#endif
+static constexpr int8_t CHARGE_SCORE_MAX = 6;
 static constexpr bool CHARGE_LOG_TO_SERIAL = false;
 static constexpr uint8_t CHARGE_ANIM_CYCLES = 1;
 static constexpr unsigned long CHARGE_CAL_SESSION_MIN_MS = 20UL * 60UL * 1000UL;
@@ -1003,6 +1024,8 @@ bool batteryFilterInitialized = false;
 bool lightFilterInitialized = false;
 float lightPercentFiltered = 0.0f;
 float chargePrevVoltage = 0.0f;
+float chargeFilteredVoltage = 0.0f;
+bool chargeFilterInitialized = false;
 int8_t chargeTrendScore = 0;
 bool chargeSessionActive = false;
 unsigned long chargeSessionStartMs = 0;
