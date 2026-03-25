@@ -1534,6 +1534,10 @@ void lvglTopIndicatorsTapEvent(lv_event_t *e)
     if (localX < 0 || localX > antennaTapMaxX) return;
 
     if (lvglKb && !lv_obj_has_flag(lvglKb, LV_OBJ_FLAG_HIDDEN)) lvglHideKeyboard();
+    if (configLockIsConfigured()) {
+        configLockPromptForScreen(UI_WIFI_LIST, LV_SCR_LOAD_ANIM_MOVE_LEFT);
+        return;
+    }
     lvglEnsureScreenBuilt(UI_WIFI_LIST);
     lvglOpenScreen(UI_WIFI_LIST, LV_SCR_LOAD_ANIM_MOVE_LEFT);
 }
@@ -1565,6 +1569,10 @@ void lvglTopOtaTapEvent(lv_event_t *e)
     if (!displayAwake || !otaUpdateAvailable) return;
     if (screenLockShouldGateUi()) return;
     if (lvglKb && !lv_obj_has_flag(lvglKb, LV_OBJ_FLAG_HIDDEN)) lvglHideKeyboard();
+    if (configLockIsConfigured()) {
+        configLockPromptForScreen(UI_CONFIG_OTA, LV_SCR_LOAD_ANIM_MOVE_LEFT);
+        return;
+    }
     lvglEnsureScreenBuilt(UI_CONFIG_OTA);
     lvglOpenScreen(UI_CONFIG_OTA, LV_SCR_LOAD_ANIM_MOVE_LEFT);
 }

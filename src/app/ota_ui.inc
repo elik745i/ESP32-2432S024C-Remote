@@ -143,6 +143,8 @@ enum ProtectedPinAction : uint8_t {
 };
 
 static ProtectedPinAction protectedPinAction = PROTECTED_PIN_ACTION_NONE;
+static int protectedPinTargetScreen = UI_CONFIG;
+static lv_scr_load_anim_t protectedPinTargetAnim = LV_SCR_LOAD_ANIM_MOVE_LEFT;
 
 static bool protectedPinActionNeedsCurrentPin()
 {
@@ -218,6 +220,8 @@ static void protectedPinHideModal(bool syncToggles)
     if (lvglProtectedPinStatusLabel) lv_label_set_text(lvglProtectedPinStatusLabel, "");
     if (syncToggles) protectedPinSyncToggleStates();
     protectedPinAction = PROTECTED_PIN_ACTION_NONE;
+    protectedPinTargetScreen = UI_CONFIG;
+    protectedPinTargetAnim = LV_SCR_LOAD_ANIM_MOVE_LEFT;
 }
 
 static void protectedPinCancelEvent(lv_event_t *e)
@@ -359,6 +363,13 @@ void lvglStyleConfigLockToggleEvent(lv_event_t *e)
 
 static void configLockPromptForEntry()
 {
+    configLockPromptForScreen(UI_CONFIG, LV_SCR_LOAD_ANIM_MOVE_LEFT);
+}
+
+static void configLockPromptForScreen(int targetScreen, lv_scr_load_anim_t anim)
+{
+    protectedPinTargetScreen = targetScreen;
+    protectedPinTargetAnim = anim;
     protectedPinShowModal(PROTECTED_PIN_ACTION_CONFIG_LOCK_OPEN);
 }
 
@@ -435,9 +446,11 @@ void lvglProtectedPinSubmitEvent(lv_event_t *e)
     }
 
     if (protectedPinAction == PROTECTED_PIN_ACTION_CONFIG_LOCK_OPEN) {
+        const UiScreen targetScreen = static_cast<UiScreen>(protectedPinTargetScreen);
+        const lv_scr_load_anim_t targetAnim = protectedPinTargetAnim;
         protectedPinHideModal(false);
-        lvglEnsureScreenBuilt(UI_CONFIG);
-        lvglOpenScreen(UI_CONFIG, LV_SCR_LOAD_ANIM_MOVE_LEFT);
+        lvglEnsureScreenBuilt(targetScreen);
+        lvglOpenScreen(targetScreen, targetAnim);
     }
 }
 
