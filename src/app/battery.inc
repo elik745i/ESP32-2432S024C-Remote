@@ -245,6 +245,7 @@ float batteryCalibrationFactor()
 
 float readBatteryVoltage()
 {
+    if (BATTERY_ADC_PIN < 0) return 0.0f;
     uint32_t mvSum = 0;
     uint32_t rawSum = 0;
     for (int i = 0; i < BATTERY_ADC_SAMPLES; i++) {
@@ -340,10 +341,39 @@ uint8_t lightPercentFromRaw(uint16_t raw)
 void sampleTopIndicators()
 {
     const unsigned long now = millis();
-    batteryRawVoltage = readBatteryVoltage();
-    const float rawVoltage = batteryCalibratedVoltageFromRaw(batteryRawVoltage);
-    batteryVoltage = batteryFilterSample(rawVoltage);
-    batteryPercent = batteryPercentFromVoltage(batteryVoltage);
+    if (BATTERY_ADC_PIN >= 0) {
+        batteryRawVoltage = readBatteryVoltage();
+        const float rawVoltage = batteryCalibratedVoltageFromRaw(batteryRawVoltage);
+        batteryVoltage = batteryFilterSample(rawVoltage);
+        batteryPercent = batteryPercentFromVoltage(batteryVoltage);
+    } else {
+        batteryRawVoltage = 0.0f;
+        batteryVoltage = 0.0f;
+        batteryPercent = 0;
+        batteryCharging = false;
+        chargeFilterInitialized = false;
+        chargeSessionActive = false;
+    }
+
+    if (BATTERY_ADC_PIN < 0) {
+        if (LIGHT_ADC_PIN >= 0) {
+            lightRawAdc = readLightRaw();
+            const uint8_t rawLightPercent = lightPercentFromRaw(lightRawAdc);
+            if (!lightFilterInitialized) {
+                lightPercentFiltered = rawLightPercent;
+                lightFilterInitialized = true;
+            } else {
+                lightPercentFiltered += LIGHT_FILTER_ALPHA * (static_cast<float>(rawLightPercent) - lightPercentFiltered);
+            }
+            lightPercent = static_cast<uint8_t>(lightPercentFiltered + 0.5f);
+        } else {
+            lightRawAdc = 0;
+            lightPercent = 0;
+            lightPercentFiltered = 0.0f;
+            lightFilterInitialized = true;
+        }
+        return;
+    }
 
     if (!chargeFilterInitialized) {
         chargeFilteredVoltage = batteryVoltage;

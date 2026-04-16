@@ -2,7 +2,7 @@
 
 Firmware for Sunton-style ESP32 touch display boards with an LVGL UI, Wi-Fi/AP tools, SD recovery/file access, MQTT controls, encrypted chat, and optional radio modules.
 
-Current firmware version: **`0.21.16`**
+Current firmware version: **`0.21.17`**
 
 ![ESP32 Remote Render](3D_Models/render1.jpeg)
 
@@ -13,8 +13,12 @@ Current firmware version: **`0.21.16`**
 | `ESP32-2432S024C` | `240x320`, `ILI9341` | `CST820` | `esp32-2432s024c` |
 | `ESP32-3248S035` | `320x480`, `ST7796` | `GT911` | `esp32-3248s035` |
 | `ESP32-S3-3248S035-N16R8` | `320x480`, `ST7796` | `GT911` | `esp32-s3-3248s035-n16r8` |
+| `UEDX24320028E-WB-A` | `240x320`, `GC9307` | `CHSC6540` | `uedx24320028e-wb-a` |
+| `UEDX32480035E-WB-A` | `320x480`, `ST7796` | `CHSC6540` | `uedx32480035e-wb-a` |
 
 The `ESP32-S3-3248S035-N16R8` target is for a `3248S035` board converted to `ESP32-S3-WROOM-1-N16R8` (`16 MB flash`, `8 MB PSRAM`).
+
+The `UEDX24320028E-WB-A` target uses the board's `ESP32-S3`, `16 MB flash`, and `8 MB PSRAM` layout. Vendor docs list a `GC9307` panel and `CHSC6540` touch controller; this repo currently drives the panel through TFT_eSPI's `GC9A01` family configuration as the closest supported match.
 
 Custom PlatformIO board file:
 - [`boards/esp32-s3-devkitc1-n16r8.json`](boards/esp32-s3-devkitc1-n16r8.json)
@@ -22,6 +26,11 @@ Custom PlatformIO board file:
 Board references used while adding `ESP32-3248S035` support:
 - https://homeding.github.io/boards/esp32/panel-3248S035.htm
 - https://github.com/ardnew/ESP32-3248S035
+
+Board references used while adding `UEDX24320028E-WB-A` support:
+- https://viewedisplay.com/product/esp32-2-8-inch-240x320-mcu-ips-tft-display-touch-screen-arduino-lvgl-wifi-ble-uart-smart-module/
+- https://github.com/VIEWESMART/UEDX24320028ESP32-3.5inch-320_480-Display
+- [documents/UEDX24320028E-WB-A-V1.0-SPEC.pdf](documents/UEDX24320028E-WB-A-V1.0-SPEC.pdf)
 
 ## Highlights
 
@@ -139,6 +148,62 @@ Reference:
 
 ![GPIO connection points on 035](documents/GPIO%20connection%20points%20on%20035.jpeg)
 
+### `UEDX24320028E-WB-A`
+
+| Group | Signal | GPIO |
+|---|---|---:|
+| Display | `TFT_BL` | 13 |
+| Display | `TFT_MOSI` | 45 |
+| Display | `TFT_SCLK` | 40 |
+| Display | `TFT_CS` | 42 |
+| Display | `TFT_DC` | 41 |
+| Display | `TFT_RST` | 39 |
+| Touch | `TOUCH_SDA` | 1 |
+| Touch | `TOUCH_SCL` | 3 |
+| Touch | `TOUCH_RST` | 2 |
+| Touch | `TOUCH_IRQ` | 4 |
+| USB-UART | `USB_D+ / USB_D-` | `20 / 19` |
+| UART | `TX / RX` | `43 / 44` |
+| LED | `WS2812` | 0 |
+| Audio | Buzzer | 38 |
+| SD | `D1 / D2 / MOSI / MISO` | `18 / 15 / 17 / 16` |
+
+`UEDX24320028E-WB-A` notes:
+- Vendor specs list `ESP32-S3`, `16 MB flash`, `8 MB PSRAM`, `240x320`, `340 cd/m2`, Wi-Fi, BLE, `GC9307`, and `CHSC6540`.
+- The official vendor GitHub repo at `VIEWESMART/UEDX24320028ESP32-3.5inch-320_480-Display` is mislabeled in several text sections as a `3.5-inch 320x480` board, but its `PinOverview` matches the `UEDX24320028E-WB-A` wiring used here: LCD `42/40/45/41/39/13`, touch `1/3/2/4`, UART `43/44`, buzzer `38`, and the vendor SD path on `18/15/17/16`.
+- The board's touch reset and interrupt pins are present in the manual, but the vendor Arduino docs mark them as not required for normal touch reads.
+- The onboard microSD slot is wired for the board's native SD path, not the SPI wiring this firmware currently uses, so SD-backed features remain disabled on this target.
+- The onboard WS2812 LED and buzzer are present in hardware, but this firmware does not currently map them into the existing RGB/DAC feature paths.
+
+Circuit diagram:
+
+![UEDX24320028E-WB-A schematic](documents/UEDX24320028E-WB-A%20V1.1%20sch.png)
+
+Recommended external-module pin usage for this repo on `UEDX24320028E-WB-A`:
+
+- Documented board-reserved pins are `0, 1, 2, 3, 4, 13, 19, 20, 38, 39, 40, 41, 42, 43, 44, 45`, plus the vendor SD wiring on `15, 16, 17, 18`.
+- Avoid reusing `GPIO0` for normal peripherals because it is the boot strap button line.
+- Avoid `GPIO19/20` because they are the USB data pair.
+- Avoid `GPIO39/40/41/42/45` because they are the LCD path.
+- Avoid `GPIO1/2/3/4` because they are the touch path.
+- Avoid `GPIO47/48` unless you verify your exact board revision first; other board definitions use those as LCD interface mode straps, so they are not a safe default recommendation.
+- For this firmware, the most practical expansion pins are the vendor SD pins `GPIO15`, `GPIO16`, `GPIO17`, and `GPIO18` if you accept losing any future SD support on this target.
+
+Suggested expansion layout if SD remains unused:
+
+- `MAX98357` external DAC: `DIN -> GPIO16`, `BCLK -> GPIO17`, `LRC/WS -> GPIO18`.
+- Vibration motor driver input: `GPIO15` through a transistor or MOSFET driver, not directly to the motor.
+- HC-12 data UART: `ESP TX GPIO43 -> HC-12 RXD`, `ESP RX GPIO44 -> HC-12 TXD`.
+- E220 data UART: `ESP TX GPIO43 -> E220 RX`, `ESP RX GPIO44 -> E220 TX`.
+
+Recommended wiring notes:
+
+- `MAX98357` does not need `MCLK`, so the 3-pin I2S mapping above is sufficient.
+- The board appears to have only a buzzer output, not an onboard I2S DAC/amp stage, so `MAX98357` is the cleanest external audio option for this project.
+- If you use the board UART pins `43/44` for a radio module, keep in mind the vendor board routes those as the external UART interface; USB CDC/debug behavior can still affect how you want to use that port.
+- HC-12 `SET` or E220 `M0/M1` need additional free GPIOs beyond `43/44`. Those control lines should only be assigned after checking the `V1.1` schematic for actually broken-out pads on your board revision.
+- Battery or other voltage sensing should go to a free ADC-capable pin that is physically exposed on your board revision. The vendor pin table does not clearly advertise such a spare analog pin, so this must be chosen from the schematic rather than guessed from the ESP32-S3 datasheet alone.
+
 ## Radio Module Wiring
 
 ### `HC-12` on `ESP32-2432S024C` / `ESP32-3248S035`
@@ -215,6 +280,7 @@ Radio notes:
 | `ESP32-2432S024C` | `ESP32-2432S024C-FM` | `esp32-2432s024c` |
 | `ESP32-3248S035` | `ESP32-3248S035-FM` | `esp32-3248s035` |
 | `ESP32-S3-3248S035-N16R8` | `ESP32-S3-3248S035-FM` | `esp32-s3-3248s035` |
+| `UEDX24320028E-WB-A` | `UEDX24320028E-WB-A-FM` | `uedx24320028e-wb-a` |
 
 ### MQTT
 
@@ -262,6 +328,7 @@ Recovery/file APIs can browse and manage rooted SD paths.
 - `esp32-2432s024c`
 - `esp32-3248s035`
 - `esp32-s3-3248s035-n16r8`
+- `uedx24320028e-wb-a`
 
 ### Build
 
@@ -275,6 +342,8 @@ pio run
 pio run -e esp32-2432s024c
 pio run -e esp32-3248s035
 pio run -e esp32-s3-3248s035-n16r8
+pio run -e uedx24320028e-wb-a
+pio run -e uedx32480035e-wb-a
 ```
 
 ### Flash
@@ -289,16 +358,16 @@ pio run -e esp32-s3-3248s035-n16r8 -t upload
 
 Do not flash only `firmware.bin` on `ESP32-2432S024C`. That board needs the full release image set written at the correct offsets or it can boot to a blank screen.
 
-For the latest verified release (`v0.21.16`), download these four files from:
+For the latest verified release (`v0.21.17`), download these four files from:
 
-- `https://github.com/elik745i/ESP32-2432S024C-Remote/releases/tag/v0.21.16`
+- `https://github.com/elik745i/ESP32-2432S024C-Remote/releases/tag/v0.21.17`
 
 For `ESP32-2432S024C`, use:
 
-- `esp32-2432s024c-v0.21.16_bootloader.bin` at `0x1000`
-- `esp32-2432s024c-v0.21.16_partitions.bin` at `0x8000`
-- `esp32-2432s024c-v0.21.16_boot_app0.bin` at `0xE000`
-- `esp32-2432s024c-v0.21.16.bin` at `0x10000`
+- `esp32-2432s024c-v0.21.17_bootloader.bin` at `0x1000`
+- `esp32-2432s024c-v0.21.17_partitions.bin` at `0x8000`
+- `esp32-2432s024c-v0.21.17_boot_app0.bin` at `0xE000`
+- `esp32-2432s024c-v0.21.17.bin` at `0x10000`
 
 Using Espressif `Flash Download Tool` on Windows:
 
@@ -316,10 +385,10 @@ If you use `esptool.py`, the equivalent command is:
 
 ```powershell
 esptool.py --chip esp32 --port COMx --baud 460800 write_flash -z `
-  0x1000 esp32-2432s024c-v0.21.16_bootloader.bin `
-  0x8000 esp32-2432s024c-v0.21.16_partitions.bin `
-  0xE000 esp32-2432s024c-v0.21.16_boot_app0.bin `
-  0x10000 esp32-2432s024c-v0.21.16.bin
+  0x1000 esp32-2432s024c-v0.21.17_bootloader.bin `
+  0x8000 esp32-2432s024c-v0.21.17_partitions.bin `
+  0xE000 esp32-2432s024c-v0.21.17_boot_app0.bin `
+  0x10000 esp32-2432s024c-v0.21.17.bin
 ```
 
 `ESP32-3248S035` uses the same `ESP32` flash layout as `ESP32-2432S024C`:
@@ -351,11 +420,15 @@ Some boards or USB adapters may require manual bootloader entry:
 
 - `ESP32-S3-3248S035-N16R8` supports firmware OTA with the stock `16 MB` dual-slot layout
 - The two `4 MB` ESP32 targets do not support firmware OTA flashing
+- `UEDX24320028E-WB-A` uses the same `16 MB` partition layout for source builds; release images can be published, but firmware OTA flashing is still disabled in this repo
+- `UEDX32480035E-WB-A` uses the same `16 MB` partition layout for source builds; release images can be published, but firmware OTA flashing is still disabled in this repo
 
 ## Partitions
 
 - `ESP32-2432S024C` and `ESP32-3248S035` use [partitions_3mb_no_ota.csv](partitions_3mb_no_ota.csv)
 - `ESP32-S3-3248S035-N16R8` uses Espressif `default_16MB.csv`
+- `UEDX24320028E-WB-A` uses Espressif `default_16MB.csv`
+- `UEDX32480035E-WB-A` uses Espressif `default_16MB.csv`
 
 ## Useful Endpoints
 
@@ -387,6 +460,12 @@ Home Assistant integration repository: https://github.com/elik745i/MQTT-Remote-B
 ## Releases
 
 GitHub Releases contain published firmware binaries for each supported target.
+
+## v0.21.17
+
+- Fixed the `UEDX32480035E-WB-A` boot sequence so the backlight stays off until the display is initialized, avoiding visible boot flashing.
+- Restored configurable backlight brightness on `UEDX32480035E-WB-A` while keeping full-brightness startup reliable.
+- Added the `UEDX32480035E-WB-A` target to the main README board and build-target lists.
 
 ## v0.21.16
 

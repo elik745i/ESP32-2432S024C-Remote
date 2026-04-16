@@ -82,6 +82,7 @@ void sdStatsService()
 
 bool sdMountAttemptAtFreq(uint32_t freqHz)
 {
+    if (SD_CS < 0 || SD_SCK < 0 || SD_MOSI < 0 || SD_MISO < 0) return false;
     if (!sdSpiReady) {
         sdSpi.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
         sdSpiReady = true;
@@ -295,6 +296,10 @@ String recycleMetaPathFor(const String &recyclePath)
 
 void setupSd()
 {
+    if (SD_CS < 0 || SD_SCK < 0 || SD_MOSI < 0 || SD_MISO < 0) {
+        sdMounted = false;
+        return;
+    }
     if (!sdLock(pdMS_TO_TICKS(40))) {
         Serial.println("SD boot probe skipped: lock timeout");
         return;

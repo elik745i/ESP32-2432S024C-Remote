@@ -1,3 +1,4 @@
 {
-    "idf.currentSetup": "c:\\Espressif\\frameworks\\esp-idf-v5.2.3"
+    "idf.currentSetup": "c:\\Espressif\\frameworks\\esp-idf-v5.2.3",
+    "git.ignoreLimitWarning": true
 }

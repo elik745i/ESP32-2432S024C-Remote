@@ -11,7 +11,7 @@ static constexpr int DISPLAY_CENTER_Y = DISPLAY_HEIGHT / 2;
 
 static constexpr uint32_t TOUCH_I2C_HZ = 400000U;
 static constexpr bool TOUCH_USE_IRQ = false;
-#if defined(BOARD_ESP32S3_3248S035_N16R8)
+#if defined(BOARD_ESP32S3_3248S035_N16R8) || defined(BOARD_UEDX24320028E_WB_A) || defined(BOARD_UEDX32480035E_WB_A)
 static constexpr unsigned long TOUCH_POLL_INTERVAL_MS = 3UL;
 #else
 static constexpr unsigned long TOUCH_POLL_INTERVAL_MS = 6UL;
@@ -21,7 +21,33 @@ static constexpr uint16_t TOUCH_REINIT_FAIL_THRESHOLD = 40;
 static constexpr unsigned long TOUCH_REINIT_MIN_INTERVAL_MS = 8000UL;
 static constexpr uint8_t TFT_ROTATION = 0;
 
-#if defined(BOARD_ESP32S3_3248S035_N16R8)
+#if defined(BOARD_UEDX24320028E_WB_A)
+static constexpr int TOUCH_SDA = 1;
+static constexpr int TOUCH_SCL = 3;
+static constexpr int TOUCH_RST = 2;
+static constexpr int TOUCH_IRQ = 4;
+static constexpr TouchControllerType TOUCH_CONTROLLER = TOUCH_CTRL_CHSC6540;
+static constexpr uint8_t TOUCH_ROTATION_OFFSET = 0;
+static constexpr const char *DEVICE_MODEL = "VIEWE UEDX24320028E-WB-A Touch Remote";
+static constexpr const char *DEVICE_SHORT_NAME = "UEDX24320028E-WB-A";
+static constexpr const char *AP_SSID = "UEDX24320028E-WB-A-FM";
+static constexpr const char *MDNS_HOST = "uedx24320028e-wb-a";
+static constexpr const char *OTA_ASSET_NAME = "uedx24320028e-wb-a";
+static constexpr bool OTA_FIRMWARE_FLASH_SUPPORTED = false;
+#elif defined(BOARD_UEDX32480035E_WB_A)
+static constexpr int TOUCH_SDA = 1;
+static constexpr int TOUCH_SCL = 3;
+static constexpr int TOUCH_RST = 2;
+static constexpr int TOUCH_IRQ = 4;
+static constexpr TouchControllerType TOUCH_CONTROLLER = TOUCH_CTRL_CHSC6540;
+static constexpr uint8_t TOUCH_ROTATION_OFFSET = 0;
+static constexpr const char *DEVICE_MODEL = "VIEWE UEDX32480035E-WB-A Touch Remote";
+static constexpr const char *DEVICE_SHORT_NAME = "UEDX32480035E-WB-A";
+static constexpr const char *AP_SSID = "UEDX32480035E-WB-A-FM";
+static constexpr const char *MDNS_HOST = "uedx32480035e-wb-a";
+static constexpr const char *OTA_ASSET_NAME = "uedx32480035e-wb-a";
+static constexpr bool OTA_FIRMWARE_FLASH_SUPPORTED = false;
+#elif defined(BOARD_ESP32S3_3248S035_N16R8)
 static constexpr int TOUCH_SDA = 16;
 static constexpr int TOUCH_SCL = 15;
 static constexpr int TOUCH_RST = 17;
@@ -63,13 +89,19 @@ static constexpr bool OTA_FIRMWARE_FLASH_SUPPORTED = false;
 #endif
 
 static constexpr uint8_t CST820_ADDR = 0x15;
+static constexpr uint8_t CHSC6540_ADDR = 0x2E;
 static constexpr uint8_t GT911_ADDR_PRIMARY = 0x5D;
 static constexpr uint8_t GT911_ADDR_SECONDARY = 0x14;
 static constexpr uint16_t GT911_REG_PRODUCT_ID = 0x8140;
 static constexpr uint16_t GT911_REG_STATUS = 0x814E;
 static constexpr uint16_t GT911_REG_POINT1 = 0x814F;
 
-#if defined(BOARD_ESP32S3_3248S035_N16R8)
+#if defined(BOARD_UEDX24320028E_WB_A) || defined(BOARD_UEDX32480035E_WB_A)
+static constexpr int SD_CS = 10;
+static constexpr int SD_MOSI = 11;
+static constexpr int SD_SCK = 12;
+static constexpr int SD_MISO = 16;
+#elif defined(BOARD_ESP32S3_3248S035_N16R8)
 static constexpr int SD_CS = 38;
 static constexpr int SD_MOSI = 1;
 static constexpr int SD_SCK = 39;
@@ -98,13 +130,25 @@ static constexpr unsigned long BOOT_INTERACTIVE_GRACE_MS = 2200UL;
 static constexpr unsigned long BOOT_DEFER_STARTUP_FEEDBACK_MS = 450UL;
 static constexpr unsigned long BOOT_DEFER_RADIO_INIT_MS = 900UL;
 static constexpr unsigned long BOOT_DEFER_RADIO_PROBE_MS = 1600UL;
-static_assert(TOUCH_SDA != SD_CS && TOUCH_SDA != SD_MOSI && TOUCH_SDA != SD_SCK && TOUCH_SDA != SD_MISO,
+static_assert((SD_CS < 0 || TOUCH_SDA != SD_CS) &&
+              (SD_MOSI < 0 || TOUCH_SDA != SD_MOSI) &&
+              (SD_SCK < 0 || TOUCH_SDA != SD_SCK) &&
+              (SD_MISO < 0 || TOUCH_SDA != SD_MISO),
               "Pin conflict: TOUCH_SDA overlaps SD SPI pin");
-static_assert(TOUCH_SCL != SD_CS && TOUCH_SCL != SD_MOSI && TOUCH_SCL != SD_SCK && TOUCH_SCL != SD_MISO,
+static_assert((SD_CS < 0 || TOUCH_SCL != SD_CS) &&
+              (SD_MOSI < 0 || TOUCH_SCL != SD_MOSI) &&
+              (SD_SCK < 0 || TOUCH_SCL != SD_SCK) &&
+              (SD_MISO < 0 || TOUCH_SCL != SD_MISO),
               "Pin conflict: TOUCH_SCL overlaps SD SPI pin");
-static_assert(TOUCH_RST != SD_CS && TOUCH_RST != SD_MOSI && TOUCH_RST != SD_SCK && TOUCH_RST != SD_MISO,
+static_assert((SD_CS < 0 || TOUCH_RST != SD_CS) &&
+              (SD_MOSI < 0 || TOUCH_RST != SD_MOSI) &&
+              (SD_SCK < 0 || TOUCH_RST != SD_SCK) &&
+              (SD_MISO < 0 || TOUCH_RST != SD_MISO),
               "Pin conflict: TOUCH_RST overlaps SD SPI pin");
-static_assert(TOUCH_IRQ != SD_CS && TOUCH_IRQ != SD_MOSI && TOUCH_IRQ != SD_SCK && TOUCH_IRQ != SD_MISO,
+static_assert((SD_CS < 0 || TOUCH_IRQ != SD_CS) &&
+              (SD_MOSI < 0 || TOUCH_IRQ != SD_MOSI) &&
+              (SD_SCK < 0 || TOUCH_IRQ != SD_SCK) &&
+              (SD_MISO < 0 || TOUCH_IRQ != SD_MISO),
               "Pin conflict: TOUCH_IRQ overlaps SD SPI pin");
 
 static constexpr unsigned long RADIO_ACK_TIMEOUT_MS = 1500UL;

@@ -7,12 +7,13 @@
 #include <Preferences.h>
 #include <SD.h>
 #include <SPI.h>
-#include <TFT_eSPI.h>
+#include "display_compat.h"
 #include <lvgl.h>
 #include <PubSubClient.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <Wire.h>
+#include <Adafruit_NeoPixel.h>
 #include <Audio.h>
 #include <HTTPClient.h>
 #include <Update.h>
@@ -59,6 +60,7 @@
 enum TouchControllerType : uint8_t {
     TOUCH_CTRL_CST820 = 0,
     TOUCH_CTRL_GT911 = 1,
+    TOUCH_CTRL_CHSC6540 = 2,
 };
 
 enum UiButtonStyleMode : uint8_t {
@@ -97,7 +99,7 @@ static bool chatPendingOutboxDirty = false;
 static unsigned long chatPendingOutboxFlushAfterMs = 0;
 static unsigned long radioLastTxLeadMs = 0;
 
-#if defined(BOARD_ESP32S3_3248S035_N16R8)
+#if defined(BOARD_ESP32S3_3248S035_N16R8) || defined(BOARD_UEDX24320028E_WB_A) || defined(BOARD_UEDX32480035E_WB_A)
 static constexpr bool AUDIO_BACKEND_SUPPORTED = false;
 static constexpr int I2S_SPK_PIN = 18;
 #else
@@ -124,7 +126,7 @@ static constexpr unsigned long TOUCH_TICK_MS = 4UL;
 // CHAT_NOTIFY_FREQ_SECONDARY, CHAT_NOTIFY_BEEP1_MS, CHAT_NOTIFY_GAP_MS, CHAT_NOTIFY_BEEP2_MS
 static constexpr unsigned long CHAT_NOTIFY_REPEAT_GAP_MS = 140UL;
 static constexpr uint8_t CHAT_NOTIFY_QUEUE_MAX = 3;
-#if !defined(BOARD_ESP32S3_3248S035_N16R8)
+#if !defined(BOARD_ESP32S3_3248S035_N16R8) && !defined(BOARD_UEDX24320028E_WB_A) && !defined(BOARD_UEDX32480035E_WB_A)
 // ESP32-audioI2S uses LEFT_EN (value 2) for DAC2 on GPIO26.
 // Keep TOUCH_RST on GPIO25 untouched (DAC1 / RIGHT_EN must stay disabled).
 static constexpr uint8_t AUDIO_INTERNAL_DAC_CHANNEL = static_cast<uint8_t>(I2S_DAC_CHANNEL_LEFT_EN);
@@ -143,11 +145,22 @@ static constexpr int RGB_PIN_R = 36;
 static constexpr int RGB_PIN_G = 35;
 static constexpr int RGB_PIN_B = 37;
 static constexpr bool RGB_OUTPUT_SUPPORTED = false;
+static constexpr bool RGB_PIXEL_SUPPORTED = false;
+static constexpr int RGB_PIXEL_PIN = -1;
+#elif defined(BOARD_UEDX24320028E_WB_A) || defined(BOARD_UEDX32480035E_WB_A)
+static constexpr int RGB_PIN_R = -1;
+static constexpr int RGB_PIN_G = -1;
+static constexpr int RGB_PIN_B = -1;
+static constexpr bool RGB_OUTPUT_SUPPORTED = false;
+static constexpr bool RGB_PIXEL_SUPPORTED = false;
+static constexpr int RGB_PIXEL_PIN = 0;
 #else
 static constexpr int RGB_PIN_R = 4;
 static constexpr int RGB_PIN_G = 17;
 static constexpr int RGB_PIN_B = 16;
 static constexpr bool RGB_OUTPUT_SUPPORTED = true;
+static constexpr bool RGB_PIXEL_SUPPORTED = false;
+static constexpr int RGB_PIXEL_PIN = -1;
 #endif
 static constexpr bool RGB_ACTIVE_LOW = true;
 static constexpr uint8_t TFT_BL_LEDC_CHANNEL = 0;
@@ -155,7 +168,17 @@ static constexpr uint16_t TFT_BL_LEDC_FREQ = 5000;
 static constexpr uint8_t TFT_BL_LEDC_RES = 8;
 static constexpr uint8_t TFT_BL_LEVEL_ON = 255;
 static constexpr uint8_t TFT_BL_LEVEL_OFF = 0;
+#if defined(BOARD_UEDX24320028E_WB_A) || defined(BOARD_UEDX32480035E_WB_A)
 static constexpr bool DISPLAY_BACKLIGHT_PWM_SUPPORTED = true;
+static constexpr bool DISPLAY_BACKLIGHT_BOOT_FORCE_ON = false;
+static constexpr bool DISPLAY_BACKLIGHT_DIAGNOSTIC_LOG = false;
+static constexpr unsigned long DISPLAY_BACKLIGHT_BOOT_HOLD_MS = 0UL;
+#else
+static constexpr bool DISPLAY_BACKLIGHT_PWM_SUPPORTED = true;
+static constexpr bool DISPLAY_BACKLIGHT_BOOT_FORCE_ON = false;
+static constexpr bool DISPLAY_BACKLIGHT_DIAGNOSTIC_LOG = false;
+static constexpr unsigned long DISPLAY_BACKLIGHT_BOOT_HOLD_MS = 0UL;
+#endif
 static constexpr unsigned long LCD_IDLE_TIMEOUT_MS_DEFAULT = 120000UL;
 static constexpr unsigned long LCD_IDLE_TIMEOUT_MS_MIN = 15000UL;
 static constexpr unsigned long LCD_IDLE_TIMEOUT_MS_MAX = 600000UL;
@@ -182,6 +205,11 @@ static constexpr int LIGHT_ADC_PIN = 6;
 static constexpr int VIBRATION_MOTOR_PIN = 2;
 static constexpr float BATTERY_DIVIDER_R_TOP = 470000.0f;
 static constexpr float BATTERY_DIVIDER_R_BOTTOM = 220000.0f;
+#elif defined(BOARD_UEDX24320028E_WB_A) || defined(BOARD_UEDX32480035E_WB_A)
+static constexpr int BATTERY_ADC_PIN = -1;
+static constexpr int LIGHT_ADC_PIN = -1;
+static constexpr float BATTERY_DIVIDER_R_TOP = 1.0f;
+static constexpr float BATTERY_DIVIDER_R_BOTTOM = 1.0f;
 #else
 static constexpr int BATTERY_ADC_PIN = 35;
 static constexpr int LIGHT_ADC_PIN = 34;
@@ -195,7 +223,7 @@ static constexpr float BATTERY_FULL_V = 4.20f;
 // BATTERY_CAL_FACTOR_MIN, BATTERY_CAL_FACTOR_MAX
 static constexpr float BATTERY_CAL_MIN_SPAN_V = 0.55f;
 static constexpr float BATTERY_CAL_BLEND_ALPHA = 0.30f;
-#if defined(BOARD_ESP32S3_3248S035_N16R8)
+#if defined(BOARD_ESP32S3_3248S035_N16R8) || defined(BOARD_UEDX24320028E_WB_A) || defined(BOARD_UEDX32480035E_WB_A)
 static constexpr int BATTERY_ADC_SAMPLES = 32;
 #else
 static constexpr int BATTERY_ADC_SAMPLES = 16;
@@ -203,7 +231,7 @@ static constexpr int BATTERY_ADC_SAMPLES = 16;
 static constexpr int BATTERY_ADC_SETTLE_READS = 3;
 static constexpr unsigned int BATTERY_ADC_SETTLE_US = 250U;
 static constexpr float BATTERY_ADC_FALLBACK_REF_V = 3.30f;
-#if defined(BOARD_ESP32S3_3248S035_N16R8)
+#if defined(BOARD_ESP32S3_3248S035_N16R8) || defined(BOARD_UEDX24320028E_WB_A) || defined(BOARD_UEDX32480035E_WB_A)
 static constexpr uint8_t BATTERY_MEDIAN_WINDOW = 7;
 #else
 static constexpr uint8_t BATTERY_MEDIAN_WINDOW = 5;
@@ -257,10 +285,14 @@ static constexpr uint8_t VIBRATION_QUEUE_MAX = 4;
 #endif
 
 static constexpr const char *AP_PASS = "12345678";
-static constexpr const char *FW_VERSION = "0.21.16";
+static constexpr const char *FW_VERSION = "0.21.17";
 static constexpr uint8_t MODULE_SLOT_COUNT = 8U;
 static constexpr const char *MODULES_MANIFEST_URL = "https://raw.githubusercontent.com/elik745i/ESP32-2432S024C-Remote/main/modules_manifest.json";
+#if defined(BOARD_UEDX24320028E_WB_A) || defined(BOARD_UEDX32480035E_WB_A)
+static constexpr bool VERBOSE_SERIAL_DEBUG = true;
+#else
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
+#endif
 static constexpr unsigned long OTA_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;
 static constexpr unsigned long OTA_INITIAL_CHECK_DELAY_MS = 5000UL;
 static constexpr unsigned long OTA_RETRY_DELAY_MS = 10UL * 60UL * 1000UL;
@@ -317,6 +349,15 @@ static constexpr int E220_TX_PIN_DEFAULT = 5;
 static constexpr int E220_M0_PIN_DEFAULT = 3;
 static constexpr int E220_M1_PIN_DEFAULT = 13;
 static constexpr int POWER_OFF_SIGNAL_PIN = 21;
+#elif defined(BOARD_UEDX24320028E_WB_A) || defined(BOARD_UEDX32480035E_WB_A)
+static constexpr int HC12_RX_PIN_DEFAULT = -1;
+static constexpr int HC12_TX_PIN_DEFAULT = -1;
+static constexpr int HC12_SET_PIN_DEFAULT = -1;
+static constexpr int E220_RX_PIN_DEFAULT = -1;
+static constexpr int E220_TX_PIN_DEFAULT = -1;
+static constexpr int E220_M0_PIN_DEFAULT = -1;
+static constexpr int E220_M1_PIN_DEFAULT = -1;
+static constexpr int POWER_OFF_SIGNAL_PIN = -1;
 #else
 static constexpr int HC12_RX_PIN_DEFAULT = 39;
 static constexpr int HC12_TX_PIN_DEFAULT = 1;
@@ -362,7 +403,7 @@ decltype(::Serial) &serialHw = ::Serial;
 
 static inline bool boardHasUsablePsram()
 {
-#if defined(BOARD_ESP32S3_3248S035_N16R8)
+#if defined(BOARD_ESP32S3_3248S035_N16R8) || defined(BOARD_UEDX24320028E_WB_A) || defined(BOARD_UEDX32480035E_WB_A)
     return psramFound();
 #else
     return false;
@@ -2156,6 +2197,11 @@ bool cstReadRegs(uint8_t startReg, uint8_t *buf, uint8_t len)
     return touchReadBytes(CST820_ADDR, &startReg, 1, buf, len);
 }
 
+bool chscReadRegs(uint8_t startReg, uint8_t *buf, uint8_t len)
+{
+    return touchReadBytes(CHSC6540_ADDR, &startReg, 1, buf, len);
+}
+
 bool gt911ReadRegs(uint16_t startReg, uint8_t *buf, uint8_t len)
 {
     const uint8_t prefix[] = {
@@ -2258,6 +2304,30 @@ void cstInit()
                       ok ? 1 : 0,
                       static_cast<unsigned long>(touchI2cHzActive),
                       digitalRead(TOUCH_IRQ));
+    }
+}
+
+void chscInit()
+{
+    bool ok = false;
+    static const uint32_t speeds[] = {TOUCH_I2C_HZ, 100000U};
+    for (uint8_t s = 0; s < (sizeof(speeds) / sizeof(speeds[0])) && !ok; s++) {
+        touchBusBegin(speeds[s]);
+        uint8_t probe[7] = {0, 0, 0, 0, 0, 0, 0};
+        for (uint8_t attempt = 0; attempt < 3 && !ok; attempt++) {
+            delay(5);
+            ok = chscReadRegs(0x00, probe, sizeof(probe));
+        }
+    }
+    touchI2cAddrActive = CHSC6540_ADDR;
+    touchReadFailStreak = 0;
+    touchGhostLowStreak = 0;
+    touchLastInitMs = millis();
+    if (VERBOSE_SERIAL_DEBUG) {
+        Serial.printf("[TOUCH] chsc6540 init ok=%d addr=0x%02X i2c=%lu\n",
+                      ok ? 1 : 0,
+                      static_cast<unsigned int>(touchI2cAddrActive),
+                      static_cast<unsigned long>(touchI2cHzActive));
     }
 }
 
@@ -2424,10 +2494,55 @@ String chooseLatestFirmwareBinUrl(const JsonVariantConst &assets)
 
 #include "app/ota_backend.inc"
 #include "app/web_routes.inc"
+
+static void displayBacklightStagePulse(uint8_t count)
+{
+    if (!DISPLAY_BACKLIGHT_DIAGNOSTIC_LOG || count == 0) return;
+    pinMode(TFT_BL, OUTPUT);
+    for (uint8_t i = 0; i < count; ++i) {
+        digitalWrite(TFT_BL, HIGH);
+        delay(120);
+        digitalWrite(TFT_BL, LOW);
+        delay(120);
+    }
+    digitalWrite(TFT_BL, HIGH);
+    delay(320);
+}
+
+static void displayBootVisualTest()
+{
+    if (!DISPLAY_BACKLIGHT_DIAGNOSTIC_LOG) return;
+    tft.fillScreen(TFT_RED);
+    delay(250);
+    tft.fillScreen(TFT_GREEN);
+    delay(250);
+    tft.fillScreen(TFT_WHITE);
+    delay(250);
+    tft.fillScreen(TFT_BLACK);
+    delay(150);
+    const int32_t halfW = tft.width() / 2;
+    const int32_t halfH = tft.height() / 2;
+    tft.fillRect(0, 0, halfW, halfH, TFT_RED);
+    tft.fillRect(halfW, 0, tft.width() - halfW, halfH, TFT_GREEN);
+    tft.fillRect(0, halfH, halfW, tft.height() - halfH, TFT_WHITE);
+    tft.fillRect(halfW, halfH, tft.width() - halfW, tft.height() - halfH, TFT_BLACK);
+    delay(700);
+    tft.fillScreen(TFT_BLACK);
+}
+
 void setup()
 {
     sdMutex = xSemaphoreCreateMutex();
     Serial.begin(115200);
+    if (DISPLAY_BACKLIGHT_BOOT_FORCE_ON) {
+        pinMode(TFT_BL, OUTPUT);
+        digitalWrite(TFT_BL, HIGH);
+        if (VERBOSE_SERIAL_DEBUG) Serial.printf("[BOOT] forced backlight HIGH on GPIO%d before init\n", TFT_BL);
+        if (DISPLAY_BACKLIGHT_BOOT_HOLD_MS > 0) {
+            if (VERBOSE_SERIAL_DEBUG) Serial.printf("[BOOT] holding early boot for %lu ms with backlight ON\n", DISPLAY_BACKLIGHT_BOOT_HOLD_MS);
+            delay(DISPLAY_BACKLIGHT_BOOT_HOLD_MS);
+        }
+    }
     otaFinalizePendingBootImage();
     if (VERBOSE_SERIAL_DEBUG) {
         Serial.println();
@@ -2435,6 +2550,7 @@ void setup()
         Serial.println("[BOOT] step displayBacklightInit");
     }
     displayBacklightInit();
+    displayBacklightStagePulse(1);
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step rgb pinMode");
     if (RGB_OUTPUT_SUPPORTED) {
         pinMode(RGB_PIN_R, OUTPUT);
@@ -2447,11 +2563,14 @@ void setup()
     pinMode(TOUCH_IRQ, TOUCH_USE_IRQ ? INPUT_PULLUP : INPUT);
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step rgbApplyNow");
     rgbApplyNow(false, false, false);
+    displayBacklightStagePulse(2);
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step analogReadResolution");
     analogReadResolution(12);
-    pinMode(BATTERY_ADC_PIN, INPUT);
-    if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step battery attenuation");
-    analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);
+    if (BATTERY_ADC_PIN >= 0) {
+        pinMode(BATTERY_ADC_PIN, INPUT);
+        if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step battery attenuation");
+        analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);
+    }
     if (LIGHT_ADC_PIN >= 0) {
         if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step light attenuation");
         analogSetPinAttenuation(LIGHT_ADC_PIN, ADC_11db);
@@ -2470,6 +2589,7 @@ void setup()
     randomSeed(static_cast<unsigned long>(esp_random()));
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step loadUiRuntimeConfig");
     loadUiRuntimeConfig();
+    displayBacklightStagePulse(3);
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step sodium_init");
     if (moduleNeedsP2pRuntime()) {
         p2pReady = sodium_init() >= 0;
@@ -2489,6 +2609,7 @@ void setup()
     else mqttStatusLine = "Disabled";
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step sampleTopIndicators");
     sampleTopIndicators();
+    displayBacklightStagePulse(4);
     BatterySnapshot prevBatterySnapshot;
     if (loadBatterySnapshot(prevBatterySnapshot)) {
         const float prevBootV = batteryCalibratedVoltageFromRaw(prevBatterySnapshot.rawV);
@@ -2521,14 +2642,19 @@ void setup()
         Serial.printf("[P2P] ready=%d pub=%s\n", p2pReady ? 1 : 0, p2pReady ? p2pPublicKeyHex().c_str() : "-");
     }
 
+    displayBacklightStagePulse(5);
     tft.init();
     tft.setRotation(TFT_ROTATION);
     tft.setTextFont(2);
     tft.fillScreen(TFT_BLACK);
+    displayBootVisualTest();
+    displayBacklightStagePulse(6);
 
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] touch pre-init");
     touchInit();
+    displayBacklightStagePulse(7);
     lvglInitUi();
+    displayBacklightStagePulse(8);
     if (lvglReady) {
         if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step lv_timer_handler");
         lv_timer_handler();
@@ -2537,7 +2663,12 @@ void setup()
     }
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step displayBacklightFadeIn");
     displayBacklightFadeIn();
+    displayBacklightStagePulse(9);
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step displayBacklightFadeIn done");
+    if (DISPLAY_BACKLIGHT_BOOT_FORCE_ON) {
+        displayBacklightSet(TFT_BL_LEVEL_ON);
+        if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] reasserted backlight ON after display init");
+    }
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] SD/network init deferred to loop");
     bootDeferredStartMs = millis();
     bootInteractiveUntilMs = bootDeferredStartMs + BOOT_INTERACTIVE_GRACE_MS;
@@ -2582,7 +2713,8 @@ void setup()
 #endif
     if (VERBOSE_SERIAL_DEBUG) {
         Serial.printf("[TOUCH] ctrl=%s mode=%s irq_pin=%d i2c=(sda=%d,scl=%d,rst=%d)\n",
-                      TOUCH_CONTROLLER == TOUCH_CTRL_GT911 ? "gt911" : "cst820",
+                      TOUCH_CONTROLLER == TOUCH_CTRL_GT911 ? "gt911"
+                      : (TOUCH_CONTROLLER == TOUCH_CTRL_CHSC6540 ? "chsc6540" : "cst820"),
                       TOUCH_USE_IRQ ? "irq+poll" : "poll-only",
                       TOUCH_IRQ, TOUCH_SDA, TOUCH_SCL, TOUCH_RST);
     }

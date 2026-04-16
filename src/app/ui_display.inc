@@ -437,8 +437,13 @@ void touchInit()
     touchLastSampleDown = false;
     touchLastSampleX = 0;
     touchLastSampleY = 0;
+#if defined(BOARD_UEDX24320028E_WB_A) || defined(BOARD_UEDX32480035E_WB_A)
+    (void)displayCompatPanelReady();
+#else
     if (TOUCH_CONTROLLER == TOUCH_CTRL_GT911) gt911Init();
+    else if (TOUCH_CONTROLLER == TOUCH_CTRL_CHSC6540) chscInit();
     else cstInit();
+#endif
 }
 
 void touchTryRecoverBus(const char *reason)
@@ -479,6 +484,27 @@ bool readScreenTouch(int16_t &sx, int16_t &sy)
     }
     touchLastPollMs = now;
 
+#if defined(BOARD_UEDX24320028E_WB_A) || defined(BOARD_UEDX32480035E_WB_A)
+    int16_t x = 0;
+    int16_t y = 0;
+    if (!displayCompatTouchRead(x, y)) {
+        touchLastSampleDown = false;
+        sx = touchLastSampleX;
+        sy = touchLastSampleY;
+        return false;
+    }
+
+    x = constrain(x, 0, tft.width() - 1);
+    y = constrain(y, 0, tft.height() - 1);
+    sx = x;
+    sy = y;
+    touchLastSampleX = x;
+    touchLastSampleY = y;
+    touchLastSampleDown = true;
+    touchReadFailStreak = 0;
+    touchGhostLowStreak = 0;
+    return true;
+#else
     bool irqLow = true;
     if (TOUCH_USE_IRQ) {
         irqLow = (digitalRead(TOUCH_IRQ) == LOW);
@@ -519,6 +545,20 @@ bool readScreenTouch(int16_t &sx, int16_t &sy)
         gt911WriteReg8(GT911_REG_STATUS, 0);
         x = static_cast<int16_t>((static_cast<uint16_t>(data[2]) << 8) | data[1]);
         y = static_cast<int16_t>((static_cast<uint16_t>(data[4]) << 8) | data[3]);
+    } else if (TOUCH_CONTROLLER == TOUCH_CTRL_CHSC6540) {
+        uint8_t data[7] = {0, 0, 0, 0, 0, 0, 0};
+        if (!chscReadRegs(0x00, data, sizeof(data))) {
+            touchReadFailStreak++;
+            touchTryRecoverBus("chsc6540_read_frame");
+            return false;
+        }
+        if (data[2] == 0) {
+            touchGhostLowStreak = 0;
+            touchLastSampleDown = false;
+            return false;
+        }
+        x = static_cast<int16_t>(((static_cast<uint16_t>(data[3]) << 8) | data[4]) & 0x0FFFU);
+        y = static_cast<int16_t>(((static_cast<uint16_t>(data[5]) << 8) | data[6]) & 0x0FFFU);
     } else {
         uint8_t touched = 0;
         if (!cstReadRegs(0x02, &touched, 1)) {
@@ -560,6 +600,7 @@ bool readScreenTouch(int16_t &sx, int16_t &sy)
     touchReadFailStreak = 0;
     touchGhostLowStreak = 0;
     return true;
+#endif
 }
 
 void lvglFlushCb(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p)
@@ -5779,10 +5820,14 @@ bool animateChargingBeforeSleep()
 
 void displayBacklightInit()
 {
-    if (!DISPLAY_BACKLIGHT_PWM_SUPPORTED) return;
-    ledcSetup(TFT_BL_LEDC_CHANNEL, TFT_BL_LEDC_FREQ, TFT_BL_LEDC_RES);
-    ledcAttachPin(TFT_BL, TFT_BL_LEDC_CHANNEL);
     displayAppliedBrightnessPercent = 0;
+    if (DISPLAY_BACKLIGHT_PWM_SUPPORTED) {
+        pinMode(TFT_BL, OUTPUT);
+        digitalWrite(TFT_BL, LOW);
+        ledcSetup(TFT_BL_LEDC_CHANNEL, TFT_BL_LEDC_FREQ, TFT_BL_LEDC_RES);
+    } else {
+        pinMode(TFT_BL, OUTPUT);
+    }
     displayBacklightSet(TFT_BL_LEVEL_OFF);
 }
 
@@ -5824,8 +5869,56 @@ void displayApplyBacklightPolicy(bool force)
 
 void displayBacklightSet(uint8_t level)
 {
-    if (!DISPLAY_BACKLIGHT_PWM_SUPPORTED) return;
-    ledcWrite(TFT_BL_LEDC_CHANNEL, level);
+    static int lastLoggedState = -1;
+    if (DISPLAY_BACKLIGHT_PWM_SUPPORTED) {
+        static bool pwmAttached = false;
+        const bool fullyOn = level >= TFT_BL_LEVEL_ON;
+        const bool shouldBeOn = level > TFT_BL_LEVEL_OFF;
+
+        if (fullyOn) {
+            if (pwmAttached) {
+                ledcDetachPin(TFT_BL);
+                pwmAttached = false;
+            }
+            pinMode(TFT_BL, OUTPUT);
+            digitalWrite(TFT_BL, HIGH);
+        } else if (!shouldBeOn) {
+            if (pwmAttached) {
+                ledcWrite(TFT_BL_LEDC_CHANNEL, TFT_BL_LEVEL_OFF);
+            } else {
+                pinMode(TFT_BL, OUTPUT);
+                digitalWrite(TFT_BL, LOW);
+            }
+        } else {
+            if (!pwmAttached) {
+                ledcAttachPin(TFT_BL, TFT_BL_LEDC_CHANNEL);
+                pwmAttached = true;
+            }
+            ledcWrite(TFT_BL_LEDC_CHANNEL, level);
+        }
+        if (DISPLAY_BACKLIGHT_DIAGNOSTIC_LOG) {
+            const int nextState = level > TFT_BL_LEVEL_OFF ? 1 : 0;
+            if (nextState != lastLoggedState) {
+                lastLoggedState = nextState;
+                Serial.printf("[BL] pwm gpio=%d level=%u state=%s\n",
+                              TFT_BL,
+                              static_cast<unsigned int>(level),
+                              nextState ? "ON" : "OFF");
+            }
+        }
+        return;
+    }
+    digitalWrite(TFT_BL, level > TFT_BL_LEVEL_OFF ? HIGH : LOW);
+    if (DISPLAY_BACKLIGHT_DIAGNOSTIC_LOG) {
+        const int nextState = level > TFT_BL_LEVEL_OFF ? 1 : 0;
+        if (nextState != lastLoggedState) {
+            lastLoggedState = nextState;
+            Serial.printf("[BL] gpio=%d write=%s raw=%u\n",
+                          TFT_BL,
+                          nextState ? "HIGH" : "LOW",
+                          static_cast<unsigned int>(level));
+        }
+    }
 }
 
 void displayBacklightFadeIn(uint16_t durationMs)

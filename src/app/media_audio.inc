@@ -116,8 +116,30 @@ String mediaFindAdjacentTrack(const String &sourcePath, bool nextDir)
     return nextDir ? firstPath : lastPath;
 }
 
+static Adafruit_NeoPixel rgbPixel(1, RGB_PIXEL_PIN, NEO_GRB + NEO_KHZ800);
+static bool rgbPixelReady = false;
+
+void rgbPixelEnsureReady()
+{
+    if (!RGB_PIXEL_SUPPORTED || rgbPixelReady) return;
+    rgbPixel.begin();
+    rgbPixel.clear();
+    rgbPixel.show();
+    rgbPixelReady = true;
+}
+
 void rgbApplyNow(bool rOn, bool gOn, bool bOn)
 {
+    if (RGB_PIXEL_SUPPORTED) {
+        rgbPixelEnsureReady();
+        const uint8_t scaled = static_cast<uint8_t>((static_cast<uint16_t>(255U) * rgbLedPercent) / 100U);
+        rgbPixel.setPixelColor(0,
+                               rgbPixel.Color(rOn ? scaled : 0U,
+                                              gOn ? scaled : 0U,
+                                              bOn ? scaled : 0U));
+        rgbPixel.show();
+        return;
+    }
     if (!RGB_OUTPUT_SUPPORTED) return;
     auto level = [](bool on) -> uint8_t {
         const uint8_t scaled = on ? static_cast<uint8_t>((static_cast<uint16_t>(255U) * rgbLedPercent) / 100U) : 0U;
@@ -145,6 +167,15 @@ void rgbFlashAcknowledge()
 
 void rgbApplyPwm(uint8_t r, uint8_t g, uint8_t b)
 {
+    if (RGB_PIXEL_SUPPORTED) {
+        rgbPixelEnsureReady();
+        const uint8_t rr = static_cast<uint8_t>((static_cast<uint16_t>(r) * rgbLedPercent) / 100U);
+        const uint8_t gg = static_cast<uint8_t>((static_cast<uint16_t>(g) * rgbLedPercent) / 100U);
+        const uint8_t bb = static_cast<uint8_t>((static_cast<uint16_t>(b) * rgbLedPercent) / 100U);
+        rgbPixel.setPixelColor(0, rgbPixel.Color(rr, gg, bb));
+        rgbPixel.show();
+        return;
+    }
     if (!RGB_OUTPUT_SUPPORTED) return;
     auto out = [](uint8_t val) -> uint8_t {
         const uint8_t scaled = static_cast<uint8_t>((static_cast<uint16_t>(val) * rgbLedPercent) / 100U);
@@ -621,7 +652,7 @@ static void touchFeedbackVibrationService()
 
 bool audioEnsureBackendReady(const char *reason)
 {
-#if defined(BOARD_ESP32S3_3248S035_N16R8)
+#if defined(BOARD_ESP32S3_3248S035_N16R8) || defined(BOARD_UEDX24320028E_WB_A) || defined(BOARD_UEDX32480035E_WB_A)
     Serial.printf("[AUDIO] backend unavailable on this build: GPIO %d mapped but internal DAC mode is ESP32-only reason=%s\n",
                   I2S_SPK_PIN,
                   (reason && reason[0]) ? reason : "-");
@@ -1056,7 +1087,7 @@ static void wakeDisplayForIncomingNotification()
 
 bool canEnterLowPowerSleep(bool touchDownNow)
 {
-#if defined(BOARD_ESP32S3_3248S035_N16R8)
+#if defined(BOARD_ESP32S3_3248S035_N16R8) || defined(BOARD_UEDX24320028E_WB_A)
     (void)touchDownNow;
     return false;
 #else
