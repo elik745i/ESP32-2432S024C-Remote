@@ -60,6 +60,19 @@ static constexpr const char *AP_SSID = "ESP32-S3-3248S035-FM";
 static constexpr const char *MDNS_HOST = "esp32-s3-3248s035";
 static constexpr const char *OTA_ASSET_NAME = "esp32-s3-3248s035-n16r8";
 static constexpr bool OTA_FIRMWARE_FLASH_SUPPORTED = true;
+#elif defined(BOARD_JC4880P443C_I_W)
+static constexpr int TOUCH_SDA = 7;
+static constexpr int TOUCH_SCL = 8;
+static constexpr int TOUCH_RST = 22;
+static constexpr int TOUCH_IRQ = 21;
+static constexpr TouchControllerType TOUCH_CONTROLLER = TOUCH_CTRL_GT911;
+static constexpr uint8_t TOUCH_ROTATION_OFFSET = 0;
+static constexpr const char *DEVICE_MODEL = "JC4880P443C_I_W Touch Remote";
+static constexpr const char *DEVICE_SHORT_NAME = "JC4880P443C_I_W";
+static constexpr const char *AP_SSID = "JC4880P443C_I_W-FM";
+static constexpr const char *MDNS_HOST = "jc4880p443c-i-w";
+static constexpr const char *OTA_ASSET_NAME = "jc4880p443c-i-w";
+static constexpr bool OTA_FIRMWARE_FLASH_SUPPORTED = false;
 #elif defined(BOARD_ESP32_3248S035)
 static constexpr int TOUCH_SDA = 33;
 static constexpr int TOUCH_SCL = 32;
@@ -106,6 +119,11 @@ static constexpr int SD_CS = 38;
 static constexpr int SD_MOSI = 1;
 static constexpr int SD_SCK = 39;
 static constexpr int SD_MISO = 40;
+#elif defined(BOARD_JC4880P443C_I_W)
+static constexpr int SD_CS = -1;
+static constexpr int SD_MOSI = -1;
+static constexpr int SD_SCK = -1;
+static constexpr int SD_MISO = -1;
 #else
 static constexpr int SD_CS = 5;
 static constexpr int SD_MOSI = 23;

@@ -607,9 +607,15 @@ void lvglFlushCb(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p
 {
     const int32_t w = area->x2 - area->x1 + 1;
     const int32_t h = area->y2 - area->y1 + 1;
+    const bool flushSwapBytes =
+#if defined(BOARD_JC4880P443C_I_W)
+        false;
+#else
+        true;
+#endif
     tft.startWrite();
     tft.setAddrWindow(area->x1, area->y1, w, h);
-    tft.pushColors(reinterpret_cast<uint16_t *>(&color_p->full), static_cast<uint32_t>(w * h), true);
+    tft.pushColors(reinterpret_cast<uint16_t *>(&color_p->full), static_cast<uint32_t>(w * h), flushSwapBytes);
     tft.endWrite();
     lv_disp_flush_ready(disp);
 }
@@ -1280,7 +1286,7 @@ void lvglRegisterTopIndicator(lv_obj_t *obj)
 
 wl_status_t wifiStatusSafe()
 {
-    if (networkSuspendedForAudio || airplaneModeEnabled) return WL_DISCONNECTED;
+    if (!WIFI_RUNTIME_SUPPORTED || networkSuspendedForAudio || airplaneModeEnabled) return WL_DISCONNECTED;
     return WiFi.status();
 }
 
@@ -5824,7 +5830,9 @@ void displayBacklightInit()
     if (DISPLAY_BACKLIGHT_PWM_SUPPORTED) {
         pinMode(TFT_BL, OUTPUT);
         digitalWrite(TFT_BL, LOW);
+#if !defined(BOARD_JC4880P443C_I_W)
         ledcSetup(TFT_BL_LEDC_CHANNEL, TFT_BL_LEDC_FREQ, TFT_BL_LEDC_RES);
+#endif
     } else {
         pinMode(TFT_BL, OUTPUT);
     }
@@ -5847,6 +5855,9 @@ uint8_t displayEffectiveBrightnessPercent()
                                      + static_cast<uint16_t>((static_cast<uint32_t>(100U - ADAPTIVE_BRIGHTNESS_SENSOR_MIN_FACTOR_PERCENT) * lightPercent) / 100U);
         const uint16_t ambientPercent = max<uint16_t>(5U, static_cast<uint16_t>((static_cast<uint32_t>(targetPercent) * factorPercent) / 100U));
         targetPercent = static_cast<uint8_t>(min<uint16_t>(targetPercent, ambientPercent));
+    } else {
+        const uint16_t fallbackPercent = max<uint16_t>(5U, static_cast<uint16_t>((static_cast<uint32_t>(targetPercent) * ADAPTIVE_BRIGHTNESS_NO_SENSOR_FACTOR_PERCENT) / 100U));
+        targetPercent = static_cast<uint8_t>(min<uint16_t>(targetPercent, fallbackPercent));
     }
 
     if (displayBrightnessPercent > ADAPTIVE_BRIGHTNESS_IDLE_TRIGGER_PERCENT &&
@@ -5877,24 +5888,42 @@ void displayBacklightSet(uint8_t level)
 
         if (fullyOn) {
             if (pwmAttached) {
+#if defined(BOARD_JC4880P443C_I_W)
+                board_pwm_native::detach(TFT_BL);
+#else
                 ledcDetachPin(TFT_BL);
+#endif
                 pwmAttached = false;
             }
             pinMode(TFT_BL, OUTPUT);
             digitalWrite(TFT_BL, HIGH);
         } else if (!shouldBeOn) {
             if (pwmAttached) {
+#if defined(BOARD_JC4880P443C_I_W)
+                board_pwm_native::write(TFT_BL, TFT_BL_LEVEL_OFF);
+#else
                 ledcWrite(TFT_BL_LEDC_CHANNEL, TFT_BL_LEVEL_OFF);
+#endif
             } else {
                 pinMode(TFT_BL, OUTPUT);
                 digitalWrite(TFT_BL, LOW);
             }
         } else {
             if (!pwmAttached) {
+#if defined(BOARD_JC4880P443C_I_W)
+                pwmAttached = board_pwm_native::attach(TFT_BL, TFT_BL_LEDC_FREQ, TFT_BL_LEDC_RES);
+#else
                 ledcAttachPin(TFT_BL, TFT_BL_LEDC_CHANNEL);
+#endif
+#if !defined(BOARD_JC4880P443C_I_W)
                 pwmAttached = true;
+#endif
             }
+#if defined(BOARD_JC4880P443C_I_W)
+            if (pwmAttached) board_pwm_native::write(TFT_BL, level);
+#else
             ledcWrite(TFT_BL_LEDC_CHANNEL, level);
+#endif
         }
         if (DISPLAY_BACKLIGHT_DIAGNOSTIC_LOG) {
             const int nextState = level > TFT_BL_LEVEL_OFF ? 1 : 0;

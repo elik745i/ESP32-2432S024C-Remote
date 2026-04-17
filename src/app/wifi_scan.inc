@@ -3,6 +3,33 @@ const char *authName(wifi_auth_mode_t auth)
     return auth == WIFI_AUTH_OPEN ? "Open" : "Secured";
 }
 
+static bool wifiScanShouldUseSyncMode()
+{
+#if defined(BOARD_JC4880P443C_I_W)
+    return true;
+#else
+    return false;
+#endif
+}
+
+static void wifiPrepareScanRuntime()
+{
+#if defined(BOARD_JC4880P443C_I_W)
+    stopWebServerRuntime();
+    apModeActive = false;
+    wifiStaGotIpPending = false;
+    wifiStaDisconnectedPending = false;
+    wifiForgetPendingUi = false;
+    bootStaConnectInProgress = false;
+    WiFi.scanDelete();
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect(false, false);
+    delay(100);
+#else
+    wifiPrepareStaRuntime("scan", true);
+#endif
+}
+
 static constexpr unsigned long WIFI_SCAN_TIMEOUT_MS = 12000UL;
 static constexpr unsigned long WIFI_SCAN_STOP_WAIT_MS = 600UL;
 
@@ -41,8 +68,29 @@ static void wifiScanApplyResults(int scanResult, const String *statusOverride = 
 
 void refreshWifiScan()
 {
-    const wifi_mode_t scanMode = apModeActive ? WIFI_AP_STA : WIFI_STA;
-    wifiEnsureRuntimeEnabled("scan", scanMode, apModeActive);
+    if (!WIFI_RUNTIME_SUPPORTED) {
+        wifiScanInProgress = false;
+        wifiScanStartedMs = 0;
+        wifiCount = 0;
+        uiStatusLine = "WiFi on this board is handled by the onboard ESP32-C6 and is not enabled in this build";
+        if (lvglReady) lvglSyncStatusLine();
+        return;
+    }
+    wifiPrepareScanRuntime();
+        if (wifiScanShouldUseSyncMode()) {
+            wifiCount = 0;
+            wifiScanInProgress = true;
+            wifiScanFallbackUsed = false;
+            wifiScanStartedMs = millis();
+            wifiScanAnimLastMs = wifiScanStartedMs;
+            wifiScanAnimPhase = 0;
+            uiStatusLine = "Searching...";
+            if (lvglReady) lvglSyncStatusLine();
+            delay(50);
+            const int syncResult = WiFi.scanNetworks(false, false);
+            wifiScanApplyResults(syncResult);
+            return;
+        }
     const int scanState = WiFi.scanComplete();
     if (scanState == WIFI_SCAN_RUNNING) {
         const bool staleScan = !wifiScanInProgress || static_cast<unsigned long>(millis() - wifiScanStartedMs) >= WIFI_SCAN_TIMEOUT_MS;
@@ -83,6 +131,13 @@ void refreshWifiScan()
 
 void stopWifiScan(bool refreshUi)
 {
+    if (!WIFI_RUNTIME_SUPPORTED) {
+        (void)refreshUi;
+        wifiScanInProgress = false;
+        wifiScanStartedMs = 0;
+        wifiCount = 0;
+        return;
+    }
     if (!wifiScanInProgress) return;
 
     int scanResult = WiFi.scanComplete();
@@ -119,6 +174,7 @@ void stopWifiScan(bool refreshUi)
 
 void wifiScanService()
 {
+    if (!WIFI_RUNTIME_SUPPORTED) return;
     if (!wifiScanInProgress) return;
     int n = WiFi.scanComplete();
     if (n == WIFI_SCAN_RUNNING) {
@@ -140,5 +196,6 @@ void clearWifiScanResults()
         stopWifiScan(false);
     }
     wifiCount = 0;
+    if (!WIFI_RUNTIME_SUPPORTED) return;
     WiFi.scanDelete();
 }

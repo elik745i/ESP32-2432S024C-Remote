@@ -652,7 +652,7 @@ static void touchFeedbackVibrationService()
 
 bool audioEnsureBackendReady(const char *reason)
 {
-#if defined(BOARD_ESP32S3_3248S035_N16R8) || defined(BOARD_UEDX24320028E_WB_A) || defined(BOARD_UEDX32480035E_WB_A)
+#if defined(BOARD_ESP32S3_3248S035_N16R8) || defined(BOARD_UEDX24320028E_WB_A) || defined(BOARD_UEDX32480035E_WB_A) || defined(BOARD_JC4880P443C_I_W)
     Serial.printf("[AUDIO] backend unavailable on this build: GPIO %d mapped but internal DAC mode is ESP32-only reason=%s\n",
                   I2S_SPK_PIN,
                   (reason && reason[0]) ? reason : "-");
@@ -1123,7 +1123,11 @@ void enterDeepSleep()
     rgbApplyNow(false, false, false);
     radioPrepareForDeepSleep();
     if (TOUCH_USE_IRQ) {
+#if SOC_PM_SUPPORT_EXT0_WAKEUP
         esp_sleep_enable_ext0_wakeup(static_cast<gpio_num_t>(TOUCH_IRQ), 0);
+#elif SOC_PM_SUPPORT_EXT1_WAKEUP
+        esp_sleep_enable_ext1_wakeup_io(1ULL << TOUCH_IRQ, ESP_EXT1_WAKEUP_ANY_LOW);
+#endif
     } else if (DEEP_SLEEP_WAKE_TIMER_US > 0ULL) {
         esp_sleep_enable_timer_wakeup(DEEP_SLEEP_WAKE_TIMER_US);
     }

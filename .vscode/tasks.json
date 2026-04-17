@@ -5,6 +5,11 @@
 			"label": "PlatformIO: Build",
 			"type": "process",
 			"command": "${env:USERPROFILE}\\.platformio\\penv\\Scripts\\platformio.exe",
+			"options": {
+				"env": {
+					"PLATFORMIO_CORE_DIR": "C:\\p"
+				}
+			},
 			"args": [
 				"run"
 			],
@@ -20,6 +25,11 @@
 			"label": "PlatformIO: Upload",
 			"type": "process",
 			"command": "${env:USERPROFILE}\\.platformio\\penv\\Scripts\\platformio.exe",
+			"options": {
+				"env": {
+					"PLATFORMIO_CORE_DIR": "C:\\p"
+				}
+			},
 			"args": [
 				"run",
 				"--target",
@@ -34,6 +44,11 @@
 			"label": "Build esp32-2432s024c release",
 			"type": "shell",
 			"command": "${env:USERPROFILE}\\.platformio\\penv\\Scripts\\platformio.exe",
+			"options": {
+				"env": {
+					"PLATFORMIO_CORE_DIR": "C:\\p"
+				}
+			},
 			"args": [
 				"run",
 				"-e",

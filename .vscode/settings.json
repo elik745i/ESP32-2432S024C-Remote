@@ -1,4 +1,7 @@
 {
     "idf.currentSetup": "c:\\Espressif\\frameworks\\esp-idf-v5.2.3",
-    "git.ignoreLimitWarning": true
+    "git.ignoreLimitWarning": true,
+    "terminal.integrated.env.windows": {
+        "PLATFORMIO_CORE_DIR": "C:\\p"
+    }
 }

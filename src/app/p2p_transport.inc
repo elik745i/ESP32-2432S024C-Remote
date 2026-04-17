@@ -765,7 +765,7 @@ void lvglRefreshWifiList()
         lvglRegisterReorderableItem(lbl, "ord_wifi", "empty");
     }
 
-    lv_obj_t *apCard = makeCard("AP Config");
+    lv_obj_t *apCard = wifiApRuntimeSupported() ? makeCard("AP Config") : nullptr;
     if (apCard) {
         lvglRegisterReorderableItem(apCard, "ord_wifi", "ap");
         lv_obj_t *hint = lv_label_create(apCard);
@@ -816,6 +816,15 @@ void lvglRefreshWifiList()
         lvglRegisterStyledButton(lvglWifiApPassShowBtn, lv_color_hex(0x3F4A57), true);
 
         makeBtn(apCard, lvglSymbolText(LV_SYMBOL_SAVE, "Save AP Config").c_str(), 144, 30, lv_color_hex(0x3A7A3A), lvglWifiApSaveEvent);
+    }
+
+    if (!wifiApRuntimeSupported()) {
+        lv_obj_t *apInfo = lv_label_create(lvglWifiList);
+        if (apInfo) {
+            lv_label_set_text(apInfo, "AP mode is not available on this board.");
+            lv_obj_set_style_text_color(apInfo, lv_color_hex(0xC8CED6), 0);
+            lvglRegisterReorderableItem(apInfo, "ord_wifi", "ap_disabled");
+        }
     }
     lvglApplySavedOrder(lvglWifiList, "ord_wifi");
 }

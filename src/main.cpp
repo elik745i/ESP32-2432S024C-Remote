@@ -19,8 +19,10 @@
 #include <Update.h>
 #include <WiFiClientSecure.h>
 #include <esp_ota_ops.h>
+#if !defined(BOARD_JC4880P443C_I_W)
 #include <esp_bt.h>
 #include <esp_bt_main.h>
+#endif
 #include <esp_wifi.h>
 #include <esp_sleep.h>
 #include <esp_heap_caps.h>
@@ -33,6 +35,90 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <sodium.h>
+#include <esp32-hal-ledc.h>
+
+#if defined(BOARD_JC4880P443C_I_W)
+#ifndef esp_ptr_external_ram
+#define esp_ptr_external_ram(ptr) (false)
+#endif
+
+namespace board_pwm_native {
+
+bool attach(uint8_t pin, uint32_t freq, uint8_t resolution)
+{
+    return ledcAttach(pin, freq, resolution);
+}
+
+bool write(uint8_t pin, uint32_t duty)
+{
+    return ledcWrite(pin, duty);
+}
+
+bool detach(uint8_t pin)
+{
+    return ledcDetach(pin);
+}
+
+} // namespace board_pwm_native
+
+namespace {
+
+constexpr uint8_t LEDC_COMPAT_MAX_CHANNELS = 16;
+int8_t gLedcCompatPins[LEDC_COMPAT_MAX_CHANNELS] = {
+    -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1,
+};
+uint32_t gLedcCompatFreq[LEDC_COMPAT_MAX_CHANNELS] = {};
+uint8_t gLedcCompatResolution[LEDC_COMPAT_MAX_CHANNELS] = {};
+
+bool compatLedcSetup(uint8_t channel, uint32_t freq, uint8_t resolution)
+{
+    if (channel >= LEDC_COMPAT_MAX_CHANNELS) return false;
+    gLedcCompatFreq[channel] = freq;
+    gLedcCompatResolution[channel] = resolution;
+    return true;
+}
+
+void compatLedcAttachPin(uint8_t pin, uint8_t channel)
+{
+    if (channel >= LEDC_COMPAT_MAX_CHANNELS) return;
+    const uint32_t freq = gLedcCompatFreq[channel] ? gLedcCompatFreq[channel] : 5000U;
+    const uint8_t resolution = gLedcCompatResolution[channel] ? gLedcCompatResolution[channel] : 8U;
+    if (ledcAttachChannel(pin, freq, resolution, channel)) {
+        gLedcCompatPins[channel] = static_cast<int8_t>(pin);
+    }
+}
+
+void compatLedcDetachPin(uint8_t pin)
+{
+    (void)ledcDetach(pin);
+    for (uint8_t channel = 0; channel < LEDC_COMPAT_MAX_CHANNELS; ++channel) {
+        if (gLedcCompatPins[channel] == static_cast<int8_t>(pin)) gLedcCompatPins[channel] = -1;
+    }
+}
+
+bool compatLedcWrite(uint8_t channel, uint32_t duty)
+{
+    if (channel >= LEDC_COMPAT_MAX_CHANNELS) return false;
+    const int8_t pin = gLedcCompatPins[channel];
+    return pin >= 0 ? ledcWrite(static_cast<uint8_t>(pin), duty) : false;
+}
+
+uint32_t compatLedcWriteTone(uint8_t channel, uint32_t freq)
+{
+    if (channel >= LEDC_COMPAT_MAX_CHANNELS) return 0;
+    const int8_t pin = gLedcCompatPins[channel];
+    return pin >= 0 ? ledcWriteTone(static_cast<uint8_t>(pin), freq) : 0;
+}
+
+} // namespace
+
+#define ledcSetup compatLedcSetup
+#define ledcAttachPin compatLedcAttachPin
+#define ledcDetachPin compatLedcDetachPin
+#define ledcWrite compatLedcWrite
+#define ledcWriteTone compatLedcWriteTone
+#endif
 
 #include "generated/img_airplane_mode_icon.h"
 #include "generated/img_chat_small_icon.h"
@@ -99,14 +185,14 @@ static bool chatPendingOutboxDirty = false;
 static unsigned long chatPendingOutboxFlushAfterMs = 0;
 static unsigned long radioLastTxLeadMs = 0;
 
-#if defined(BOARD_ESP32S3_3248S035_N16R8) || defined(BOARD_UEDX24320028E_WB_A) || defined(BOARD_UEDX32480035E_WB_A)
+#if defined(BOARD_ESP32S3_3248S035_N16R8) || defined(BOARD_UEDX24320028E_WB_A) || defined(BOARD_UEDX32480035E_WB_A) || defined(BOARD_JC4880P443C_I_W)
 static constexpr bool AUDIO_BACKEND_SUPPORTED = false;
 static constexpr int I2S_SPK_PIN = 18;
 #else
 static constexpr bool AUDIO_BACKEND_SUPPORTED = true;
 static constexpr int I2S_SPK_PIN = 26;
 #endif
-static constexpr uint8_t AUDIO_I2S_PORT = I2S_NUM_0;
+static constexpr uint8_t AUDIO_I2S_PORT = 0;
 static constexpr uint8_t AUDIO_VOLUME_TARGET = 21;
 static constexpr bool AUDIO_FORCE_MONO_INTERNAL_DAC = true;
 static constexpr float AUDIO_VOLUME_CURVE_EXPONENT = 2.0f;
@@ -126,7 +212,7 @@ static constexpr unsigned long TOUCH_TICK_MS = 4UL;
 // CHAT_NOTIFY_FREQ_SECONDARY, CHAT_NOTIFY_BEEP1_MS, CHAT_NOTIFY_GAP_MS, CHAT_NOTIFY_BEEP2_MS
 static constexpr unsigned long CHAT_NOTIFY_REPEAT_GAP_MS = 140UL;
 static constexpr uint8_t CHAT_NOTIFY_QUEUE_MAX = 3;
-#if !defined(BOARD_ESP32S3_3248S035_N16R8) && !defined(BOARD_UEDX24320028E_WB_A) && !defined(BOARD_UEDX32480035E_WB_A)
+#if !defined(BOARD_ESP32S3_3248S035_N16R8) && !defined(BOARD_UEDX24320028E_WB_A) && !defined(BOARD_UEDX32480035E_WB_A) && !defined(BOARD_JC4880P443C_I_W)
 // ESP32-audioI2S uses LEFT_EN (value 2) for DAC2 on GPIO26.
 // Keep TOUCH_RST on GPIO25 untouched (DAC1 / RIGHT_EN must stay disabled).
 static constexpr uint8_t AUDIO_INTERNAL_DAC_CHANNEL = static_cast<uint8_t>(I2S_DAC_CHANNEL_LEFT_EN);
@@ -168,16 +254,24 @@ static constexpr uint16_t TFT_BL_LEDC_FREQ = 5000;
 static constexpr uint8_t TFT_BL_LEDC_RES = 8;
 static constexpr uint8_t TFT_BL_LEVEL_ON = 255;
 static constexpr uint8_t TFT_BL_LEVEL_OFF = 0;
-#if defined(BOARD_UEDX24320028E_WB_A) || defined(BOARD_UEDX32480035E_WB_A)
+#if defined(BOARD_JC4880P443C_I_W)
+static constexpr bool DISPLAY_BACKLIGHT_PWM_SUPPORTED = true;
+static constexpr bool DISPLAY_BACKLIGHT_BOOT_FORCE_ON = true;
+static constexpr bool DISPLAY_BACKLIGHT_DIAGNOSTIC_LOG = false;
+static constexpr unsigned long DISPLAY_BACKLIGHT_BOOT_HOLD_MS = 0UL;
+static constexpr bool WIFI_RUNTIME_SUPPORTED = true;
+#elif defined(BOARD_UEDX24320028E_WB_A) || defined(BOARD_UEDX32480035E_WB_A)
 static constexpr bool DISPLAY_BACKLIGHT_PWM_SUPPORTED = true;
 static constexpr bool DISPLAY_BACKLIGHT_BOOT_FORCE_ON = false;
 static constexpr bool DISPLAY_BACKLIGHT_DIAGNOSTIC_LOG = false;
 static constexpr unsigned long DISPLAY_BACKLIGHT_BOOT_HOLD_MS = 0UL;
+static constexpr bool WIFI_RUNTIME_SUPPORTED = true;
 #else
 static constexpr bool DISPLAY_BACKLIGHT_PWM_SUPPORTED = true;
 static constexpr bool DISPLAY_BACKLIGHT_BOOT_FORCE_ON = false;
 static constexpr bool DISPLAY_BACKLIGHT_DIAGNOSTIC_LOG = false;
 static constexpr unsigned long DISPLAY_BACKLIGHT_BOOT_HOLD_MS = 0UL;
+static constexpr bool WIFI_RUNTIME_SUPPORTED = true;
 #endif
 static constexpr unsigned long LCD_IDLE_TIMEOUT_MS_DEFAULT = 120000UL;
 static constexpr unsigned long LCD_IDLE_TIMEOUT_MS_MIN = 15000UL;
@@ -187,6 +281,7 @@ static constexpr unsigned long ADAPTIVE_BRIGHTNESS_IDLE_DIM_DELAY_MS = 5000UL;
 static constexpr uint8_t ADAPTIVE_BRIGHTNESS_IDLE_DIM_PERCENT = 50U;
 static constexpr uint8_t ADAPTIVE_BRIGHTNESS_IDLE_TRIGGER_PERCENT = 80U;
 static constexpr uint8_t ADAPTIVE_BRIGHTNESS_SENSOR_MIN_FACTOR_PERCENT = 35U;
+static constexpr uint8_t ADAPTIVE_BRIGHTNESS_NO_SENSOR_FACTOR_PERCENT = 75U;
 static constexpr unsigned long SENSOR_SAMPLE_PERIOD_MS = 2000;
 static constexpr unsigned long TOP_INDICATOR_REFRESH_MS = 1500;
 static constexpr unsigned long TOP_INDICATOR_WIFI_CONNECT_ANIM_MS = 220;
@@ -205,6 +300,11 @@ static constexpr int LIGHT_ADC_PIN = 6;
 static constexpr int VIBRATION_MOTOR_PIN = 2;
 static constexpr float BATTERY_DIVIDER_R_TOP = 470000.0f;
 static constexpr float BATTERY_DIVIDER_R_BOTTOM = 220000.0f;
+#elif defined(BOARD_JC4880P443C_I_W)
+static constexpr int BATTERY_ADC_PIN = -1;
+static constexpr int LIGHT_ADC_PIN = -1;
+static constexpr float BATTERY_DIVIDER_R_TOP = 1.0f;
+static constexpr float BATTERY_DIVIDER_R_BOTTOM = 1.0f;
 #elif defined(BOARD_UEDX24320028E_WB_A) || defined(BOARD_UEDX32480035E_WB_A)
 static constexpr int BATTERY_ADC_PIN = -1;
 static constexpr int LIGHT_ADC_PIN = -1;
@@ -288,7 +388,9 @@ static constexpr const char *AP_PASS = "12345678";
 static constexpr const char *FW_VERSION = "0.21.17";
 static constexpr uint8_t MODULE_SLOT_COUNT = 8U;
 static constexpr const char *MODULES_MANIFEST_URL = "https://raw.githubusercontent.com/elik745i/ESP32-2432S024C-Remote/main/modules_manifest.json";
-#if defined(BOARD_UEDX24320028E_WB_A) || defined(BOARD_UEDX32480035E_WB_A)
+#if defined(BOARD_JC4880P443C_I_W)
+static constexpr bool VERBOSE_SERIAL_DEBUG = true;
+#elif defined(BOARD_UEDX24320028E_WB_A) || defined(BOARD_UEDX32480035E_WB_A)
 static constexpr bool VERBOSE_SERIAL_DEBUG = true;
 #else
 static constexpr bool VERBOSE_SERIAL_DEBUG = false;
@@ -595,6 +697,9 @@ IPAddress wifiLanIpSafe();
 IPAddress wifiLanBroadcastIpSafe();
 void registerWifiEvents();
 static void wifiEnsureRuntimeEnabled(const char *reason, wifi_mode_t mode, bool startWebServer);
+static bool wifiApRuntimeSupported();
+static wifi_mode_t wifiStaScanOrConnectMode();
+static void wifiPrepareStaRuntime(const char *reason, bool disconnectFirst);
 void ensureApOnline(const char *reason);
 void forceSessionApMode(const char *reason);
 void disableApWhenStaConnected(const char *reason);
@@ -2676,14 +2781,14 @@ void setup()
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] SD boot init enabled on ESP32-S3 after RGB/PSRAM fix");
 #endif
-    bootWifiInitPending = true;
+    bootWifiInitPending = WIFI_RUNTIME_SUPPORTED;
     bootStartupFeedbackPending = true;
     bootStartupFeedbackDueMs = bootDeferredStartMs + BOOT_DEFER_STARTUP_FEEDBACK_MS;
     bootRadioInitPending = moduleInstalled[APP_MODULE_RADIO];
     bootRadioInitDueMs = bootDeferredStartMs + BOOT_DEFER_RADIO_INIT_MS;
     bootRadioProbePending = moduleInstalled[APP_MODULE_RADIO] && radioModuleType == RADIO_MODULE_E220;
     bootRadioProbeDueMs = bootDeferredStartMs + BOOT_DEFER_RADIO_PROBE_MS;
-    wifiRuntimeManaged = true;
+    wifiRuntimeManaged = WIFI_RUNTIME_SUPPORTED;
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] WiFi boot init enabled on ESP32-S3 after RGB/PSRAM fix");
 #endif
@@ -2722,7 +2827,7 @@ void setup()
 
 static inline void cpuBoostForUi(bool uiPriorityActive)
 {
-#if defined(ESP32)
+#if defined(ESP32) && !defined(BOARD_JC4880P443C_I_W)
     if (uiPriorityActive) {
         if (getCpuFrequencyMhz() < 240) {
             setCpuFrequencyMhz(240);

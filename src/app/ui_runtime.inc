@@ -1303,10 +1303,14 @@ bool handleUiSettingMessage(const char *msg)
 
 static void stopBluetoothRadio()
 {
+#if defined(BOARD_JC4880P443C_I_W)
+    return;
+#else
     if (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_ENABLED) esp_bluedroid_disable();
     if (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_INITIALIZED) esp_bluedroid_deinit();
     if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_ENABLED) esp_bt_controller_disable();
     if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_INITED) esp_bt_controller_deinit();
+#endif
 }
 
 void applyAirplaneMode(bool enabled, const char *reason)
@@ -1538,6 +1542,7 @@ static bool wifiHasStaTarget()
 
 void registerWifiEvents()
 {
+    if (!WIFI_RUNTIME_SUPPORTED) return;
     if (wifiEventsRegistered) return;
     wifiStaGotIpEventId = WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
         (void)event;

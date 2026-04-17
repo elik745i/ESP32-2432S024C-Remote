@@ -2016,6 +2016,7 @@ void setupWebRoutes()
 
 void wifiConnectionService()
 {
+    if (!WIFI_RUNTIME_SUPPORTED) return;
     if (networkSuspendedForAudio || airplaneModeEnabled) return;
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
     if (!wifiRuntimeManaged) return;
@@ -2059,7 +2060,7 @@ void wifiConnectionService()
         wifiStaDisconnectedPending = false;
         bootStaConnectInProgress = false;
         wifiForgetPendingUi = false;
-        ensureApOnline("sta_disconnected");
+        if (wifiSessionApMode || wifiAutoApFallbackEnabled()) ensureApOnline("sta_disconnected");
         uiStatusLine = wifiSessionApMode ? "AP mode enabled" : "WiFi disconnected";
         if (lvglWifiPwdConnectPending) {
             lvglWifiPwdConnectPending = false;
@@ -2077,13 +2078,15 @@ void wifiConnectionService()
                       WiFi.disconnectReasonName(static_cast<wifi_err_reason_t>(reason)));
     }
 
+    if (wifiScanInProgress) return;
+
     if (wifiConnectedSafe()) return;
     if (wifiSessionApMode) {
         if (!apModeActive) ensureApOnline("session_ap_mode");
         return;
     }
     if (!wifiHasStaTarget()) {
-        if (!apModeActive) ensureApOnline("no_sta_target");
+        if (wifiAutoApFallbackEnabled() && !apModeActive) ensureApOnline("no_sta_target");
         return;
     }
 
@@ -2092,7 +2095,7 @@ void wifiConnectionService()
         if (static_cast<unsigned long>(now - bootStaConnectStartedMs) >= BOOT_STA_TIMEOUT_MS) {
             bootStaConnectInProgress = false;
             WiFi.disconnect(false, false);
-            ensureApOnline("sta_timeout");
+            if (wifiAutoApFallbackEnabled()) ensureApOnline("sta_timeout");
             uiStatusLine = "Saved STA reconnect failed";
             if (lvglWifiPwdConnectPending) {
                 lvglWifiPwdConnectPending = false;
@@ -2108,7 +2111,7 @@ void wifiConnectionService()
         return;
     }
 
-    ensureApOnline("sta_retry_pending");
+    if (wifiAutoApFallbackEnabled()) ensureApOnline("sta_retry_pending");
     if (staLastConnectAttemptMs == 0 || static_cast<unsigned long>(now - staLastConnectAttemptMs) >= STA_RETRY_INTERVAL_MS) {
         beginStaConnectAttempt("retry");
     }
@@ -2116,6 +2119,13 @@ void wifiConnectionService()
 
 void refreshMdnsState()
 {
+    if (!WIFI_RUNTIME_SUPPORTED) {
+        if (mdnsStarted) {
+            MDNS.end();
+            mdnsStarted = false;
+        }
+        return;
+    }
     if (airplaneModeEnabled || networkSuspendedForAudio || !webServerEnabled) {
         if (mdnsStarted) {
             MDNS.end();
@@ -2171,7 +2181,6 @@ bool networkResumeAfterAudio()
     stopWebServerRuntime();
     WiFi.mode(WIFI_OFF);
     delay(30);
-    WiFi.mode(WIFI_STA);
     if (wifiHasStaTarget()) {
         beginStaConnectAttempt("audio_resume");
     } else {

@@ -1,6 +1,6 @@
 #pragma once
 
-#if defined(BOARD_UEDX24320028E_WB_A) || defined(BOARD_UEDX32480035E_WB_A)
+#if defined(BOARD_UEDX24320028E_WB_A) || defined(BOARD_UEDX32480035E_WB_A) || defined(BOARD_JC4880P443C_I_W)
 
 #include <Arduino.h>
 #include <stdint.h>

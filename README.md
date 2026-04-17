@@ -15,6 +15,7 @@ Current firmware version: **`0.21.17`**
 | `ESP32-S3-3248S035-N16R8` | `320x480`, `ST7796` | `GT911` | `esp32-s3-3248s035-n16r8` |
 | `UEDX24320028E-WB-A` | `240x320`, `GC9307` | `CHSC6540` | `uedx24320028e-wb-a` |
 | `UEDX32480035E-WB-A` | `320x480`, `ST7796` | `CHSC6540` | `uedx32480035e-wb-a` |
+| `JC4880P443C_I_W` | `480x800`, `ST7701` over `MIPI-DSI` | `GT911` | `jc4880p443c-i-w-bringup` |
 
 The `ESP32-S3-3248S035-N16R8` target is for a `3248S035` board converted to `ESP32-S3-WROOM-1-N16R8` (`16 MB flash`, `8 MB PSRAM`).
 
@@ -22,6 +23,9 @@ The `UEDX24320028E-WB-A` target uses the board's `ESP32-S3`, `16 MB flash`, and 
 
 Custom PlatformIO board file:
 - [`boards/esp32-s3-devkitc1-n16r8.json`](boards/esp32-s3-devkitc1-n16r8.json)
+- [`boards/jc4880p443c_i_w.json`](boards/jc4880p443c_i_w.json)
+
+The `JC4880P443C_I_W` target uses an isolated `ESP32-P4` PlatformIO/toolchain path so the existing `ESP32` and `ESP32-S3` firmware builds remain unchanged. The current port runs the shared remote UI through the custom `display_compat` backend for the board's `480x800` `ST7701` MIPI-DSI panel and `GT911` touch controller. The ESP32-only internal-DAC audio path is still disabled on this board.
 
 Board references used while adding `ESP32-3248S035` support:
 - https://homeding.github.io/boards/esp32/panel-3248S035.htm
@@ -31,6 +35,11 @@ Board references used while adding `UEDX24320028E-WB-A` support:
 - https://viewedisplay.com/product/esp32-2-8-inch-240x320-mcu-ips-tft-display-touch-screen-arduino-lvgl-wifi-ble-uart-smart-module/
 - https://github.com/VIEWESMART/UEDX24320028ESP32-3.5inch-320_480-Display
 - [documents/UEDX24320028E-WB-A-V1.0-SPEC.pdf](documents/UEDX24320028E-WB-A-V1.0-SPEC.pdf)
+
+Board references used while adding `JC4880P443C_I_W` bring-up support:
+- [documents/JC4880P443C_I_W/5-Schematic/JC4880P443_V1.0.pdf](documents/JC4880P443C_I_W/5-Schematic/JC4880P443_V1.0.pdf)
+- [documents/JC4880P443C_I_W/6-User_Manual/Getting%20started%20JC4880P443C_I_W.pdf](documents/JC4880P443C_I_W/6-User_Manual/Getting%20started%20JC4880P443C_I_W.pdf)
+- [documents/JC4880P443C_I_W/1-Demo/idf_examples/ESP-IDF/xiaozhi-esp32/main/boards/guition-jc4880p443/config.h](documents/JC4880P443C_I_W/1-Demo/idf_examples/ESP-IDF/xiaozhi-esp32/main/boards/guition-jc4880p443/config.h)
 
 ## Highlights
 
@@ -329,6 +338,8 @@ Recovery/file APIs can browse and manage rooted SD paths.
 - `esp32-3248s035`
 - `esp32-s3-3248s035-n16r8`
 - `uedx24320028e-wb-a`
+- `uedx32480035e-wb-a`
+- `jc4880p443c-i-w-bringup` (`ESP32-P4` full UI port, audio currently disabled)
 
 ### Build
 
@@ -344,6 +355,7 @@ pio run -e esp32-3248s035
 pio run -e esp32-s3-3248s035-n16r8
 pio run -e uedx24320028e-wb-a
 pio run -e uedx32480035e-wb-a
+pio run -e jc4880p443c-i-w-bringup
 ```
 
 ### Flash

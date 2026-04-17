@@ -4138,7 +4138,13 @@ void lvglWifiDisconnectEvent(lv_event_t *e)
     pendingSaveSsid = "";
     pendingSavePass = "";
     WiFi.disconnect(false, false);
-    ensureApOnline("manual_disconnect");
+    if (wifiSessionApMode
+#if defined(BOARD_JC4880P443C_I_W)
+        || false
+#else
+        || true
+#endif
+    ) ensureApOnline("manual_disconnect");
     uiStatusLine = "WiFi disconnected";
     lvglSyncStatusLine();
     lvglRefreshWifiList();
@@ -4153,7 +4159,13 @@ void lvglWifiForgetEvent(lv_event_t *e)
     pendingSavePass = "";
     clearStaCreds();
     WiFi.disconnect(false, false);
-    ensureApOnline("manual_forget");
+    if (wifiSessionApMode
+#if defined(BOARD_JC4880P443C_I_W)
+        || false
+#else
+        || true
+#endif
+    ) ensureApOnline("manual_forget");
     uiStatusLine = "Saved WiFi forgotten";
     lvglSyncStatusLine();
     lvglRefreshWifiList();
