@@ -1110,9 +1110,10 @@ void lvglSoundPopupVibrationEvent(lv_event_t *e)
 void lvglSoundPopupDisableVibrationEvent(lv_event_t *e)
 {
     (void)e;
-    vibrationEnabled = false;
+    vibrationEnabled = !vibrationEnabled;
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
-    chatMessageVibrationStop(true);
+    if (vibrationEnabled) chatMessageVibrationPreview();
+    else chatMessageVibrationStop(true);
 #endif
     saveSoundPrefs();
     lvglRefreshConfigUi();

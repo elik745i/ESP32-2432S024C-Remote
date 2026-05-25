@@ -2,7 +2,7 @@
 
 Firmware for Sunton-style ESP32 touch display boards with an LVGL UI, Wi-Fi/AP tools, SD recovery/file access, MQTT controls, encrypted chat, and optional radio modules.
 
-Current firmware version: **`0.21.17`**
+Current firmware version: **`0.21.18`**
 
 ![ESP32 Remote Render](3D_Models/render1.jpeg)
 
@@ -472,6 +472,12 @@ Home Assistant integration repository: https://github.com/elik745i/MQTT-Remote-B
 ## Releases
 
 GitHub Releases contain published firmware binaries for each supported target.
+
+## v0.21.18
+
+- Fixed the top sound-popup vibration control so the action button can turn vibration back on after it was set to `Off`.
+- Kept the `ESP32-S3-3248S035-N16R8` source build targeted at the correct PlatformIO environment and serialized that build path to avoid Windows linker artifact loss.
+- Restored valid PlatformIO environment definitions in the repository config so the S3 build and related board targets parse cleanly again.
 
 ## v0.21.17
 

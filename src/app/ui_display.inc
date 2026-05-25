@@ -1761,7 +1761,7 @@ static void lvglRefreshSoundPopupUi()
     }
     if (lvglSoundPopupVibrationDisableBtn) {
         lv_obj_t *label = lv_obj_get_child(lvglSoundPopupVibrationDisableBtn, 0);
-        if (label) lvglLabelSetTextIfChanged(label, vibrationEnabled ? "X" : "Off");
+        if (label) lvglLabelSetTextIfChanged(label, vibrationEnabled ? "X" : "On");
         lvglRegisterStyledButton(lvglSoundPopupVibrationDisableBtn, vibrationEnabled ? lv_color_hex(0x8A3A3A) : lv_color_hex(0x586674), true);
     }
     lvglSoundPopupSetIcon();

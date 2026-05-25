@@ -41,7 +41,7 @@
 			"group": "none"
 		},
 		{
-			"label": "Build esp32-2432s024c release",
+			"label": "Build esp32-s3-3248s035-n16r8 release",
 			"type": "shell",
 			"command": "${env:USERPROFILE}\\.platformio\\penv\\Scripts\\platformio.exe",
 			"options": {
@@ -52,7 +52,7 @@
 			"args": [
 				"run",
 				"-e",
-				"esp32-2432s024c"
+				"esp32-s3-3248s035-n16r8"
 			],
 			"isBackground": false,
 			"group": "build"
