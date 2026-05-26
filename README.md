@@ -144,12 +144,13 @@ Notes:
 | Display | `TFT_CS` | 47 |
 | Display | `TFT_DC` | 48 |
 | Sensor | Light ADC | 6 |
-| Motor | Vibration | 2 |
+| Motor | Vibration | 13 |
 | Radio | `HC-12 SET` / `E220 M2` | 3 |
 | Radio | `HC-12 TX` / `E220 TX` | 4 |
 | Radio | `HC-12 RX` / `E220 RX` | 5 |
 
 S3 notes:
+- Vibration motor control was remapped from `GPIO2` to `GPIO13`.
 - RGB output is disabled because the original remap conflicts with octal PSRAM pins on `ESP32-S3-WROOM-1-N16R8`.
 - Audio backend is currently disabled in firmware on S3 because the existing internal DAC path is ESP32-only.
 

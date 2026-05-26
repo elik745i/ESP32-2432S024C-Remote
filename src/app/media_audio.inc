@@ -391,8 +391,7 @@ void playStartupFeedbackIfEnabled()
         delay(85);
         ledcWrite(VIBRATION_LEDC_CHANNEL, 0);
         ledcDetachPin(VIBRATION_MOTOR_PIN);
-        pinMode(VIBRATION_MOTOR_PIN, OUTPUT);
-        digitalWrite(VIBRATION_MOTOR_PIN, LOW);
+        vibrationMotorDriveLow();
         chatMessageVibrationPinAttached = false;
         chatMessageVibrationPinOutput = false;
     }
@@ -469,8 +468,7 @@ static void touchFeedbackVibrationStopImmediate()
     ledcWrite(VIBRATION_LEDC_CHANNEL, 0);
     if (chatMessageVibrationPinAttached) {
         ledcDetachPin(VIBRATION_MOTOR_PIN);
-        pinMode(VIBRATION_MOTOR_PIN, OUTPUT);
-        digitalWrite(VIBRATION_MOTOR_PIN, LOW);
+        vibrationMotorDriveLow();
         chatMessageVibrationPinAttached = false;
     }
     chatMessageVibrationPinOutput = false;
@@ -492,8 +490,10 @@ static uint32_t chatMessageVibrationDuty()
 static bool chatMessageVibrationEnsurePinAttached()
 {
     if (chatMessageVibrationPinAttached) return true;
+    gpio_set_pull_mode((gpio_num_t)VIBRATION_MOTOR_PIN, GPIO_FLOATING);
     ledcSetup(VIBRATION_LEDC_CHANNEL, VIBRATION_PWM_HZ, VIBRATION_PWM_RES_BITS);
     ledcAttachPin(VIBRATION_MOTOR_PIN, VIBRATION_LEDC_CHANNEL);
+    ledcWrite(VIBRATION_LEDC_CHANNEL, 0);
     chatMessageVibrationPinAttached = true;
     return true;
 }
@@ -503,8 +503,7 @@ static void chatMessageVibrationStop(bool clearQueue)
     ledcWrite(VIBRATION_LEDC_CHANNEL, 0);
     if (chatMessageVibrationPinAttached) {
         ledcDetachPin(VIBRATION_MOTOR_PIN);
-        pinMode(VIBRATION_MOTOR_PIN, OUTPUT);
-        digitalWrite(VIBRATION_MOTOR_PIN, LOW);
+        vibrationMotorDriveLow();
         chatMessageVibrationPinAttached = false;
     }
     chatMessageVibrationPinOutput = false;
@@ -518,6 +517,19 @@ static void chatMessageVibrationStartOutput()
     if (!chatMessageVibrationEnsurePinAttached()) return;
     ledcWrite(VIBRATION_LEDC_CHANNEL, chatMessageVibrationDuty());
     chatMessageVibrationPinOutput = true;
+}
+
+static void vibrationMotorIdleClamp()
+{
+    if (chatMessageVibrationQueue != 0 || chatMessageVibrationPhase != 0) return;
+    if (touchFeedbackVibrationActive) return;
+    if (chatMessageVibrationPinAttached) {
+        ledcWrite(VIBRATION_LEDC_CHANNEL, 0);
+        ledcDetachPin(VIBRATION_MOTOR_PIN);
+        chatMessageVibrationPinAttached = false;
+    }
+    chatMessageVibrationPinOutput = false;
+    vibrationMotorDriveLow();
 }
 
 static void chatMessageVibrationPreview()
@@ -588,7 +600,10 @@ void chatMessageVibrationService()
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
     const unsigned long now = millis();
     if (chatMessageVibrationPhase == 0) {
-        if (chatMessageVibrationQueue == 0) return;
+        if (chatMessageVibrationQueue == 0) {
+            if (!chatMessageVibrationPinAttached) vibrationMotorDriveLow();
+            return;
+        }
         if (chatMessageVibrationDeadlineMs != 0 && static_cast<long>(now - chatMessageVibrationDeadlineMs) < 0) return;
         chatMessageVibrationStartOutput();
         chatMessageVibrationPhase = 1;

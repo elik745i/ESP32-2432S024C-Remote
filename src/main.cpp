@@ -297,9 +297,22 @@ static constexpr uint32_t SCREENSAVER_EYE_COLOR_RGB = 0x19E0C3UL;
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
 static constexpr int BATTERY_ADC_PIN = 10;
 static constexpr int LIGHT_ADC_PIN = 6;
-static constexpr int VIBRATION_MOTOR_PIN = 2;
+static constexpr int VIBRATION_MOTOR_PIN = 13;
 static constexpr float BATTERY_DIVIDER_R_TOP = 470000.0f;
 static constexpr float BATTERY_DIVIDER_R_BOTTOM = 220000.0f;
+
+static inline void vibrationMotorDriveLow()
+{
+    gpio_reset_pin((gpio_num_t)VIBRATION_MOTOR_PIN);
+    gpio_set_direction((gpio_num_t)VIBRATION_MOTOR_PIN, GPIO_MODE_OUTPUT);
+    gpio_set_level((gpio_num_t)VIBRATION_MOTOR_PIN, 0);
+    gpio_set_pull_mode((gpio_num_t)VIBRATION_MOTOR_PIN, GPIO_PULLDOWN_ONLY);
+}
+
+__attribute__((constructor)) static void vibrationMotorClampLowEarly()
+{
+    vibrationMotorDriveLow();
+}
 #elif defined(BOARD_JC4880P443C_I_W)
 static constexpr int BATTERY_ADC_PIN = -1;
 static constexpr int LIGHT_ADC_PIN = -1;
@@ -2682,8 +2695,7 @@ void setup()
     }
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
     if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step vibration pin init");
-    pinMode(VIBRATION_MOTOR_PIN, OUTPUT);
-    digitalWrite(VIBRATION_MOTOR_PIN, LOW);
+    vibrationMotorDriveLow();
     if (POWER_OFF_SIGNAL_PIN >= 0) {
         if (VERBOSE_SERIAL_DEBUG) Serial.println("[BOOT] step power signal pin init");
         pinMode(POWER_OFF_SIGNAL_PIN, OUTPUT);
@@ -2977,6 +2989,7 @@ void loop()
     touchFeedbackBeepService();
 #if defined(BOARD_ESP32S3_3248S035_N16R8)
     touchFeedbackVibrationService();
+    vibrationMotorIdleClamp();
 #endif
     const bool decoderRunning = audioBackendReady && audio && audio->isRunning();
     if (wasRunning && !decoderRunning && mediaIsPlaying && !mediaPaused) {
